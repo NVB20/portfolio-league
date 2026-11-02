@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+
+# Environment & secrets (Firebase keys, Atlas connection string, etc.)
+.env
+.env.*
+!.env.example
+serviceAccount*.json
+*-firebase-adminsdk-*.json
+*.pem
+*.key
+*.p8
+*.p12
+*.jks
+*.mobileprovision
+
+# Expo
+.expo/
+.expo-shared/
+dist/
+web-build/
+expo-env.d.ts
+
+# Generated native projects (Expo prebuild)
+/ios
+/android
+
+# Metro
+.metro-health-check*
+
+# Vercel
+.vercel
+
+# Firebase
+.firebase/
+firebase-debug.log*
+firestore-debug.log*
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs & test output
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+coverage/
+
+# OS & editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
