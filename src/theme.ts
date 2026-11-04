@@ -28,11 +28,8 @@ export const dark = {
   negative: '#E5484D',       // red, for losses
 };
 
-// TODO 2: finish this function. It returns the right color set.
-//   - useColorScheme() returns 'dark' or 'light' (the phone/browser setting).
-//   - If it is 'dark', return dark; otherwise return light.
-//   Hint: you can do it in one line with  condition ? a : b
+// Returns the color set that matches the user's phone/browser setting.
 export function useThemeColors() {
-  const scheme = useColorScheme();
-  return scheme ? 'dark' : light;
+  const scheme = useColorScheme(); // 'dark', 'light', or null (unknown)
+  return scheme === 'dark' ? dark : light;
 }
