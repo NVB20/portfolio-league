@@ -38,7 +38,7 @@ export default function BrandPanel() {
 }
 
 const styles = StyleSheet.create({
-  panel: { flex: 1, backgroundColor: dark.surfaceChart, justifyContent: 'center', padding: 64, gap: 16 },
+  panel: { flex: 1, backgroundColor: dark.background, justifyContent: 'center', padding: 64, gap: 16 },
   eyebrowRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   eyebrowLine: { width: 40, height: 1, backgroundColor: dark.primary },
   eyebrow: { color: dark.primary, fontSize: 14, letterSpacing: 1 },

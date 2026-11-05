@@ -8,7 +8,7 @@ import { useColorScheme } from 'react-native';
 export const light = {
   primary: '#0B8A68',        // darker mint, so it's readable on white
   onPrimary: '#FFFFFF',      // text ON a primary-colored button
-  background: '#F4FAF8',
+  background: '#FFFFFF',
   backgroundGlow: '#E3F4EE',
   surfaceChart: '#FFFFFF',
   textHeading: '#0B2B30',    // our dark background color becomes the text color

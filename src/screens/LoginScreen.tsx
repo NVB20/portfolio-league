@@ -4,11 +4,13 @@
 import { useState } from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useThemeColors } from '../theme';
+import { light } from '../theme';
 import BrandPanel from '../components/BrandPanel';
 
 export default function LoginScreen() {
-  const colors = useThemeColors();
+  // Design choice: the login form is ALWAYS white (light colors), even in dark mode.
+  // The rest of the app will still follow the dark/light setting via useThemeColors().
+  const colors = light;
 
   // useWindowDimensions gives the current screen size, and updates on resize.
   const { width } = useWindowDimensions();
