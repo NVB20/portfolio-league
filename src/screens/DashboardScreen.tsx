@@ -8,13 +8,15 @@ import { useAuth } from '../auth/AuthProvider';
 import { light } from '../theme';
 
 export default function DashboardScreen() {
-  const { user } = useAuth();
+  const { user, roles } = useAuth();
 
   return (
     <View style={styles.page}>
       <Text style={styles.title}>Dashboard</Text>
       {/* `?.` = if user is null, don't crash, just show nothing. */}
       <Text style={styles.email}>{user?.email}</Text>
+      {/* For testing: shows e.g. "user" or "admin, user". */}
+      <Text style={styles.email}>{roles.join(', ')}</Text>
 
       <Pressable style={styles.logout} onPress={() => signOut(auth)}>
         <Text style={styles.logoutText}>התנתקות</Text>
