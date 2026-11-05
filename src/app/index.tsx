@@ -1,8 +1,8 @@
-// URL "/" (the home address). For now it just sends you to /login.
-// Later: logged in -> /dashboard, logged out -> /login.
+// URL "/" (the home address). Only logged-in users reach it (see _layout.tsx),
+// so it just sends them to their dashboard.
 
 import { Redirect } from 'expo-router';
 
 export default function Index() {
-  return <Redirect href="/login" />;
+  return <Redirect href="/dashboard" />;
 }
