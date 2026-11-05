@@ -11,6 +11,10 @@ const messages: Record<string, string> = {
   'auth/weak-password': 'הסיסמה קצרה מדי (לפחות 6 תווים)',
   'auth/too-many-requests': 'יותר מדי ניסיונות. נסו שוב בעוד כמה דקות',
   'auth/network-request-failed': 'אין חיבור לאינטרנט',
+  // Google popup errors:
+  'auth/popup-closed-by-user': 'חלון ההתחברות של Google נסגר',
+  'auth/popup-blocked': 'הדפדפן חסם את חלון ההתחברות. אפשרו חלונות קופצים ונסו שוב',
+  'auth/operation-not-supported-in-this-environment': 'התחברות עם Google זמינה כרגע רק בדפדפן',
 };
 
 export function authErrorMessage(error: unknown): string {

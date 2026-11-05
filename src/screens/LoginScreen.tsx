@@ -6,11 +6,17 @@
 import { useState } from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  GoogleAuthProvider,
+  signInWithPopup,
+} from 'firebase/auth';
 import { auth } from '../firebase';
 import { authErrorMessage } from '../auth/authErrors';
 import { light } from '../theme';
 import BrandPanel from '../components/BrandPanel';
+import { AuthProvider } from '../auth/AuthProvider';
 
 export default function LoginScreen() {
   // Design choice: the login form is ALWAYS white (light colors), even in dark mode.
@@ -51,6 +57,23 @@ export default function LoginScreen() {
     setBusy(true);
     try {
       await createUserWithEmailAndPassword(auth, email, password);
+    } catch (e) {
+      setError(authErrorMessage(e));
+    }
+    setBusy(false);
+  }
+
+  // Google: opens Google's own login window (a popup). Works on WEB only for now.
+  // The first time a Google user signs in, Firebase creates their account automatically,
+  // so there is no separate "sign up with Google".
+  async function handleGoogle() {
+    setError('');
+    setBusy(true);
+    try {
+      // GoogleAuthProvider = "use Google as the way to log in".
+      const provider = new GoogleAuthProvider();
+      // TODO: open the popup and wait for it, same shape as handleSignIn:
+      await signInWithPopup(auth, provider);
     } catch (e) {
       setError(authErrorMessage(e));
     }
@@ -139,8 +162,12 @@ export default function LoginScreen() {
             <View style={[styles.line, { backgroundColor: colors.divider }]} />
           </View>
 
-          {/* Google: UI only for now. Its onPress comes in the Google step. */}
-          <Pressable style={[styles.button, styles.outlined, styles.googleRow, { borderColor: colors.divider }]}>
+          {/* Google: opens Google's login popup. */}
+          <Pressable
+            style={[styles.button, styles.outlined, styles.googleRow, { borderColor: colors.divider, opacity: busy ? 0.6 : 1 }]}
+            onPress={handleGoogle}
+            disabled={busy}
+          >
             <Ionicons name="logo-google" size={20} color={colors.textHeading} />
             <Text style={[styles.buttonText, { color: colors.textHeading }]}>המשך עם Google</Text>
           </Pressable>
