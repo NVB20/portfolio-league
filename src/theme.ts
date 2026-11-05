@@ -7,6 +7,7 @@ import { useColorScheme } from 'react-native';
 // Light theme: suggested values, adjust if you like.
 export const light = {
   primary: '#0B8A68',        // darker mint, so it's readable on white
+  onPrimary: '#FFFFFF',      // text ON a primary-colored button
   background: '#F4FAF8',
   backgroundGlow: '#E3F4EE',
   surfaceChart: '#FFFFFF',
@@ -19,6 +20,7 @@ export const light = {
 // Dark theme: from the "Theme colors" table in tech-stack.md.
 export const dark = {
   primary: '#5FE3B8',        // mint green
+  onPrimary: '#0B2B30',      // text ON a primary-colored button (dark on mint)
   background: '#0B2B30',
   backgroundGlow: '#0F3D3B', // deep teal, for the glow behind the logo
   surfaceChart: '#0E2233',   // navy, for charts and tables

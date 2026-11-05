@@ -1,74 +1,120 @@
-// The login / signup form. Part 1: UI and state only (no Firebase yet).
+// The login / signup page. UI and state only (Firebase comes in the next step).
+// Wide screens: form + brand panel side by side. Narrow screens (phones): form only.
 
 import { useState } from 'react';
-import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native';
+import { View, Text, TextInput, Pressable, StyleSheet, useWindowDimensions } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useThemeColors } from '../theme';
+import BrandPanel from '../components/BrandPanel';
 
 export default function LoginScreen() {
   const colors = useThemeColors();
 
+  // useWindowDimensions gives the current screen size, and updates on resize.
+  const { width } = useWindowDimensions();
+
+  // TODO 1: replace `true` so isWide is true only when width is 900 or more.
+  //         (Then shrink the browser window and watch the brand panel disappear.)
+  const isWide = true;
+
   // useState = a value React remembers between redraws.
-  // It gives back [currentValue, functionToChangeIt].
   const [email, setEmail] = useState('');
-
   const [password, setPassword] = useState('');
-
   // false = password hidden (dots), true = password visible.
   const [showPassword, setShowPassword] = useState(false);
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <Text style={[styles.title, { color: colors.primary }]}>Welcome</Text>
+    // direction: 'rtl' = Hebrew layout: rows start on the right.
+    <View style={[styles.page, { direction: 'rtl', backgroundColor: colors.background }]}>
+      {/* `isWide && <X />` = draw X only when isWide is true. */}
+      {isWide && <BrandPanel />}
 
-      <TextInput
-        style={[styles.input, { color: colors.textHeading, borderColor: colors.divider }]}
-        placeholder="Email"
-        placeholderTextColor={colors.textBody}
-        autoCapitalize="none"
-        keyboardType="email-address"
-        value={email}
-        onChangeText={setEmail}
-      />
+      <View style={styles.formSide}>
+        <View style={styles.form}>
+          <Text style={[styles.title, { color: colors.textHeading }]}>ברוכים הבאים</Text>
+          <Text style={[styles.subtitle, { color: colors.textBody }]}>
+            התחברו או צרו חשבון כדי להתחיל לשחק
+          </Text>
 
-      {/* A row: the password box, with a Show/Hide button on its right. */}
-      <View style={styles.row}>
-        <TextInput
-          style={[styles.input, styles.rowInput, { color: colors.textHeading, borderColor: colors.divider }]}
-          placeholder="Password"
-          placeholderTextColor={colors.textBody}
-          autoCapitalize="none"
-          secureTextEntry={!showPassword}
-          value={password}
-          onChangeText={setPassword}
-        />
-        {/* Tap to flip between showing and hiding the password. */}
-        <Pressable style={styles.showButton} onPress={() => setShowPassword(!showPassword)}>
-          <Text style={{ color: colors.primary }}>{showPassword ? 'Hide' : 'Show'}</Text>
-        </Pressable>
+          {/* Email: label above, then a bordered box with an icon and the input. */}
+          <Text style={[styles.label, { color: colors.textHeading }]}>אימייל</Text>
+          <View style={[styles.inputBox, { borderColor: colors.divider }]}>
+            <Ionicons name="mail-outline" size={20} color={colors.textBody} />
+            <TextInput
+              style={[styles.input, { color: colors.textHeading }]}
+              placeholder="name@example.com"
+              placeholderTextColor={colors.textBody}
+              autoCapitalize="none"
+              keyboardType="email-address"
+              value={email}
+              onChangeText={setEmail}
+            />
+          </View>
+
+          {/* Password: same box, plus an eye button that toggles showPassword. */}
+          <Text style={[styles.label, { color: colors.textHeading }]}>סיסמה</Text>
+          <View style={[styles.inputBox, { borderColor: colors.divider }]}>
+            <Ionicons name="lock-closed-outline" size={20} color={colors.textBody} />
+            <TextInput
+              style={[styles.input, { color: colors.textHeading }]}
+              placeholder="••••••••"
+              placeholderTextColor={colors.textBody}
+              autoCapitalize="none"
+              secureTextEntry={!showPassword}
+              value={password}
+              onChangeText={setPassword}
+            />
+            <Pressable onPress={() => setShowPassword(!showPassword)}>
+              <Ionicons
+                name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                size={20}
+                color={colors.textBody}
+              />
+            </Pressable>
+          </View>
+
+          {/* Main action: filled. onPrimary = the text color that is readable
+              on the primary color in the current theme. */}
+          <Pressable style={[styles.button, { backgroundColor: colors.primary }]}>
+            <Text style={[styles.buttonText, { color: colors.onPrimary }]}>התחברות</Text>
+          </Pressable>
+
+          {/* Second action: outlined (border, no fill). */}
+          <Pressable style={[styles.button, styles.outlined, { borderColor: colors.primary }]}>
+            <Text style={[styles.buttonText, { color: colors.primary }]}>הרשמה</Text>
+          </Pressable>
+
+          {/* "or" divider: line, text, line. */}
+          <View style={styles.dividerRow}>
+            <View style={[styles.line, { backgroundColor: colors.divider }]} />
+            <Text style={{ color: colors.textBody }}>או</Text>
+            <View style={[styles.line, { backgroundColor: colors.divider }]} />
+          </View>
+
+          {/* Google: UI only for now. Its onPress comes in the Google step. */}
+          <Pressable style={[styles.button, styles.outlined, styles.googleRow, { borderColor: colors.divider }]}>
+            <Ionicons name="logo-google" size={20} color={colors.textHeading} />
+            <Text style={[styles.buttonText, { color: colors.textHeading }]}>המשך עם Google</Text>
+          </Pressable>
+        </View>
       </View>
-
-      {/* Main action: filled button. The Firebase onPress is added in part 4b. */}
-      <Pressable style={[styles.button, { backgroundColor: colors.primary }]}>
-        <Text style={[styles.buttonText, { color: colors.background }]}>Sign in</Text>
-      </Pressable>
-
-      {/* Second action: outlined button (border, no fill), so it looks less important. */}
-      <Pressable style={[styles.button, styles.outlined, { borderColor: colors.primary }]}>
-        <Text style={[styles.buttonText, { color: colors.primary }]}>Sign up</Text>
-      </Pressable>
     </View>
   );
 }
 
-// Layout only. Colors come from the theme above, so they change with dark/light.
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', padding: 24, gap: 12 },
-  title: { fontSize: 28, fontWeight: '700', textAlign: 'center', marginBottom: 12 },
-  input: { borderWidth: 1, borderRadius: 8, padding: 12, fontSize: 16 },
-  button: { borderRadius: 8, padding: 14, alignItems: 'center' },
+  page: { flex: 1, flexDirection: 'row' },                  // brand panel and form side by side
+  formSide: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  form: { width: '100%', maxWidth: 420, gap: 10 },          // never wider than 420px
+  title: { fontSize: 32, fontWeight: '800' },
+  subtitle: { fontSize: 15, marginBottom: 16 },
+  label: { fontSize: 14, fontWeight: '600', marginTop: 6 },
+  inputBox: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: 8, paddingHorizontal: 14 },
+  input: { flex: 1, paddingVertical: 14, fontSize: 16 },
+  button: { borderRadius: 8, padding: 14, alignItems: 'center', marginTop: 6 },
   buttonText: { fontSize: 16, fontWeight: '700' },
-  outlined: { borderWidth: 2 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 8 }, // children side by side
-  rowInput: { flex: 1 },                                       // box takes all leftover width
-  showButton: { padding: 8 },
+  outlined: { borderWidth: 1.5 },
+  googleRow: { flexDirection: 'row', justifyContent: 'center', gap: 10 },
+  dividerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginVertical: 8 },
+  line: { flex: 1, height: 1 },
 });
