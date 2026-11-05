@@ -15,9 +15,8 @@ export default function LoginScreen() {
   // useWindowDimensions gives the current screen size, and updates on resize.
   const { width } = useWindowDimensions();
 
-  // TODO 1: replace `true` so isWide is true only when width is 900 or more.
-  //         (Then shrink the browser window and watch the brand panel disappear.)
-  const isWide = true;
+  // Wide screen (900px or more) = show the brand panel. Narrow (phone) = form only.
+  const isWide = width >= 900;
 
   // useState = a value React remembers between redraws.
   const [email, setEmail] = useState('');
