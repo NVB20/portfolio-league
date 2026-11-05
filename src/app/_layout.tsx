@@ -4,6 +4,7 @@
 import { Stack } from 'expo-router';
 import { View, ActivityIndicator } from 'react-native';
 import { AuthProvider, useAuth } from '../auth/AuthProvider';
+import { light } from '../theme';
 
 export default function RootLayout() {
   // AuthProvider must be OUTSIDE the guard, so the guard can call useAuth().
@@ -20,8 +21,8 @@ function GuardedStack() {
   // Firebase hasn't answered yet: show a spinner and NO screen at all.
   if (isLoading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF' }}>
-        <ActivityIndicator size="large" />
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: light.background }}>
+        <ActivityIndicator size="large" color={light.primary} />
       </View>
     );
   }
