@@ -4,10 +4,9 @@
 
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-
+import { getFirestore } from 'firebase/firestore';
 // Expo copies every variable that starts with EXPO_PUBLIC_ from .env into the app.
-// TODO 1: fill in the other 5 fields the same way apiKey is done.
-//         The names are in .env.example.
+
 const firebaseConfig = {
   apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
   authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
@@ -19,7 +18,7 @@ const firebaseConfig = {
 
 // Create the connection to our Firebase project.
 const app = initializeApp(firebaseConfig);
+export const db = getFirestore(app);
 
-// TODO 3: export a constant called `auth`, created with getAuth(app).
 //         The login screen will import it:  import { auth } from './firebase';
 export const auth = getAuth(app);
