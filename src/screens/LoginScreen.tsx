@@ -1,9 +1,14 @@
-// The login / signup page. UI and state only (Firebase comes in the next step).
+// The login / signup page.
 // Wide screens: form + brand panel side by side. Narrow screens (phones): form only.
+// On success we do NOT navigate here: AuthProvider sees the new user, and the guard
+// in _layout.tsx moves the user to /dashboard by itself.
 
 import { useState } from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
+import { auth } from '../firebase';
+import { authErrorMessage } from '../auth/authErrors';
 import { light } from '../theme';
 import BrandPanel from '../components/BrandPanel';
 
@@ -23,6 +28,34 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   // false = password hidden (dots), true = password visible.
   const [showPassword, setShowPassword] = useState(false);
+  // The Hebrew error to show under the form ('' = no error).
+  const [error, setError] = useState('');
+  // true while we wait for Firebase: buttons are disabled, so no double-clicks.
+  const [busy, setBusy] = useState(false);
+
+  // `async` = this function can WAIT (await) for Firebase's answer.
+  async function handleSignIn() {
+    setError('');
+    setBusy(true);
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (e) {
+      // Firebase said no (wrong password, no internet...): show it in Hebrew.
+      setError(authErrorMessage(e));
+    }
+    setBusy(false);
+  }
+
+  async function handleSignUp() {
+    setError('');
+    setBusy(true);
+    try {
+      await createUserWithEmailAndPassword(auth, email, password);
+    } catch (e) {
+      setError(authErrorMessage(e));
+    }
+    setBusy(false);
+  }
 
   return (
     // direction: 'rtl' = Hebrew layout: rows start on the right.
@@ -76,12 +109,26 @@ export default function LoginScreen() {
 
           {/* Main action: filled. onPrimary = the text color that is readable
               on the primary color in the current theme. */}
-          <Pressable style={[styles.button, { backgroundColor: colors.primary }]}>
+          {/* Red error message, only drawn when there is one. */}
+          {error !== '' && <Text style={[styles.error, { color: colors.negative }]}>{error}</Text>}
+
+          {/* Main action: filled. onPrimary = the text color that is readable
+              on the primary color in the current theme.
+              disabled={busy}: can't press while waiting; opacity shows it's off. */}
+          <Pressable
+            style={[styles.button, { backgroundColor: colors.primary, opacity: busy ? 0.6 : 1 }]}
+            onPress={handleSignIn}
+            disabled={busy}
+          >
             <Text style={[styles.buttonText, { color: colors.onPrimary }]}>התחברות</Text>
           </Pressable>
 
           {/* Second action: outlined (border, no fill). */}
-          <Pressable style={[styles.button, styles.outlined, { borderColor: colors.primary }]}>
+          <Pressable
+            style={[styles.button, styles.outlined, { borderColor: colors.primary, opacity: busy ? 0.6 : 1 }]}
+            onPress={handleSignUp}
+            disabled={busy}
+          >
             <Text style={[styles.buttonText, { color: colors.primary }]}>הרשמה</Text>
           </Pressable>
 
@@ -118,4 +165,5 @@ const styles = StyleSheet.create({
   googleRow: { flexDirection: 'row', justifyContent: 'center', gap: 10 },
   dividerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginVertical: 8 },
   line: { flex: 1, height: 1 },
+  error: { fontSize: 14, fontWeight: '600' },
 });
