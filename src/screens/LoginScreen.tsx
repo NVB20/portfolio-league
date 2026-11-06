@@ -72,7 +72,6 @@ export default function LoginScreen() {
     try {
       // GoogleAuthProvider = "use Google as the way to log in".
       const provider = new GoogleAuthProvider();
-      // TODO: open the popup and wait for it, same shape as handleSignIn:
       await signInWithPopup(auth, provider);
     } catch (e) {
       setError(authErrorMessage(e));
