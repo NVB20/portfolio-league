@@ -1,7 +1,7 @@
 # Dependencies
 node_modules/
 
-# Environment & secrets (Firebase keys, Atlas connection string, etc.)
+# Environment & secrets (Firebase keys, DB passwords, etc.)
 .env
 .env.*
 !.env.example
@@ -55,3 +55,9 @@ Thumbs.db
 # Expo native extras
 .kotlin/
 *.orig.*
+
+# Local-only tools and design files (not part of the app; see docs/DECISIONS.md D-002)
+docs/design/
+scraper/
+db/
+docker-compose.yml
