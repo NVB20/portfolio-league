@@ -16,6 +16,7 @@ import { auth } from '../firebase';
 import { authErrorMessage } from '../auth/authErrors';
 import { light } from '../theme';
 import BrandPanel from '../components/BrandPanel';
+import GoogleIcon from '../components/GoogleIcon';
 import { AuthProvider } from '../auth/AuthProvider';
 
 export default function LoginScreen() {
@@ -167,7 +168,7 @@ export default function LoginScreen() {
             onPress={handleGoogle}
             disabled={busy}
           >
-            <Ionicons name="logo-google" size={20} color={colors.textHeading} />
+            <GoogleIcon size={20} />
             <Text style={[styles.buttonText, { color: colors.textHeading }]}>המשך עם Google</Text>
           </Pressable>
         </View>
