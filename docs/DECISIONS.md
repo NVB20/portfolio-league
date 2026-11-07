@@ -85,7 +85,7 @@ Today the admin screen calls it. To move, a Cloud Function calls the same functi
 
 **Status:** Active. Replaces DD-01 ("dark-only dashboard") in `design/dashboard/README.md`.
 
-**Decision:** The avatar dropdown has a dark/light switch (next to logout). The whole app follows the chosen theme. The dashboard needs a light version.
+**Decision:** The avatar dropdown has a dark/light switch (next to logout). The whole app follows the chosen theme. The dashboard needs a light version. The login page is the same for everyone and has no switch (07.11.2026). The dashboard's light version is designed: see DD-11 in `docs/design/dashboard/README.md`.
 
 **Where it's saved:** Each user's choice is saved in Firestore on their own user document (`users/{uid}.theme`: `'dark'` or `'light'`), so it follows them to any device. The color sets themselves live in `src/theme.ts`. Security Rules will let a user change only their own `theme` field, never `roles`.
 
