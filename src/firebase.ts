@@ -1,10 +1,8 @@
 // Connects the app to our Firebase project ONE time.
-// Every other file imports `auth` (and later `db`) from here,
-// instead of calling initializeApp again.
+// We use Firebase only for login (Auth). App data lives in Postgres, behind our API (see src/api.ts).
 
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
 
 // Expo copies every variable that starts with EXPO_PUBLIC_ from .env into the app.
 const firebaseConfig = {
@@ -18,7 +16,6 @@ const firebaseConfig = {
 
 // Create the connection to our Firebase project.
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
 
-//         The login screen will import it:  import { auth } from './firebase';
+// The login screen imports it:  import { auth } from './firebase';
 export const auth = getAuth(app);

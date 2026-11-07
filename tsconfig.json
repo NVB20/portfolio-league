@@ -9,5 +9,5 @@
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
   ],
-  "exclude": ["node_modules", "scraper"]
+  "exclude": ["node_modules", "scraper", "api"]
 }

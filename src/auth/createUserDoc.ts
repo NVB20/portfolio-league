@@ -1,33 +1,13 @@
-// After login: make sure users/{uid} exists, and return the user's roles.
-// - First login ever -> create the document as a normal user.
-// - Later logins     -> just read the roles that are saved there.
+// After login: make sure the user has a row in Postgres, and return the user's roles.
+// The API does the work (POST /me): it creates the row the first time as a normal user,
+// and just returns it on later logins. Only the API decides roles, never the app.
 
 import { User } from 'firebase/auth';
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../firebase';
+import { apiFetch } from '../api';
 import { Role, UserDoc } from '../types/user';
 
-export async function getOrCreateUserRoles(user: User): Promise<Role[]> {
-  // A "reference" = the address of one document: users/<uid>. It doesn't read anything yet.
-  const ref = doc(db, 'users', user.uid);
-
-  // Read the document (await: wait for Firestore's answer).
-  const snapshot = await getDoc(ref);
-
-  // Already exists: return its roles.
-  if (snapshot.exists()) {
-    return (snapshot.data() as UserDoc).roles;
-  }
-
-  // First login: create it. The Security Rules only accept EXACTLY these 3 fields,
-  // and roles must be ['user'] (see firestore.rules).
-  const newUser = {
-    email: user.email ?? '',          // ?? '' = use '' if Firebase has no email
-    roles: ['user'] as Role[],
-    createdAt: serverTimestamp(),     // the time on Google's server, not the user's clock
-  };
-
-  await setDoc(ref, newUser);
-
-  return newUser.roles;
+// `_user` is unused: the API reads who is logged in from the token that apiFetch sends.
+export async function getOrCreateUserRoles(_user: User): Promise<Role[]> {
+  const me = await apiFetch<UserDoc>('/me', { method: 'POST' });
+  return me.roles;
 }
