@@ -16,12 +16,15 @@ The rules are incomplete on purpose. Every gap we fill is written down in [docs/
 
 ## Stack
 
-See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript + Firebase (Auth, Firestore, Security Rules, Hosting).
+See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript, Firebase (Auth, Hosting), and a TypeScript API (Hono) with Postgres, both on Railway.
 
-- **No separate backend.** The app talks to Firestore directly.
-- **Free Spark plan, so no Cloud Functions.** Trusted game logic (order execution, scoring) runs in the admin's browser (D-001).
-- **Game logic is pure TypeScript** with no Firebase imports, so it can be tested and later moved to Cloud Functions.
-- **Security Rules are the permission layer.** Every collection gets rules before it ships. Players can never write cash, holdings, prices, the clock or scores.
+- **Firebase knows who the user is; the API and Postgres decide what they may do.** Firebase handles login and the JWT. The API checks that token on every request.
+- **The app never talks to Postgres directly.** Every read and write goes through the API (`src/api.ts` → `api/`).
+- **The API is the permission layer.** Every endpoint checks the token and the user's roles. Players can never write cash, holdings, prices, the clock, scores or roles. Roles are changed only with SQL.
+- **Trusted game logic (order execution, scoring) runs in the API**, in one transaction (D-001).
+- **Game logic is pure TypeScript** with no database or framework imports, so it can be unit tested.
+- **Schema changes are migrations** in `api/migrations/`. Never edit a migration that has already run; add a new one.
+- **Money is `NUMERIC` in Postgres**, never float.
 - **Hebrew first, RTL.** English must also work. Money is shown in ₪.
 
 ## Code layout
@@ -30,13 +33,14 @@ See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript +
 |------|------------------|
 | `src/app/` | Expo Router routes only. Every file is a screen; `_layout.tsx` sets up navigation |
 | `src/screens/` | The actual screen components the routes render |
-| `src/auth/` | `AuthProvider` (current user + roles), sign-in errors, creating `users/{uid}` |
+| `src/auth/` | `AuthProvider` (current user + roles), sign-in errors, `POST /me` after login |
 | `src/components/` | Shared UI |
 | `src/types/` | Shared TypeScript types |
-| `src/firebase.ts` | Firebase app, Auth and Firestore setup |
+| `src/firebase.ts` | Firebase app and Auth setup (no database) |
+| `src/api.ts` | `apiFetch`: calls the API with the user's Firebase token |
 | `src/theme.ts` | Color tokens |
-| `firestore.rules` | Security Rules |
-| `docker-compose.yml`, `db/`, `scraper/` | Local-only Postgres with 3 years of real prices from Yahoo (D-002). The app never connects to it |
+| `api/` | The API: its own `package.json`. `src/` (routes, token check, SQL), `migrations/` (SQL), `test/` (vitest) |
+| `docker-compose.yml`, `db/`, `scraper/` | Local Postgres: real prices from Yahoo, plus the app's local databases (D-002) |
 | `docs/` | Tech stack, decisions, design |
 | `assignment/` | The brief, progress, plans |
 
@@ -46,9 +50,18 @@ See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript +
 npx expo start --web          # run the app
 npx tsc --noEmit              # type check
 npx expo install <package>    # add a package (never npm install)
-docker compose up -d          # start the local price DB
+docker compose up -d          # start the local Postgres
 docker compose run --rm scraper   # fetch prices into it
+
+cd api
+npm run dev                   # run the API locally (reads api/.env)
+npm test                      # API tests against the local portfolio_test database
+npm run typecheck             # type check the API
+npm run migrate:dev           # apply new migrations to the local database
+npm run migrate:create <name> # new SQL migration file
 ```
+
+The API (`api/`) is a separate Node package: use `npm install` there, not `npx expo install`.
 
 Expo changes a lot between versions. Follow [AGENTS.md](AGENTS.md) and check the docs for the installed SDK before using an Expo API.
 
@@ -56,7 +69,9 @@ Expo changes a lot between versions. Follow [AGENTS.md](AGENTS.md) and check the
 
 - TASE prices from Yahoo are in agorot (`ILA`). Divide by 100 for ₪.
 - Yahoo has no TASE Sunday data before 2026 (TASE moved to Mon to Fri in January 2026).
-- `scraper/` has its own `package.json` and is excluded from the app's `tsconfig.json`.
+- `scraper/` and `api/` have their own `package.json` and are excluded from the app's `tsconfig.json`.
+- `pg` returns `NUMERIC` columns as strings. Convert them on purpose.
+- `EXPO_PUBLIC_*` variables are built into the app and visible to anyone. Never put a secret in one.
 
 ## Reporting changes
 

@@ -25,7 +25,7 @@ App ──login──▶ Firebase Auth ──JWT──▶ App ──request + JW
 - **Authorized domains:** which websites are allowed to sign in (set in the Firebase console).
 - **Hosting:** serves the web build.
 
-Firebase stores no application data. Nothing is saved in Firestore.
+Firebase stores no application data.
 
 ### The API handles
 

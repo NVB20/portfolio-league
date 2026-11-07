@@ -2,46 +2,44 @@
 
 Gaps in the brief, and the choices we made. Each entry: what we decided, why, and what would make us change it.
 
-## D-001: Trusted game logic runs in the admin's browser 
+## D-001: Trusted game logic runs in our API
 
-**Status:** Active. Planned to move to Cloud Functions later.
-
-**Decision:** Players can only create *pending* orders. When an admin advances the world clock, the admin screen runs the execution logic in the browser and writes trades, cash, holdings and snapshots. Security Rules allow those writes for admins only.
+**Decision:** Players can only create *pending* orders. When an admin advances the world clock, the API (`api/`, on Railway) runs the execution logic and writes trades, cash, holdings and snapshots to Postgres in **one transaction**. Only users with the `admin` role can call it.
 
 **Why:**
-- Cloud Functions need the Firebase Blaze plan (credit card). We're staying on the free Spark plan for now.
-- Players still can't cheat: rules block them from writing cash, holdings, prices, the clock or scores.
+- Code in the browser can be changed by anyone, so it can't be trusted with money. The API is the only thing that writes to Postgres.
+- One transaction means a run either finishes completely or not at all. No half-executed clock advance.
+- No need for the Firebase Blaze plan (Cloud Functions).
 
-**Known weaknesses:**
-- Nothing runs unless an admin has the page open and clicks "advance clock".
-- If the tab closes mid-run, some orders may execute and others not. Each order gets a `status`, so a retry skips orders that are already done.
-- Slow for thousands of orders (Firestore allows max 500 writes per batch).
-
-**How we'd move to Option A:** The execution logic is a pure TypeScript function with no Firebase inside:
+**The logic stays pure TypeScript** with no database or framework imports, so it can be unit tested:
 
 ```ts
 executeOrders(pendingOrders, prices, usdIls, portfolios) → { trades, updatedPortfolios, rejected }
 ```
 
-Today the admin screen calls it. To move, a Cloud Function calls the same function instead. That means changing only the wrapper, not the logic.
+The API loads the data, calls this function, and saves the result.
 
-**When to switch:** Real players at scale, or the game needs to run on a schedule without a person.
+**Known weaknesses:**
+- A person still has to advance the clock. A Railway cron job could do it on a schedule later.
+- One API service and one database node on Railway Hobby: no built-in backups or uptime monitors (Phase 7 adds a `pg_dump` cron and an external uptime check).
 
-## D-002: Local Postgres (Docker) holds historical prices for development
+## D-002: Local Postgres (Docker) for development
 
-**Status:** Active.
+**Status:** Active. Changed 07.11.2026: it now also holds the app's local databases.
 
-**Decision:** A Postgres container, run with `docker compose`, stores 3 years of daily open/close prices for USD/ILS (`ILS=X`), 20 large TASE stocks and 20 large US stocks (NYSE + NASDAQ). A one-off scraper container (`docker compose run --rm scraper`) fetches them from Yahoo Finance. Both run only on the developer's machine. The game uses 20 of these 40 stocks (brief: "20 stocks or funds").
+**Decision:** A Postgres container, run with `docker compose`, holds three databases on the developer's machine:
+- `prices`: 3 years of daily open/close prices for USD/ILS (`ILS=X`), 20 large TASE stocks and 20 large US stocks (NYSE + NASDAQ). A one-off scraper container (`docker compose run --rm scraper`) fetches them from Yahoo Finance. The game uses 20 of these 40 stocks (brief: "20 stocks or funds").
+- `portfolio`: the app's data when the API runs locally (`cd api && npm run dev`).
+- `portfolio_test`: wiped and refilled by the API tests (`cd api && npm test`).
 
 **Why:**
-- We fetch the data once and keep it, so we don't call Yahoo again every time we develop.
-- SQL tables are the most structured way to store it. `daily_prices` has the key `(symbol, day)`, so there's one row per security per day, no duplicate days, and the types are checked.
+- We fetch the prices once and keep them, so we don't call Yahoo again every time we develop.
+- SQL tables are the most structured way to store them. `daily_prices` has the key `(symbol, day)`, so there's one row per security per day, no duplicate days, and the types are checked.
+- Developing against the same database engine as production (Postgres on Railway) catches SQL problems early.
 
 **Gotchas:**
 - TASE prices from Yahoo are in **agorot** (`currency = 'ILA'`). Divide by 100 for ₪.
 - The current day is never saved, because its "close" is only the latest live price.
-
-**What it is not:** It is not part of the app. The Expo app never connects to it, so the "no custom backend" rule still holds. When the game needs the prices, we export them from Postgres into Firestore (or a JSON seed file).
 
 **Known weaknesses:**
 - Yahoo is unofficial, and FX "open/close" depends on Yahoo's day boundaries. The official Bank of Israel rate (שער יציג) only has one value per day.
@@ -51,35 +49,35 @@ Today the admin screen calls it. To move, a Cloud Function calls the same functi
 
 **Status:** Active.
 
-**Decision:** The 20 securities and USD/ILS use real daily open/close prices, downloaded once (see D-002 for how USD/ILS is kept) and loaded into Firestore from an admin screen.
+**Decision:** The 20 securities and USD/ILS use real daily open/close prices, downloaded once (see D-002) and copied from the local `prices` database into the game's Postgres tables.
 
 **Why:** Realistic charts, and every number can be traced back to a real market day.
 
 **Known weaknesses:** The game can only run as far as the downloaded history goes.
 
-## D-004: Orders live in one top-level `orders` collection
+## D-004: All orders live in one `orders` table
 
-**Status:** Active.
+**Status:** Active (planned for Phase 5).
 
-**Decision:** `orders/{orderId}` with a `uid` field, not `users/{uid}/orders`.
+**Decision:** One `orders` table with a `uid` column that references `users`, and a `status` column (`pending`, `executed`, `rejected`).
 
-**Why:** When the admin advances the clock (D-001), one query finds every pending order. Security Rules let a player read and create only orders where `uid` is their own, and only with status `pending`.
+**Why:** When the clock advances (D-001), one query finds every pending order. The API lets a player read only their own orders and create only `pending` ones. Once sent, an order can't be changed or cancelled (brief, rule 3).
 
-## D-005: Holdings are stored inside one portfolio document
+## D-005: Cash and holdings are separate rows, changed together
 
-**Status:** Active.
+**Status:** Active (planned for Phase 5).
 
-**Decision:** `portfolios/{uid}` = `{ cash, holdings: { TICKER: units } }`. Units are floats (fractions allowed).
+**Decision:** `portfolios(uid, cash)` and `holdings(uid, symbol, units)`. Money and units are `NUMERIC`, never float (fractions of a unit are allowed).
 
-**Why:** A portfolio has at most 20 securities, so it stays small. The dashboard needs one read, and cash and holdings change together in one write, so they can never disagree. Only admins can write portfolios (D-001).
+**Why:** Constraints check the data (for example, cash and units can't go below zero), and cash and holdings are changed in the same transaction, so they can never disagree. Only the API writes them (D-001).
 
-## D-006: The admin writes the weekly leaderboard
+## D-006: The leaderboard is computed when the clock advances
 
-**Status:** Active.
+**Status:** Active (planned for Phase 6).
 
-**Decision:** When the admin advances the clock, scores are computed for everyone and saved to `leaderboards/{week}`. Players read only that document.
+**Decision:** When the admin advances the clock, the API computes everyone's scores in SQL (percentile ranks with `percent_rank()`) and saves them for that week. Players read the leaderboard through the API.
 
-**Why:** Players never need to read each other's portfolios, so the rules keep portfolios private. One read per player instead of reading every portfolio.
+**Why:** Players never see each other's portfolios, only the scores. Scores change only when the clock moves, so computing them once and saving them keeps each read cheap, even with thousands of players.
 
 ## D-007: Dark/light theme is chosen by the user
 
@@ -87,6 +85,6 @@ Today the admin screen calls it. To move, a Cloud Function calls the same functi
 
 **Decision:** The avatar dropdown has a dark/light switch (next to logout). The whole app follows the chosen theme. The dashboard needs a light version. The login page is the same for everyone and has no switch (07.11.2026). The dashboard's light version is designed: see DD-11 in `docs/design/dashboard/README.md`.
 
-**Where it's saved:** Each user's choice is saved in Firestore on their own user document (`users/{uid}.theme`: `'dark'` or `'light'`), so it follows them to any device. The color sets themselves live in `src/theme.ts`. Security Rules will let a user change only their own `theme` field, never `roles`.
+**Where it's saved:** In Postgres, in the user's row (`users.theme`: `'dark'` or `'light'`, default `'dark'`), so it follows them to any device. The app changes it with `PATCH /me/theme`, which can change only the theme, never `roles`. The color sets themselves live in `src/theme.ts`.
 
 **Why:** Phase 1 requires a dark/light theme. A user choice, rather than following the device setting, lets players pick what reads best for charts.
