@@ -26,20 +26,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Runs ONCE when the app starts (the empty [] at the end = "only once").
   useEffect(() => {
     // 1. Subscribe: Firebase calls this function on every login / logout / refresh.
-    //    `async` because we now also WAIT for Firestore (the roles).
+    //    `async` because we also WAIT for our API (the roles, from Postgres).
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      let newRoles: Role[] = [];  // logged out: no roles
       if (firebaseUser) {
         try {
-          // Logged in: make sure users/{uid} exists, and get the roles.
-          setRoles(await getOrCreateUserRoles(firebaseUser));
+          // Logged in: make sure the user's row exists in Postgres, and get the roles.
+          newRoles = await getOrCreateUserRoles(firebaseUser);
         } catch (e) {
-          // Firestore failed (e.g. no internet). Treat as "no special roles".
+          // The API failed (e.g. no internet, or the API is down). Treat as "no special roles".
           console.error('Could not load user roles', e);
-          setRoles([]);
         }
-      } else {
-        setRoles([]);           // logged out: no roles
       }
+
+      // While we waited for the API, the user may have logged out or switched accounts.
+      // Then this answer is stale: the newer login/logout runs this function again and sets the state.
+      if (auth.currentUser?.uid !== firebaseUser?.uid) return;
+
+      setRoles(newRoles);
       setUser(firebaseUser);    // 2. who is logged in (or null)
       setIsLoading(false);      // 3. we have the answer, stop waiting
     });
