@@ -18,15 +18,24 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   // getIdToken() returns the saved token, or a fresh one if it is about to expire (tokens last 1 hour).
   const token = await user.getIdToken();
 
-  const res = await fetch(API_URL + path, {
-    ...init,
-    signal: init.signal ?? AbortSignal.timeout(TIMEOUT_MS),
-    headers: {
-      ...init.headers,
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-  });
+  // AbortController + setTimeout instead of AbortSignal.timeout(): that newer API is missing from some
+  // JavaScript engines (React Native's Hermes on older versions), where it would make every call throw.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(API_URL + path, {
+      ...init,
+      signal: init.signal ?? controller.signal,
+      headers: {
+        ...init.headers,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!res.ok) throw new Error(`API ${init.method ?? 'GET'} ${path} failed: ${res.status}`);
   return res.json() as Promise<T>;

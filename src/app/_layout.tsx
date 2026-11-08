@@ -5,6 +5,8 @@ import { Stack } from 'expo-router';
 import { View, ActivityIndicator } from 'react-native';
 import { AuthProvider, useAuth } from '../auth/AuthProvider';
 import { light } from '../theme';
+import { useTheme } from '../useTheme';
+import { useWebTheme } from '../useWebTheme';
 
 export default function RootLayout() {
   // AuthProvider must be OUTSIDE the guard, so the guard can call useAuth().
@@ -17,6 +19,9 @@ export default function RootLayout() {
 
 function GuardedStack() {
   const { user, isLoading } = useAuth();
+  const { theme } = useTheme();
+  // Logged in: the user's theme. Logged out: the login page looks the same for everyone (light form side).
+  useWebTheme(user ? theme : 'light');
 
   // Firebase hasn't answered yet: show a spinner and NO screen at all.
   if (isLoading) {
