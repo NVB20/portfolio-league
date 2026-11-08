@@ -7,6 +7,7 @@ import { bodyLimit } from 'hono/body-limit';
 import type { Pool } from 'pg';
 import { requireAuth, type AppEnv, type VerifyToken } from './auth.js';
 import { setTheme, upsertUser } from './users.js';
+import { getDashboard } from './dashboard.js';
 
 export type Deps = {
   db: Pool;
@@ -44,8 +45,15 @@ export function createApp({ db, verifyToken, corsOrigins }: Deps) {
 
   // Called by the app right after login: creates the user row the first time, and returns it.
   me.post('/', async (c) => {
-    const { uid, email } = c.get('user');
-    return c.json(await upsertUser(db, uid, email));
+    const { uid, email, name } = c.get('user');
+    return c.json(await upsertUser(db, uid, email, name));
+  });
+
+  // Everything the dashboard shows, in one request. Empty world = empty fields, never made-up numbers.
+  me.get('/dashboard', async (c) => {
+    const dashboard = await getDashboard(db, c.get('user').uid);
+    if (!dashboard) return c.json({ error: 'user not found, call POST /me first' }, 404);
+    return c.json(dashboard);
   });
 
   // Body: { "theme": "dark" | "light" }. Any other field (like roles) is ignored.

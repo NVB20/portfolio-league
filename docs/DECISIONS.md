@@ -88,3 +88,31 @@ The API loads the data, calls this function, and saves the result.
 **Where it's saved:** In Postgres, in the user's row (`users.theme`: `'dark'` or `'light'`, default `'dark'`), so it follows them to any device. The app changes it with `PATCH /me/theme`, which can change only the theme, never `roles`. The color sets themselves live in `src/theme.ts`.
 
 **Why:** Phase 1 requires a dark/light theme. A user choice, rather than following the device setting, lets players pick what reads best for charts.
+
+## D-008: The portfolio is created with the user, on first login
+
+**Status:** Active.
+
+**Decision:** `POST /me` creates the `users` row and the `portfolios` row (₪1,000,000 cash, the brief's starting amount) in one SQL statement. Players who logged in before the game tables existed got their portfolio in the migration.
+
+**Why:** A player without a portfolio would need a special case on every screen. One statement means a user never exists without one, even with two tabs logging in at once.
+
+## D-009: Until Phase 2, a holding is valued at the latest close that has already happened
+
+**Status:** Temporary. Phase 2 decides intraday pricing.
+
+**Decision:** The dashboard values each holding at its most recent daily **close** whose market has already closed in world time. Today's TASE close counts only after 17:30 (13:50 on Friday); today's US close only after New York closes. The USD/ILS rate is yesterday's close. US holdings are converted at that rate.
+
+**Why:** The price table has one open and one close per day. Using a close that hasn't happened yet in world time would show players the future.
+
+**Known weakness:** During trading hours the value doesn't move, because the day's open isn't used yet.
+
+## D-010: The leaderboard shows a display name, never an email
+
+**Status:** Active.
+
+**Decision:** `users.display_name` comes from the Firebase token's `name` claim (Google sign-in has one). Players without one show as "שחקן".
+
+**Why:** The leaderboard is visible to every player, and emails are private.
+
+**Open:** Let players choose a name (and check it for abuse).

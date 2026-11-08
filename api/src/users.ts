@@ -8,15 +8,24 @@ export type Role = 'admin' | 'user';
 // What the app gets back about the logged-in user.
 export type Me = { email: string; roles: Role[]; theme: Theme };
 
-// First login: creates the row as a normal user. Later logins: keeps the row and refreshes the email.
+// First login: creates the row as a normal user, and the player's portfolio with the starting cash (D-008).
+// Later logins: keeps both rows and refreshes the email (and the name, when the token has one).
 // ON CONFLICT makes this safe to call twice, or from two tabs at the same moment.
 // `roles` is never written here, so the column default ('{user}') is the only way a row gets roles.
-export async function upsertUser(db: Pool, uid: string, email: string): Promise<Me> {
+// One statement = one transaction, so a user never exists without a portfolio.
+export async function upsertUser(db: Pool, uid: string, email: string, name: string | null = null): Promise<Me> {
   const { rows } = await db.query<Me>(
-    `INSERT INTO users (uid, email) VALUES ($1, $2)
-     ON CONFLICT (uid) DO UPDATE SET email = EXCLUDED.email
-     RETURNING email, roles, theme`,
-    [uid, email],
+    `WITH u AS (
+       INSERT INTO users (uid, email, display_name) VALUES ($1, $2, $3)
+       ON CONFLICT (uid) DO UPDATE
+         SET email = EXCLUDED.email,
+             display_name = COALESCE(EXCLUDED.display_name, users.display_name)
+       RETURNING uid, email, roles, theme
+     ), p AS (
+       INSERT INTO portfolios (uid) SELECT uid FROM u ON CONFLICT (uid) DO NOTHING
+     )
+     SELECT email, roles, theme FROM u`,
+    [uid, email, name],
   );
   return rows[0];
 }

@@ -29,7 +29,8 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.query('TRUNCATE users');
+  // CASCADE: portfolios (and everything that hangs off a user) go too.
+  await db.query('TRUNCATE users CASCADE');
 });
 
 afterAll(async () => {
@@ -61,6 +62,12 @@ describe('POST /me', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ email: 'alice@example.com', roles: ['user'], theme: 'dark' });
     expect(await countUsers()).toBe(1);
+  });
+
+  it('creates the portfolio with the starting ₪1,000,000 on first login, once', async () => {
+    await Promise.all([call('POST', '/me', 'alice'), call('POST', '/me', 'alice')]);
+    const { rows } = await db.query(`SELECT cash::float8 AS cash FROM portfolios WHERE uid = 'alice'`);
+    expect(rows).toEqual([{ cash: 1_000_000 }]);
   });
 
   it('returns the same user on later logins without duplicating it', async () => {

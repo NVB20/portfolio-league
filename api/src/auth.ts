@@ -7,7 +7,8 @@
 import { createRemoteJWKSet, errors, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import type { MiddlewareHandler } from 'hono';
 
-export type AuthUser = { uid: string; email: string };
+// name = the token's `name` claim (Google sign-in has one, email sign-up doesn't).
+export type AuthUser = { uid: string; email: string; name: string | null };
 export type VerifyToken = (token: string) => Promise<AuthUser>;
 
 // What every route after `requireAuth` can read with c.get('user').
@@ -52,7 +53,11 @@ export function makeFirebaseVerifier(projectId: string, keys: JWTVerifyGetKey): 
       throw new InvalidTokenError('sub is empty');
     }
 
-    return { uid: payload.sub, email: typeof payload.email === 'string' ? payload.email : '' };
+    return {
+      uid: payload.sub,
+      email: typeof payload.email === 'string' ? payload.email : '',
+      name: typeof payload.name === 'string' && payload.name.trim() !== '' ? payload.name.trim() : null,
+    };
   };
 }
 

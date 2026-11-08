@@ -20,12 +20,17 @@ const now = () => Math.floor(Date.now() / 1000);
 describe('makeFirebaseVerifier', () => {
   it('accepts a valid token and returns uid and email', async () => {
     const token = await signToken(privateKey, 'alice');
-    await expect(verify(token)).resolves.toEqual({ uid: 'alice', email: 'alice@example.com' });
+    await expect(verify(token)).resolves.toEqual({ uid: 'alice', email: 'alice@example.com', name: null });
   });
 
   it('returns an empty email when the token has none', async () => {
     const token = await signToken(privateKey, 'alice', { claims: { email: undefined } });
-    await expect(verify(token)).resolves.toEqual({ uid: 'alice', email: '' });
+    await expect(verify(token)).resolves.toEqual({ uid: 'alice', email: '', name: null });
+  });
+
+  it('returns the name claim when the token has one (Google sign-in)', async () => {
+    const token = await signToken(privateKey, 'alice', { claims: { name: '  Alice Cohen ' } });
+    await expect(verify(token)).resolves.toMatchObject({ name: 'Alice Cohen' });
   });
 
   it('rejects a token for another Firebase project', async () => {
@@ -110,6 +115,6 @@ describe('requireAuth', () => {
     const token = await signToken(privateKey, 'alice');
     const res = await app().request('/', { headers: { Authorization: `Bearer ${token}` } });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ uid: 'alice', email: 'alice@example.com' });
+    expect(await res.json()).toEqual({ uid: 'alice', email: 'alice@example.com', name: null });
   });
 });
