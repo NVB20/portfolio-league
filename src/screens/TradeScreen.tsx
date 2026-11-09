@@ -1,0 +1,318 @@
+// The trading screen (/trade), from the design artifact. One long scroll with three sections:
+//   1. The order: the selected security, buy/sell + amount + send, the 10-day chart, the preview card
+//      against the rules, your holding, cash, and all 40 securities to pick from
+//   2. The chart: the full Lightweight Charts chart (real Yahoo OHLC) with the order center beside it
+//   3. After sending: pending orders and how an order executes
+//
+// Data: GET /me/trade (one request) + GET /me/chart/:symbol for the full chart.
+// UI ONLY for now: "send" shows its confirm step and a toast, and sends nothing (POST /me/orders comes
+// with the game engine). The rules are checked live in the app for the preview; the API checks them again.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import type { SecurityView, TradeView } from '../../api/src/contract';
+import { useAuth } from '../auth/AuthProvider';
+import { useTheme } from '../useTheme';
+import { pct } from '../dashboard/format';
+import { EXCHANGE, executionShort, marketLine, money } from '../trade/copy';
+import { checkOrder, clampLevel, defaultLevels, maxAllowed, type Levels, type Side } from '../trade/orderCheck';
+import { useChart, useChartSettings, useTrade } from '../trade/useTrade';
+import { Button } from '../components/dashboard/Button';
+import { Card, Empty } from '../components/dashboard/Card';
+import { CardRow, CardStack } from '../components/dashboard/CardRow';
+import { Chip } from '../components/dashboard/Chip';
+import { MAX_WIDTH } from '../components/dashboard/layout';
+import { MotionProvider, OffsetProvider, useMeasure, useScrollMotion } from '../components/dashboard/motion';
+import { PendingOrdersCard } from '../components/dashboard/PendingOrdersCard';
+import { Accent, Section, Strong } from '../components/dashboard/Section';
+import { BAR_HEIGHT, TopBar } from '../components/dashboard/TopBar';
+import { BigChart } from '../components/trade/BigChart';
+import type { ChartPalette } from '../components/trade/BigChart.types';
+import { LevelInputs, PositionToggle, RiskReward, StatsStrip, type Measurement } from '../components/trade/OrderCenter';
+import { AmountField, QuickAmounts, SendBox, SideToggle, Toast } from '../components/trade/OrderTicket';
+import { PickerCard } from '../components/trade/PickerCard';
+import { TenDayChartCard } from '../components/trade/TenDayChart';
+import { CashCard, PositionCard, PreviewCard, RulesCard } from '../components/trade/TradeCards';
+import { fixed } from '../theme';
+
+const DEFAULT_SYMBOL = 'NVDA';
+const DEFAULT_AMOUNT = '10000';
+const TOAST_MS = 3600;
+
+export default function TradeScreen() {
+  const { colors } = useTheme();
+  const { user } = useAuth();
+  const { data, error, isLoading, reload } = useTrade();
+  const name = user?.displayName || user?.email?.split('@')[0] || 'שחקן';
+
+  if (data) return <TradeView data={data} name={name} />;
+
+  return (
+    <View style={[styles.page, { direction: 'rtl', backgroundColor: colors.page }]}>
+      <View style={styles.center}>
+        {isLoading ? (
+          <ActivityIndicator size="large" color={colors.accent} />
+        ) : (
+          <>
+            <Text style={[styles.error, { color: colors.fg }]}>{error ?? 'משהו השתבש'}</Text>
+            <Pressable onPress={reload} style={[styles.retry, { borderColor: colors.accent }]} accessibilityRole="button">
+              <Text style={{ color: colors.accent, fontWeight: '700' }}>נסו שוב</Text>
+            </Pressable>
+          </>
+        )}
+      </View>
+      <TopBar clock={null} name={name} rankLine={null} active="trade" />
+    </View>
+  );
+}
+
+function TradeView({ data, name }: { data: TradeView; name: string }) {
+  const { colors } = useTheme();
+  const { motion, onScroll } = useScrollMotion();
+  const wrap = useMeasure(0);
+  const scroll = useRef<{ scrollTo: (o: { y: number; animated?: boolean }) => void } | null>(null);
+
+  // ---------- what the player is doing ----------
+  const first = data.securities.find((s) => s.holding)?.symbol ?? data.securities.find((s) => s.symbol === DEFAULT_SYMBOL)?.symbol ?? data.securities[0]?.symbol ?? null;
+  const [symbol, setSymbol] = useState<string | null>(first);
+  const [side, setSide] = useState<Side>('buy');
+  const [amountText, setAmountText] = useState(DEFAULT_AMOUNT);
+  const [posOn, setPosOn] = useState(true);
+  const [measurement, setMeasurement] = useState<Measurement | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const sec = data.securities.find((s) => s.symbol === symbol) ?? null;
+  const usdRate = data.usdIls?.rate ?? null;
+  const toIls = sec?.currency === 'USD' ? usdRate ?? 0 : 1;
+  const priceIls = sec?.price != null && toIls > 0 ? sec.price * toIls : null;
+  const heldIls = sec?.holding?.valueIls ?? 0;
+  const amount = Number(amountText) || 0;
+  const check = checkOrder({ side, amount, cash: data.cash, totalValue: data.totalValue, heldIls, priceIls });
+  const max = maxAllowed(side, data.cash, data.totalValue, heldIls);
+  const today = data.clock?.date ?? null;
+
+  // The position tool starts at the latest price, +8% target and −4% stop.
+  const [levels, setLevels] = useState<Levels>(() => defaultLevels(sec?.price ?? 1));
+  useEffect(() => {
+    if (sec?.price) setLevels(defaultLevels(sec.price));
+  }, [sec?.symbol, sec?.price]);
+  const onLevel = useCallback((k: keyof Levels, v: number) => setLevels((l) => clampLevel(l, k, v)), []);
+
+  // ---------- chart data + settings ----------
+  const { settings, change, savedAt } = useChartSettings(data.chartSettings);
+  const tf = settings?.tf ?? 'D';
+  const { chart, error: chartError } = useChart(sec?.hasChart ? sec.symbol : null, tf);
+  const shown = useMemo(() => {
+    if (!chart || !settings) return [];
+    const n = tf === 'W' ? Math.ceil(settings.range / 5) : settings.range;
+    return chart.bars.slice(-n);
+  }, [chart, settings, tf]);
+
+  const palette = useMemo<ChartPalette>(
+    () => ({
+      bg: colors.surface, fg: colors.faint, fg2: colors.fg, grid: colors.line, border: colors.line2,
+      surface: colors.surface, surface2: colors.surface2, line: colors.line, line2: colors.line2,
+      muted: colors.muted, text: colors.fg, faint: colors.faint,
+      accent: colors.accent, accentInk: colors.accentInk, accentTint: colors.accentTint,
+      warn: fixed.warnFill, warnInk: fixed.warnFillInk,
+    }),
+    [colors],
+  );
+
+  // ---------- actions ----------
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), TOAST_MS);
+  }, []);
+  useEffect(() => () => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+  }, []);
+
+  const pick = (s: string) => {
+    setSymbol(s);
+    setMeasurement(null);
+    scroll.current?.scrollTo({ y: 0, animated: true });
+  };
+  const confirm = () => showToast('תצוגה בלבד: הפקודה לא נשלחה. שליחת פקודות תחובר עם מנוע המשחק.');
+  const toTicket = () => scroll.current?.scrollTo({ y: 0, animated: true });
+
+  const orderKey = `${symbol}:${side}:${amountText}`;
+  const execLine = sec?.execution ? `${executionShort(sec.execution, today)} · ${EXCHANGE[sec.exchange]}` : '';
+
+  if (!sec) {
+    return (
+      <View style={[styles.page, { direction: 'rtl', backgroundColor: colors.page }]}>
+        <View style={[styles.wrap, styles.emptyWorld]}>
+          <Card title="העולם עוד לא נטען" sub="אין עדיין ניירות במשחק">
+            <Empty>מנהל המשחק טוען את 40 הניירות והמחירים (npm run seed:world). אחרי זה המסחר ייפתח כאן.</Empty>
+          </Card>
+        </View>
+        <TopBar clock={data.clock} name={name} rankLine={null} active="trade" />
+      </View>
+    );
+  }
+
+  const us = sec.currency === 'USD';
+  const ticket = (
+    <View style={styles.ticket}>
+      <SideToggle side={side} onChange={setSide} />
+      <View>
+        <AmountField value={amountText} onChange={setAmountText} />
+        <QuickAmounts side={side} max={max} onPick={(v) => setAmountText(String(v))} />
+      </View>
+      <SendBox side={side} amount={amount} ok={check.ok} execLine={execLine} orderKey={orderKey} onConfirm={confirm} />
+    </View>
+  );
+
+  return (
+    <MotionProvider value={motion}>
+      <View style={[styles.page, { direction: 'rtl', backgroundColor: colors.page }]}>
+        <Animated.ScrollView ref={scroll as never} contentContainerStyle={styles.scroll} onScroll={onScroll} scrollEventThrottle={16}>
+          <View style={styles.wrap} onLayout={wrap.onLayout}>
+            <OffsetProvider value={wrap.abs}>
+              {/* 1. The order */}
+              <Section
+                first
+                eyebrow={`מסחר · מזומן זמין ₪${Math.round(data.cash).toLocaleString('en-US')}`}
+                title={
+                  <>
+                    <Text style={[styles.pill, { color: us ? colors.muted : colors.accent, backgroundColor: us ? colors.surface2 : colors.accentTint }]}>{` ${sec.symbol} `}</Text>
+                    {'\n'}
+                    <Strong>{sec.nameHe}</Strong>
+                  </>
+                }
+                body={
+                  <View style={styles.priceBlock}>
+                    <View style={styles.priceRow}>
+                      <Text style={[styles.price, { color: colors.fg }]}>{sec.price === null ? '–' : money(sec.price, sec.currency)}</Text>
+                      {sec.dayChangePct !== null ? (
+                        <Chip variant={sec.dayChangePct >= 0 ? 'up' : 'down'}>{`${sec.dayChangePct >= 0 ? '▲' : '▼'} ${pct(Math.abs(sec.dayChangePct), { digits: 1, signed: false })} ביום האחרון`}</Chip>
+                      ) : null}
+                    </View>
+                    <View style={styles.mkt}>
+                      <View style={[styles.dot, { backgroundColor: sec.isOpen ? colors.accent : colors.faint }]} />
+                      <Text style={[styles.mktText, { color: colors.faint }]}>{marketLine(sec, today)}</Text>
+                    </View>
+                  </View>
+                }
+                actions={ticket}
+              >
+                <CardRow>
+                  <TenDayChartCard security={sec} today={today} />
+                </CardRow>
+                <CardRow>
+                  <PreviewCard security={sec} side={side} amount={amount} check={check} cash={data.cash} usdRate={usdRate} onSend={toTicket} />
+                  <CardStack top={<PositionCard security={sec} />} bottom={<CashCard cash={data.cash} totalValue={data.totalValue} usd={data.usdIls} />} />
+                </CardRow>
+                <CardRow>
+                  <PickerCard securities={data.securities} selected={sec.symbol} onPick={pick} taseOpen={data.clock?.markets.tase.isOpen ?? false} />
+                </CardRow>
+              </Section>
+
+              {/* 2. The chart + the order center */}
+              <Section
+                alt
+                eyebrow={`מרכז הפקודות · ${sec.symbol}`}
+                title={
+                  <>
+                    {'תכנן על הגרף.\n'}
+                    <Accent>ואז שלח.</Accent>
+                  </>
+                }
+                body="כלי הפוזיציה מצייר כניסה, יעד וסטופ לסכום הפקודה. גרור את התוויות על הגרף או הקלד מחירים כאן."
+                actions={
+                  <View style={styles.center2}>
+                    <SideToggle side={side} onChange={setSide} />
+                    <AmountField value={amountText} onChange={setAmountText} compact />
+                    <PositionToggle on={posOn} onToggle={() => setPosOn((o) => !o)} />
+                    <LevelInputs levels={levels} currency={sec.currency} onChange={onLevel} />
+                    <RiskReward amount={amount} levels={levels} currency={sec.currency} entryIls={levels.entry * toIls} />
+                    <Text style={[styles.note, { color: colors.faint }]}>
+                      {side === 'sell' ? 'כלי הפוזיציה מתכנן קנייה (לונג). במשחק אין שורט.' : 'במשחק אין פקודות סטופ ויעד. הכלי עוזר לתכנן; הפקודה מתבצעת בשער הבא.'}
+                    </Text>
+                    <SendBox side={side} amount={amount} ok={check.ok} execLine={execLine} orderKey={orderKey} onConfirm={confirm} />
+                  </View>
+                }
+              >
+                <CardRow>
+                  <Card title={`${sec.nameHe} · ${tf === 'W' ? 'שבועי' : 'יומי'}`} sub={`נתוני OHLC אמיתיים · ${EXCHANGE[sec.exchange]} · ${us ? 'דולרים' : 'שקלים'} · עד הסגירה האחרונה בשעון המשחק`}>
+                    {settings ? (
+                      <BigChart
+                        symbol={sec.symbol}
+                        currency={sec.currency}
+                        bars={sec.hasChart ? chart?.bars ?? null : []}
+                        error={chartError}
+                        settings={settings}
+                        onSettings={change}
+                        savedAt={savedAt}
+                        palette={palette}
+                        levels={levels}
+                        onLevels={setLevels}
+                        onLevel={onLevel}
+                        posOn={posOn}
+                        onPosToggle={() => setPosOn((o) => !o)}
+                        amountIls={amount}
+                        toIls={toIls}
+                        onMeasure={setMeasurement}
+                      />
+                    ) : null}
+                  </Card>
+                </CardRow>
+                <CardRow>
+                  <StatsStrip bars={shown} currency={sec.currency} tf={tf} amount={amount} heldIls={heldIls} symbol={sec.symbol} measurement={measurement} />
+                </CardRow>
+              </Section>
+
+              {/* 3. After sending */}
+              <Section
+                eyebrow="אחרי השליחה"
+                title={
+                  <>
+                    {'הפקודה מחכה\n'}
+                    <Accent>לשער הבא.</Accent>
+                  </>
+                }
+                body="אתה לא קובע מחיר. פקודה שנשלחה כשהשוק פתוח מתבצעת בשער הסגירה של היום. כשהשוק סגור, בשער הפתיחה של יום המסחר הבא."
+                actions={<Button label="לכל הפקודות" disabled hint="יחובר כשמסך הפקודות ייבנה" />}
+              >
+                <CardRow>
+                  <PendingOrdersCard orders={{ total: data.pendingOrders.length, next: data.pendingOrders }} today={today} />
+                  <RulesCard />
+                </CardRow>
+              </Section>
+            </OffsetProvider>
+            <Text style={[styles.footer, { color: colors.faint, borderTopColor: colors.line }]}>
+              שעון העולם · תל אביב 10:00–17:30 (יום ו׳ עד 13:50) · ניו יורק 16:30–23:00 שעון ישראל · כל השחקנים חיים באותו שעון.
+            </Text>
+          </View>
+        </Animated.ScrollView>
+
+        <Toast message={toast} />
+        <TopBar clock={data.clock} name={name} rankLine={null} active="trade" />
+      </View>
+    </MotionProvider>
+  );
+}
+
+const styles = StyleSheet.create({
+  page: { flex: 1 },
+  scroll: { paddingTop: BAR_HEIGHT, paddingBottom: 110 },
+  wrap: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', paddingHorizontal: 16 },
+  emptyWorld: { paddingTop: BAR_HEIGHT + 56 },
+  footer: { paddingTop: 32, borderTopWidth: 1, fontSize: 13 },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 },
+  error: { fontSize: 16 },
+  retry: { borderWidth: 1.5, borderRadius: 8, paddingVertical: 10, paddingHorizontal: 24 },
+  pill: { fontSize: 16, fontWeight: '600', borderRadius: 8 },
+  priceBlock: { marginTop: 12 },
+  priceRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 10 },
+  price: { fontSize: 38, fontWeight: '500', letterSpacing: -0.5, fontVariant: ['tabular-nums'] },
+  mkt: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 },
+  dot: { width: 7, height: 7, borderRadius: 4 },
+  mktText: { fontSize: 12.5 },
+  ticket: { width: '100%', maxWidth: 320, gap: 14 },
+  center2: { width: '100%', maxWidth: 380, gap: 12 },
+  note: { fontSize: 11.5 },
+});

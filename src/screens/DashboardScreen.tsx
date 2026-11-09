@@ -5,6 +5,7 @@
 // All data comes from one request (GET /me/dashboard). Empty world = every card says what will fill it.
 
 import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import type { Dashboard } from '../../api/src/contract';
 import { useAuth } from '../auth/AuthProvider';
 import { useTheme } from '../useTheme';
@@ -26,7 +27,7 @@ import { BAR_HEIGHT, TopBar } from '../components/dashboard/TopBar';
 import { UsdRateCard } from '../components/dashboard/UsdRateCard';
 import { WorldClockCard } from '../components/dashboard/WorldClockCard';
 
-const NOT_BUILT = 'יחובר כשמסך הפקודות ייבנה';
+const toTrade = () => router.navigate('/trade');
 const STARTING_CASH = 1_000_000;
 
 export default function DashboardScreen() {
@@ -85,13 +86,13 @@ export function DashboardView({ data, isAdmin, name, rankLine }: { data: Dashboa
           </View>
         </Animated.ScrollView>
 
-        {/* Floating "new order" button: shown where the design has it, enabled once the order form exists. */}
+        {/* Floating "new order" button: opens the trading screen. */}
         <View style={styles.fab} pointerEvents="box-none">
-          <Button label="+ פקודה חדשה" variant="primary" disabled hint={NOT_BUILT} />
+          <Button label="+ פקודה חדשה" variant="primary" onPress={toTrade} />
         </View>
 
         {/* Last, so it draws on top: the bar floats over the scrolling page. */}
-        <TopBar clock={data.clock} name={name} rankLine={rankLine} />
+        <TopBar clock={data.clock} name={name} rankLine={rankLine} active="dashboard" />
       </View>
     </MotionProvider>
   );
@@ -119,7 +120,7 @@ function Content({ d, isAdmin }: { d: Dashboard; isAdmin: boolean }) {
         body={portfolioSummary(d)}
         actions={
           <>
-            <Button label="+ פקודה חדשה" variant="primary" disabled hint={NOT_BUILT} />
+            <Button label="+ פקודה חדשה" variant="primary" onPress={toTrade} />
             <Button label="לטבלת השבוע" disabled hint="יחובר כשמסך הטבלה ייבנה" />
           </>
         }
@@ -158,7 +159,7 @@ function Content({ d, isAdmin }: { d: Dashboard; isAdmin: boolean }) {
           )
         }
         body={holdingsSummary(d.holdings)}
-        actions={<Button label="כל 20 הניירות בעולם" disabled hint="יחובר כשמסך המסחר ייבנה" />}
+        actions={<Button label="כל 40 הניירות בעולם" onPress={toTrade} />}
       >
         {d.holdings.length === 0 ? (
           <CardRow>

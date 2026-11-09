@@ -8,14 +8,21 @@ import type { Pool } from 'pg';
 import { requireAuth, type AppEnv, type VerifyToken } from './auth.js';
 import { setTheme, upsertUser } from './users.js';
 import { getDashboard } from './dashboard.js';
+import { getTrade, saveChartSettings } from './trade.js';
+import { cachedDaily, fetchYahooDaily, getChart, type FetchDaily } from './chart.js';
+import { pickChartSettings } from './chartSettings.js';
 
 export type Deps = {
   db: Pool;
   verifyToken: VerifyToken;
   corsOrigins: string[];   // web origins allowed to call the API, e.g. the Firebase Hosting domains
+  fetchDaily?: FetchDaily; // where chart bars come from; default = Yahoo behind a 12-hour cache. Tests pass a fake.
 };
 
-export function createApp({ db, verifyToken, corsOrigins }: Deps) {
+// A game ticker: letters, digits, '-' (BRK-B). Checked before it reaches SQL or a Yahoo URL.
+const SYMBOL = /^[A-Z0-9-]{1,10}$/;
+
+export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDaily(fetchYahooDaily) }: Deps) {
   const app = new Hono<AppEnv>();
 
   // The web app and the API are on different domains, so the browser asks permission first (CORS).
@@ -66,6 +73,38 @@ export function createApp({ db, verifyToken, corsOrigins }: Deps) {
     const updated = await setTheme(db, c.get('user').uid, theme);
     if (!updated) return c.json({ error: 'user not found, call POST /me first' }, 404);
     return c.json(updated);
+  });
+
+  // Everything the trading screen shows, in one request. Read-only.
+  me.get('/trade', async (c) => {
+    const trade = await getTrade(db, c.get('user').uid);
+    if (!trade) return c.json({ error: 'user not found, call POST /me first' }, 404);
+    return c.json(trade);
+  });
+
+  // Real OHLC + volume for the full chart, cut at the world clock. ?tf=D (default) or W.
+  me.get('/chart/:symbol', async (c) => {
+    const symbol = c.req.param('symbol');
+    const tf = c.req.query('tf') ?? 'D';
+    if (!SYMBOL.test(symbol)) return c.json({ error: 'bad symbol' }, 400);
+    if (tf !== 'D' && tf !== 'W') return c.json({ error: 'tf must be "D" or "W"' }, 400);
+    try {
+      const chart = await getChart(db, fetchDaily, symbol, tf);
+      if (!chart) return c.json({ error: 'no chart for this symbol' }, 404);
+      return c.json(chart);
+    } catch (err) {
+      console.error('Chart source failed', err);
+      return c.json({ error: 'chart source unavailable' }, 502);
+    }
+  });
+
+  // Body: any of the ChartSettings keys. Unknown keys and bad values are ignored; nothing valid = 400.
+  me.patch('/chart-settings', async (c) => {
+    const valid = pickChartSettings(await c.req.json().catch(() => null));
+    if (!valid) return c.json({ error: 'no valid chart setting in the body' }, 400);
+    const saved = await saveChartSettings(db, c.get('user').uid, valid);
+    if (!saved) return c.json({ error: 'user not found, call POST /me first' }, 404);
+    return c.json(saved);
   });
 
   app.route('/me', me);

@@ -1,11 +1,12 @@
 // The floating top bar: logo, page tabs, the world clock, and the avatar that opens the user menu (DD-09, DD-12).
 // It lies OVER the scrolling page (absolute), so the cards slide underneath it like in the mock-up.
 // Web: see-through page color + blur, no border. Phones: solid page color (no blur on native).
-// Only "סקירה" (this page) exists so far; the other tabs are shown disabled until their screens are built.
+// "סקירה" (/dashboard) and "מסחר" (/trade) exist; the other tabs are shown disabled until their screens are built.
 
 import { useState } from 'react';
 import { Animated, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import type { ClockView } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
 import { dayLabel } from '../../dashboard/format';
@@ -13,14 +14,21 @@ import { MAX_WIDTH, useLayout } from './layout';
 import { useLoop } from './motion';
 import { UserMenu } from './UserMenu';
 
-const TABS = ['סקירה', 'מסחר', 'פקודות', 'טבלה', 'היסטוריה'];
+export type Page = 'dashboard' | 'trade';
+const TABS: { label: string; page: Page | null }[] = [
+  { label: 'סקירה', page: 'dashboard' },
+  { label: 'מסחר', page: 'trade' },
+  { label: 'פקודות', page: null },
+  { label: 'טבלה', page: null },
+  { label: 'היסטוריה', page: null },
+];
 export const BAR_HEIGHT = 68;
 const LOGO_HEIGHT = 40;
 const LOGO_RATIO = 577 / 624;   // assets/logo.png
 
-type Props = { clock: ClockView | null; name: string; rankLine: string | null };
+type Props = { clock: ClockView | null; name: string; rankLine: string | null; active?: Page };
 
-export function TopBar({ clock, name, rankLine }: Props) {
+export function TopBar({ clock, name, rankLine, active = 'dashboard' }: Props) {
   const { colors } = useTheme();
   const { isPhone } = useLayout();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -41,18 +49,20 @@ export function TopBar({ clock, name, rankLine }: Props) {
           contentContainerStyle={styles.tabsContent}
         >
           <View style={styles.tabs} accessibilityRole="tablist">
-            {TABS.map((tab, i) => {
-              const on = i === 0;
+            {TABS.map(({ label, page }) => {
+              const on = page === active;
+              const built = page !== null;
               return (
                 <Pressable
-                  key={tab}
-                  disabled={!on}
+                  key={label}
+                  disabled={!built}
+                  onPress={built && !on ? () => router.navigate(`/${page}`) : undefined}
                   accessibilityRole="tab"
-                  accessibilityState={{ selected: on, disabled: !on }}
+                  accessibilityState={{ selected: on, disabled: !built }}
                   style={[styles.tab, on && { backgroundColor: colors.accent }]}
                 >
-                  <Text style={[styles.tabText, { color: on ? colors.accentInk : colors.muted }, on && { fontWeight: '600' }, !on && { opacity: 0.6 }]}>
-                    {tab}
+                  <Text style={[styles.tabText, { color: on ? colors.accentInk : colors.muted }, on && { fontWeight: '600' }, !built && { opacity: 0.6 }]}>
+                    {label}
                   </Text>
                 </Pressable>
               );

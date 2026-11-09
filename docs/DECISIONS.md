@@ -4,6 +4,8 @@ Gaps in the brief, and the choices we made. Each entry: what we decided, why, an
 
 ## D-001: Trusted game logic runs in our API
 
+**Status:** Active. The "one transaction" part is replaced by batches (D-021).
+
 **Decision:** Players can only create *pending* orders. When an admin advances the world clock, the API (`api/`, on Railway) runs the execution logic and writes trades, cash, holdings and snapshots to Postgres in **one transaction**. Only users with the `admin` role can call it.
 
 **Why:**
@@ -65,7 +67,7 @@ The API loads the data, calls this function, and saves the result.
 
 ## D-005: Cash and holdings are separate rows, changed together
 
-**Status:** Active (planned for Phase 5).
+**Status:** Replaced by D-019 (09.11.2026). `holdings` becomes `positions`, and cash moves through a double-entry ledger.
 
 **Decision:** `portfolios(uid, cash)` and `holdings(uid, symbol, units)`. Money and units are `NUMERIC`, never float (fractions of a unit are allowed).
 
@@ -115,4 +117,180 @@ The API loads the data, calls this function, and saves the result.
 
 **Why:** The leaderboard is visible to every player, and emails are private.
 
-**Open:** Let players choose a name (and check it for abuse).
+**Decided 09.11.2026:** players can't choose a name. Choosing one would need an abuse check, and the name from Google is enough for a demo.
+
+## D-011: 40 securities, not 20
+
+**Status:** Active (08.11.2026).
+
+**Decision:** The world has 40 securities: 20 large TASE stocks and 20 large US stocks (NYSE + NASDAQ), all the ones in the local price database. The list lives in `api/src/world/securities.ts` and is copied into the game by `npm run seed:world`.
+
+## D-012: Trades use the stored open/close; charts use live Yahoo OHLC
+
+**Status:** Active (08.11.2026).
+
+**Decision:** Orders execute only at the daily open/close stored in our `prices` table (D-003). The full chart on the trading screen shows real daily OHLC + volume fetched from Yahoo by the API (`GET /me/chart/:symbol`), cut at the last day already closed in world time.
+
+**Why:** Candles need high, low and volume, which we never stored. Re-scraping them would add data the game never uses for money. Keeping money on our own copy means a Yahoo outage or a change in Yahoo's history can never change a trade or a score.
+
+**Known weaknesses:** Yahoo is unofficial and can rate-limit or change. The API caches each symbol for 12 hours. If Yahoo is down, only the chart is affected. Yahoo's numbers may differ slightly from ours (rounding, later corrections).
+
+## D-013: The world starts on Monday 6 November 2023, 09:00 Israel time
+
+**Status:** Active. Changed 09.11.2026 (was Monday 5 January 2026). Easy to change before launch: `UPDATE world_clock ...`.
+
+**Decision:** The world starts on the first day of the price history: 2023-11-06, 09:00 Israel time, one hour before TASE opens. Every one of the 40 securities and USD/ILS has data from that day. `npm run seed:world` sets the clock only if it was never set.
+
+**Why:** It uses all 3 years of history (about 150 game weeks) instead of the last 43.
+
+**Known weaknesses:**
+- Until 2026, TASE traded Sunday to Thursday. Yahoo has no TASE Sundays, and TASE was closed on Fridays. So in the game, TASE trades **Monday to Thursday until 2 January 2026**, then Monday to Friday. The calendar (D-016) records this.
+- The game ends when the history does (TASE 2026-11-04, US 2026-11-05) unless we scrape again.
+
+## D-014: The smallest order is ₪100
+
+**Status:** Active in the app's preview (08.11.2026). The game engine will enforce it too.
+
+**Decision:** Orders under ₪100 are refused.
+
+**Why:** Fractional units make ₪1 orders possible. They add rows and noise and change nothing in a ₪1,000,000 portfolio. A floor also slows down order spam.
+
+## D-015: Chart settings are saved per player
+
+**Status:** Active (08.11.2026).
+
+**Decision:** The full chart's settings (type, timeframe, range, background, colors, indicators) are saved in `users.chart_settings` (JSONB) through `PATCH /me/chart-settings`. The API keeps only known keys with allowed values. Tools like the ruler and the position tool are not saved.
+
+**Why:** The same reason as the theme (D-007): the chart looks the same on any device. A strict whitelist means the column can't fill with junk or be used to store anything else.
+
+## D-016: A market calendar table holds every weekday a market is closed
+
+**Status:** Active (09.11.2026). Table not built yet.
+
+**Decision:** A `market_closures(market, day, reason)` table has one row for every **Monday to Friday** on which TASE or the US is closed. Saturdays and Sundays are a rule in code and get no rows. The rows are seeded from the price data (a weekday with no price row is a closed day), then checked by hand and given a reason ("Passover", "Thanksgiving", "TASE closed on Fridays until 2026").
+
+**What the data shows (2023-11-06 to 2026-11-04):**
+- TASE: 156 closed weekdays. 112 of them are Fridays before 2026, and 44 are holidays.
+- US: 31 closed weekdays.
+- On 28 days only TASE is open, on 154 only the US is open (mostly the Fridays before 2026), and on 3 weekdays both are closed.
+- In 2026 alone, the markets differ on 22 weekdays (for example, 01.04 to 02.04 TASE is closed for Passover while the US is open, and 03.04 the US is closed for Good Friday while TASE is open).
+
+**Why:** The two markets have different holidays, so "is the market open?" depends on the day as well as the hour. A table makes the calendar visible and easy to fix by hand. Weekends never change, so they don't need rows.
+
+**Known weaknesses:** A day missing from Yahoo by mistake looks like a holiday until someone checks it. Early-close days (US half days, TASE holiday eves) use the normal hours, because we only have one open and one close per day.
+
+## D-017: The world clock runs in Israel time and moves in three ways
+
+**Status:** Active (09.11.2026). Not built yet.
+
+**Decision:**
+- World time is shown and calculated in **Israel time**. US hours (9:30 to 16:00 New York) are converted, usually to 16:30 to 23:00 Israel time. For the few weeks a year when only one country is on summer time, the conversion moves by an hour.
+- **Move 1, "to the close":** if a market is open, jump to its next close (TASE 17:30, Friday 13:50; US 23:00 Israel time).
+- **Move 2, "to the next open":** if no market is open, jump to the next open. Weekends and days when both markets are closed (D-016) are skipped.
+- **Move 3, running:** when no admin jumps, world time runs at real speed from where it was left. The clock row stores the world time and the real time it was set, so `now = world_at + (real now − real_at)`. When the running clock reaches a day when both markets are closed, it skips straight to the next trading day.
+- Every move runs **all events in between, in time order**. At each open and close, it executes the orders due then and saves a value snapshot for every player.
+- **Only admins** can jump the clock, including on the live link. The README explains how a reviewer gets the admin role. A ticker in the API (every minute) handles events the running clock passes. The clock never goes backwards.
+- **End of history:** the clock stops at the last day with prices (US 05.11.2026). Moves past it are refused, and the game freezes there.
+
+**Why:** Jumps let reviewers play a week in minutes. The running clock means the world never freezes while the admin is away.
+
+## D-018: Buy in shekels; sell always in units
+
+**Status:** Active. Changed 09.11.2026 (a sell was a ₪ amount or units).
+
+**Decision:**
+- A buy is always a ₪ amount (the brief's rule). The order stores `amount_ils`.
+- A sell is always a **number of units**. The order stores `units`, which are locked when the order is sent.
+- The player may type a ₪ amount; the app turns it into units at the last known price before sending. "Sell all" sends every free unit.
+- The ₪ received is worked out at execution: units × execution price × USD/ILS rate.
+- A `CHECK` constraint makes buys carry only `amount_ils` and sells only `units`.
+
+**Why:** Units are what the player owns, so locking and selling them is exact. There are no leftover fractions, and a pending sell can never ask for more than the player holds.
+
+## D-019: Money is kept in a double-entry ledger, with stored balances
+
+**Status:** Active. Rewritten 09.11.2026. Not built yet. Diagram and a worked example: [Portfolio League Money Model](https://claude.ai/artifact/FHvdTjTcr7Nohn5SmwQyuG).
+
+**Decision:**
+- **Ledger.** Every money event is a `journals` row (start, reserve, release, buy, sell) with two or more `ledger_entries` rows that **add up to exactly 0**. A deferred constraint trigger refuses any transaction whose journal doesn't balance, and another trigger refuses UPDATE and DELETE. Mistakes are fixed with a reversing journal.
+- **Accounts per player:**
+  - `cash_free`
+  - `cash_locked` (pending buys)
+  - `stock_cost:<symbol>` (₪ paid for the units held)
+  - `realized_pnl`
+  - `capital` (the starting ₪1,000,000)
+  - Sign rule: plus = what the player has (cash, stock), minus = where it came from (capital, gains). A ₪100 gain is written as −100 and shown as +100.
+- **Stored balances.** The totals are columns, written in the same transaction as the entries, so a screen never adds anything up:
+  - `portfolios`: `cash`, `reserved_cash`, `available_cash` (a generated column), `holdings_value`, `equity`, `realized_pnl`, `unrealized_pnl`, `marked_at`
+  - `positions`: `units`, `reserved_units`, `avg_cost_ils`, `cost_basis_ils`, `realized_pnl_ils`, `market_value_ils`, `unrealized_pnl_ils`, `marked_at`
+  - After every clock event, a check confirms that each stored balance equals its ledger account. A mismatch stops the runner and raises an alert.
+- **Positions** replace `holdings`. A buy from 0 units starts a new `open` row, and at 0 units it becomes `closed` and stays as history. A partial unique index allows only one open row per player per stock. Units are not money, so they live on `positions`; the executed orders (`filled_units`) can rebuild them.
+- **Orders** carry the fill: `fill_price`, `fx_rate`, `filled_units`, `filled_ils`, `realized_pnl_ils`, `position_id`. There is no executions table, because every order fills once, in full, or is rejected. `client_order_id` is unique per player, so a retried request can't create a second order.
+- **Profit is measured at average cost.** A sale's gain = units sold × (execution price × rate − average cost per unit). A sale never changes the average; only a buy does.
+- **Unrealized gain** = market value − cost basis. It is not a ledger entry, because nothing was paid or received. The runner updates it at every open and close (prices only change then) and stores it.
+- All money and units are `NUMERIC`: ₪ to agorot, units to 8 decimals.
+
+**Example (buy 10 units at ₪100, sell them at ₪110):**
+
+| Event | Entries (sum = 0) |
+|-------|-------------------|
+| Start | cash_free +1,000 · capital −1,000 |
+| Send buy | cash_free −1,000 · cash_locked +1,000 |
+| Fill buy | cash_locked −1,000 · stock_cost +1,000 |
+| Fill sell | cash_free +1,100 · stock_cost −1,000 · realized_pnl −100 |
+
+The balances afterwards: cash_free 1,100, stock_cost 0, realized_pnl −100 (shown as a +₪100 gain).
+
+**Sending an order:** in one transaction, lock the player's portfolio row (`SELECT … FOR UPDATE`), check free cash (buy) or free units (sell), insert the order, then write the reserve journal (buy) or add to `reserved_units` (sell). **An order without enough free cash or units is refused when sent.**
+
+**Why double entry:** a bug that creates money is the worst bug a trading game can have. With single entry, code that adds sale cash but forgets to remove the stock would go unnoticed. With double entry, the database refuses that transaction. It is also how banks and brokers keep their books, and it lets every number on screen be traced to the entries behind it.
+
+**Cost:** two or three entries per event instead of one, a short list of account types, and about half a day more work.
+
+## D-020: The 20% limit is checked again at execution, at the execution price
+
+**Status:** Active (09.11.2026). Not built yet.
+
+**Decision:**
+- **When sent:** checked with the last known price. A breach is refused, and the preview shows it.
+- **When executed:** checked again with the real execution price: (current holding value + buy amount) ÷ portfolio value, both at that moment's prices, must be ≤ 20%. Portfolio value counts all cash, including reserved cash. A breach rejects the order, releases its cash and gives the reason ("would be 21.3% of the portfolio").
+- Several buys of the same stock at one event are checked one by one, in the order they were sent.
+- We **never** sell on the player's behalf. A holding that grows past 20% because its price rose is allowed. The rule applies only at the moment of purchase.
+
+**Why:** An order sent while the market is open fills at that day's close. A stock at 19% when the order is sent can be at 21% by the close. Only a check at the real execution price closes that gap.
+
+## D-021: The orders table is the queue
+
+**Status:** Active (09.11.2026). Not built yet. Replaces D-001's "one transaction per clock advance".
+
+**Decision:**
+- **Sending** is a short transaction that locks only that player's portfolio row, so players never wait for each other. The limit is **5 orders per minute** per player.
+- **Sending vs. clock moves:** sending an order takes a shared lock on the `world_clock` row (`FOR SHARE`), and a clock move takes an exclusive one. An order sent at 17:29 can't slip in after the runner has already passed the 17:30 close.
+- **Execution** happens at clock events, not when an order is sent. A rush of orders at market open only adds `pending` rows; nothing is executed in that rush.
+- **The runner:** only one runs at a time (`pg_advisory_lock`). It takes pending orders due by the event (`executes_at`, then `id`) in batches of about 500 per transaction. Each order changes status as it runs, so after a crash a retry continues where it stopped and nothing runs twice. The clock moves to its new time only after every event in between is done.
+- No Redis or BullMQ.
+
+**Why:** Postgres already gives us ordering, locking and retries. A separate queue would be one more service to run and watch while we're away, with nothing gained at this size.
+
+**What would make us change it:** if one event takes more than about a minute, or has more than about 100,000 orders, move the runner to its own worker service (still Postgres, with `FOR UPDATE SKIP LOCKED`).
+
+## D-022: Each market's status comes from the calendar and is shown separately
+
+**Status:** Active (09.11.2026). Not built yet.
+
+**Decision:**
+- `sessionOn`, `isMarketOpen`, `executionFor` and the clock moves all read the calendar (D-016). There is one answer to "is TASE open?", and the screens, the order engine and the clock all use it. Today `sessionOn` knows only weekdays, so it shows TASE open on holidays and on Fridays before 2026.
+- The API returns each market's status: `open`, `pre_open`, `after_close`, `weekend` or `holiday`, plus the reason ("פסח", "Thanksgiving", "הבורסה בת״א סגורה בימי שישי עד 2026") and the next open time.
+- **Dashboard:** the top bar shows two status chips, TASE and New York, each open or closed. When only one market trades that day, a line says so ("היום רק ניו יורק פתוחה · ת״א סגורה: פסח"). The world clock card shows "closed today" with the reason and the next open.
+- **Trading screen:** each security shows its own market's status. When that market is closed, the ticket says when the order will run ("השוק סגור · יתבצע בפתיחה, יום ב׳ 10:00").
+- The clock's "to the next open" move skips any day on which neither market opens.
+
+**Why:** Players need to know before they send an order whether it fills at today's close or at a later open. On the 182 days when only one market trades, a single "market open" light would be wrong for half the stocks.
+
+## D-023: A rejected order shows a toast
+
+**Status:** Active (09.11.2026). Not built yet.
+
+**Decision:** When an order is rejected, the player sees a toast with the reason the next time the app loads their data. A journal page that lists every rejected order comes later.
+
+**Why:** A rejection happens at a clock event, usually while the player is away. Without a message they would only notice that their cash didn't change.

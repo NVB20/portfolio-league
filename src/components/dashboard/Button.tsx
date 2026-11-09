@@ -1,4 +1,4 @@
-// Pill buttons from the mock-up: primary (accent fill), outline, and ink (dark fill inside an inverse card).
+// primary (accent fill), outline, and ink (dark fill inside an inverse card).
 // `disabled` is used for actions whose screen isn't built yet (order form, full leaderboard).
 
 import { Pressable, StyleSheet, Text } from 'react-native';

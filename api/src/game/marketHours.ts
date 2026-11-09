@@ -39,6 +39,33 @@ export function lastClosedDay(market: Market, instant: Date): string {
   return s !== null && minutes >= s.closeMin ? date : addDays(date, -1);
 }
 
+export type Execution = {
+  priceType: 'open' | 'close';
+  day: string;   // the trading day whose open/close is used (Israel calendar date)
+  at: Date;      // the instant that price happens
+};
+
+// When an order sent at `instant` runs (brief, rule 3):
+//   market open now   -> today's close
+//   market closed now -> the next trading day's open (later today, if the market hasn't opened yet)
+// Holidays are not known here; the engine handles a day with no price row.
+export function executionFor(market: Market, instant: Date): Execution {
+  const { date, minutes } = zonedParts(instant, ISRAEL);
+  const today = sessionOn(market, date);
+  if (today && minutes >= today.openMin && minutes < today.closeMin) {
+    return { priceType: 'close', day: date, at: zonedToInstant(date, today.closeMin, ISRAEL) };
+  }
+  if (today && minutes < today.openMin) {
+    return { priceType: 'open', day: date, at: zonedToInstant(date, today.openMin, ISRAEL) };
+  }
+  for (let i = 1; i <= 7; i++) {
+    const day = addDays(date, i);
+    const s = sessionOn(market, day);
+    if (s) return { priceType: 'open', day, at: zonedToInstant(day, s.openMin, ISRAEL) };
+  }
+  throw new Error(`no ${market} session in the 7 days after ${date}`);   // impossible: both markets trade on weekdays
+}
+
 // Is `market` open at this instant? Open includes the opening minute, not the closing one.
 export function isMarketOpen(market: Market, instant: Date): boolean {
   const { date, minutes } = zonedParts(instant, ISRAEL);

@@ -45,6 +45,7 @@ function GuardedStack() {
       <Stack.Protected guard={user !== null} redirectTo="/login">
         <Stack.Screen name="index" />
         <Stack.Screen name="dashboard" />
+        <Stack.Screen name="trade" />
       </Stack.Protected>
     </Stack>
   );

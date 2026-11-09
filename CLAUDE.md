@@ -21,9 +21,10 @@ See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript, 
 - **Firebase knows who the user is; the API and Postgres decide what they may do.** Firebase handles login and the JWT. The API checks that token on every request.
 - **The app never talks to Postgres directly.** Every read and write goes through the API (`src/api.ts` → `api/`).
 - **The API is the permission layer.** Every endpoint checks the token and the user's roles. Players can never write cash, holdings, prices, the clock, scores or roles. Roles are changed only with SQL.
-- **Trusted game logic (order execution, scoring) runs in the API**, in one transaction (D-001).
+- **Trusted game logic (order execution, scoring) runs in the API** (D-001), in batched transactions that are safe to retry (D-021).
+- **Money is double-entry (D-019).** Every cash event is a journal whose ledger entries sum to 0. Balances are stored columns, updated in the same transaction. Screens never add money up.
 - **Game logic is pure TypeScript** with no database or framework imports, so it can be unit tested.
-- **Schema changes are migrations** in `api/migrations/`. Never edit a migration that has already run; add a new one.
+- **Schema changes are migrations** in `api/migrations/`. Never edit a migration that has already run; add a new one. Every new migration also updates [docs/SCHEMA.md](docs/SCHEMA.md) (tables, fields, indexes, relationships) in the same commit.
 - **Money is `NUMERIC` in Postgres**, never float.
 - **Hebrew first, RTL.** English must also work. Money is shown in ₪.
 
@@ -34,14 +35,15 @@ See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript, 
 | `src/app/` | Expo Router routes only. Every file is a screen; `_layout.tsx` sets up navigation |
 | `src/screens/` | The actual screen components the routes render |
 | `src/auth/` | `AuthProvider` (current user + roles), sign-in errors, `POST /me` after login |
-| `src/components/` | Shared UI |
+| `src/components/` | Shared UI (`dashboard/`, `trade/`). `BigChart.web.tsx` is the web-only full chart |
+| `src/dashboard/`, `src/trade/` | Data hooks, copy and pure helpers per screen (`trade/orderCheck.ts`: the order rules for the preview) |
 | `src/types/` | Shared TypeScript types |
 | `src/firebase.ts` | Firebase app and Auth setup (no database) |
 | `src/api.ts` | `apiFetch`: calls the API with the user's Firebase token |
 | `src/theme.ts` | Color tokens |
-| `api/` | The API: its own `package.json`. `src/` (routes, token check, SQL), `migrations/` (SQL), `test/` (vitest) |
+| `api/` | The API: its own `package.json`. `src/` (routes, token check, SQL; `game/` pure logic; `world/` the 40 securities), `migrations/` (SQL), `scripts/` (`seed-world.ts`), `test/` (vitest). Every endpoint: [docs/API.md](docs/API.md) |
 | `docker-compose.yml`, `db/`, `scraper/` | Local Postgres: real prices from Yahoo, plus the app's local databases (D-002) |
-| `docs/` | Tech stack, decisions, design |
+| `docs/` | Tech stack, decisions, database schema, design |
 | `assignment/` | The brief, progress, plans |
 
 ## Commands
@@ -58,6 +60,7 @@ npm run dev                   # run the API locally (reads api/.env)
 npm test                      # API tests against the local portfolio_test database
 npm run typecheck             # type check the API
 npm run migrate:dev           # apply new migrations to the local database
+npm run seed:world            # copy the 40 securities, prices, USD/ILS and the clock start into the game DB
 npm run migrate:create <name> # new SQL migration file
 ```
 

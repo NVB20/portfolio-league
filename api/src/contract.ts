@@ -77,6 +77,65 @@ export type StandingView = {
 
 export type LeaderRow = { rank: number; name: string; returnPct: number; score: number; isMe: boolean };
 
+// ---------- GET /me/trade: the trading screen ----------
+
+// The player's chart settings (users.chart_settings). Saved with PATCH /me/chart-settings.
+export type ChartSettings = {
+  type: 'candles' | 'bars' | 'line' | 'area';
+  tf: 'D' | 'W';                      // daily or weekly bars
+  range: 22 | 66 | 126;               // trading days shown: 1M, 3M, 6M
+  bg: 'app' | 'black' | 'paper';
+  colors: 'mint' | 'classic' | 'blue';
+  volume: boolean;
+  sma20: boolean;
+  sma50: boolean;
+  grid: boolean;
+  watermark: boolean;
+  lastLine: boolean;
+};
+
+// When an order sent now would run (rule 3).
+export type ExecutionView = { priceType: 'open' | 'close'; at: WorldTime };
+
+export type SecurityView = {
+  symbol: string;
+  nameHe: string;
+  nameEn: string | null;
+  market: 'TASE' | 'US';
+  exchange: 'TASE' | 'NASDAQ' | 'NYSE';
+  currency: 'ILS' | 'USD';
+  price: number | null;              // latest close already known in world time, in its own currency
+  priceDay: string | null;           // the trading day of that close
+  dayChangePct: number | null;       // that close vs. the one before
+  closes: { day: string; close: number }[];   // the last 11 known closes, oldest first (the 10-day chart)
+  holding: { units: number; valueIls: number | null; weightPct: number | null } | null;
+  isOpen: boolean;                   // its market is open right now (world time)
+  execution: ExecutionView | null;   // null = the world hasn't started
+  hasChart: boolean;                 // a Yahoo symbol exists, so GET /me/chart/:symbol works
+};
+
+export type TradeView = {
+  clock: ClockView | null;
+  cash: number;
+  totalValue: number;
+  usdIls: UsdIlsView | null;
+  securities: SecurityView[];
+  pendingOrders: OrderView[];        // all of them, in the order they will run
+  chartSettings: ChartSettings;
+};
+
+// ---------- GET /me/chart/:symbol: real OHLC from Yahoo, for the chart only ----------
+
+export type ChartBar = { time: string; open: number; high: number; low: number; close: number; volume: number };
+
+export type ChartView = {
+  symbol: string;
+  currency: 'ILS' | 'USD';
+  tf: 'D' | 'W';
+  lastDay: string | null;            // bars stop here: the last day already closed in world time
+  bars: ChartBar[];                  // oldest first; TASE in shekels
+};
+
 export type Dashboard = {
   clock: ClockView | null;         // null = the world hasn't started
   portfolio: PortfolioView;

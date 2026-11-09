@@ -28,7 +28,7 @@ const ANONYMOUS_NAME = 'שחקן';
 
 // The world clock's "now", the window of the current competition week, and the last date whose
 // closing price is already known for each market (prices after it are still the future).
-type Now = {
+export type Now = {
   at: Date;
   today: string;
   monday: string;
@@ -74,7 +74,7 @@ export async function getDashboard(db: Pool, uid: string): Promise<Dashboard | n
 
 // ---------- clock ----------
 
-async function loadNow(db: Pool): Promise<Now | null> {
+export async function loadNow(db: Pool): Promise<Now | null> {
   const { rows } = await db.query<{ now_at: Date }>('SELECT now_at FROM world_clock');
   if (rows.length === 0) return null;
   const at = rows[0].now_at;
@@ -95,7 +95,7 @@ export function worldTime(at: Date): WorldTime {
   return { at: at.toISOString(), date: z.date, weekday: z.weekday, time: hhmm(z.minutes) };
 }
 
-function clockView(at: Date): ClockView {
+export function clockView(at: Date): ClockView {
   const t = worldTime(at);
   return {
     ...t,
@@ -121,7 +121,7 @@ type HoldingRow = {
   day_change_pct: number | null;
 };
 
-async function loadPortfolio(db: Pool, uid: string, now: Now | null) {
+export async function loadPortfolio(db: Pool, uid: string, now: Now | null) {
   // One row per holding (or one row with NULL holding columns when there are none).
   // Values are computed in NUMERIC and only turned into float8 for the JSON.
   const { rows } = await db.query<HoldingRow>(
@@ -230,7 +230,7 @@ async function loadPendingOrders(db: Pool, uid: string): Promise<Dashboard['pend
 
 // ---------- USD/ILS ----------
 
-async function loadUsdIls(db: Pool, now: Now | null): Promise<UsdIlsView | null> {
+export async function loadUsdIls(db: Pool, now: Now | null): Promise<UsdIlsView | null> {
   // Dates come back as text: pg would turn a DATE into a JS Date at local midnight and shift the day.
   // A week of closes plus the close before Monday (the base for "change this week").
   const { rows } = await db.query<{ day: string; close: number }>(

@@ -20,7 +20,7 @@ const BOOT_ROW_DELAYS = [200, 400, 600];
 type Props = {
   eyebrow: string;
   title: ReactNode;      // the headline; nest <Accent> / <Strong> inside for the highlighted words
-  body?: string;
+  body?: ReactNode;      // a sentence, or any content (the trading screen puts the price row here)
   actions?: ReactNode;
   alt?: boolean;
   first?: boolean;       // the first section: no divider above, and it plays the load sequence
@@ -41,7 +41,7 @@ export function Section({ eyebrow, title, body, actions, alt = false, first = fa
     <>
       <Text style={[styles.eyebrow, { color: colors.accent }]}>{eyebrow}</Text>
       <Text style={[styles.title, { color: colors.fg, fontSize: headlineSize, lineHeight: headlineSize * 1.12 }]}>{title}</Text>
-      {body ? <Text style={[styles.body, { color: colors.muted }]}>{body}</Text> : null}
+      {typeof body === 'string' ? <Text style={[styles.body, { color: colors.muted }]}>{body}</Text> : body ?? null}
       {actions ? <View style={styles.actions}>{actions}</View> : null}
     </>
   );
