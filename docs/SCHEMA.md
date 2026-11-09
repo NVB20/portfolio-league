@@ -4,7 +4,7 @@ The current Postgres schema of the app's database: every table, its fields, its 
 
 - **Source of truth:** the migrations in [api/migrations/](../api/migrations/). This file describes the schema after all of them have run.
 - **Keep it in sync:** every new migration updates this file in the same commit.
-- **Last migration covered:** `20261108120000000_trade.sql`
+- **Last migration covered:** `20261109100000000_world-calendar.sql`
 
 ## Relationships
 
@@ -20,7 +20,7 @@ erDiagram
     securities ||--o{ prices : "priced by"
 ```
 
-`usd_ils` and `world_clock` stand alone and have no foreign keys.
+`usd_ils`, `world_clock` and `market_closures` stand alone and have no foreign keys. `market_closures.market` matches `securities.market` by value (TASE or US).
 
 | From | To | Type | On delete |
 |------|----|------|-----------|
@@ -88,7 +88,20 @@ The one shared game clock. At most one row; no row means the world hasn't starte
 | Field | Type | Null | Default | Notes |
 |-------|------|------|---------|-------|
 | `id` | BOOLEAN | no | `TRUE` | **PK.** Must be TRUE, which allows only one row |
-| `now_at` | TIMESTAMPTZ | no | | The current world time |
+| `now_at` | TIMESTAMPTZ | no | | The world time when the clock was last set. While `running`, the current world time is `now_at` + (real now − `real_at`), skipping days when neither market opens (D-017) |
+| `real_at` | TIMESTAMPTZ | no | `now()` | The real time when `now_at` was set |
+| `running` | BOOLEAN | no | `FALSE` | TRUE = the clock runs at real speed |
+| `ends_at` | TIMESTAMPTZ | yes | | The clock never passes it: one minute before the first open with no prices. Set by `npm run seed:world` |
+
+### `market_closures`
+Every Monday-to-Friday on which a market is closed (D-016). Weekends are a rule in code and have no rows. Filled from `api/src/world/closures.ts` by `npm run seed:world`, which stops if the list doesn't match the prices.
+
+| Field | Type | Null | Default | Notes |
+|-------|------|------|---------|-------|
+| `market` | TEXT | no | | **PK part.** `TASE` or `US` |
+| `day` | DATE | no | | **PK part.** Monday to Friday only (CHECK) |
+| `reason_he` | TEXT | no | | Shown in the app: `פסח` |
+| `reason_en` | TEXT | no | | `Passover` |
 
 ### `portfolios`
 One per player, created with the user row on first login (D-008).
@@ -159,6 +172,7 @@ Every primary key and UNIQUE column has its own index. The other indexes exist f
 | `prices` | `prices_pkey` | `symbol, day` | PK | Price of a security on a day |
 | `usd_ils` | `usd_ils_pkey` | `day` | PK | |
 | `world_clock` | `world_clock_pkey` | `id` | PK | |
+| `market_closures` | `market_closures_pkey` | `market, day` | PK | Is this market closed on this day |
 | `portfolios` | `portfolios_pkey` | `uid` | PK | |
 | `holdings` | `holdings_pkey` | `uid, symbol` | PK | A player's holdings |
 | `orders` | `orders_pkey` | `id` | PK | |

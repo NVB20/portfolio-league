@@ -9,6 +9,7 @@ import pg from 'pg';
 import { runner } from 'node-pg-migrate';
 import { createApp } from '../src/app.js';
 import { makeFirebaseVerifier } from '../src/auth.js';
+import { forgetCalendar } from '../src/calendar.js';
 import { makeTestKeys, PROJECT_ID, signToken } from './helpers.js';
 
 const DATABASE_URL =
@@ -123,10 +124,48 @@ describe('GET /me/dashboard, seeded world', () => {
       week: 46,
       weekStartAt: '2026-11-08T22:00:00.000Z',   // Monday 00:00 in Israel
       markets: {
-        tase: { isOpen: true, session: { openMin: 600, closeMin: 1050 } },
-        us: { isOpen: false, session: { openMin: 990, closeMin: 1380 } },
+        tase: { isOpen: true, session: { openMin: 600, closeMin: 1050 }, state: 'open', reason: null, nextOpen: null },
+        us: {
+          isOpen: false,
+          session: { openMin: 990, closeMin: 1380 },
+          state: 'pre_open',
+          reason: null,
+          nextOpen: { at: '2026-11-11T14:30:00.000Z', date: '2026-11-11', weekday: 3, time: '16:30' },
+        },
       },
     });
+  });
+
+  it('shows a market closed for a holiday, with the reason and its next open (D-022)', async () => {
+    await db.query(`INSERT INTO market_closures VALUES ('TASE', '2026-11-11', 'חג לבדיקה', 'Test holiday')`);
+    forgetCalendar(db);
+    try {
+      const { tase, us } = (await dashboard()).clock.markets;
+      expect(tase).toEqual({
+        isOpen: false,
+        session: null,
+        state: 'holiday',
+        reason: 'חג לבדיקה',
+        nextOpen: { at: '2026-11-12T08:00:00.000Z', date: '2026-11-12', weekday: 4, time: '10:00' },
+      });
+      expect(us.state).toBe('pre_open');   // the other market is not affected
+    } finally {
+      await db.query('DELETE FROM market_closures');
+      forgetCalendar(db);
+    }
+  });
+
+  it('moves the running clock on by the real time since it was set (D-017)', async () => {
+    // Set 90 real minutes ago at 12:40 Israel, running: now 14:10 Israel.
+    await db.query(`UPDATE world_clock SET running = TRUE, real_at = now() - interval '90 minutes'`);
+    const { clock } = await dashboard();
+    expect(clock.time).toBe('14:10');
+    expect(clock.date).toBe('2026-11-11');
+  });
+
+  it('never runs the clock past its end', async () => {
+    await db.query(`UPDATE world_clock SET running = TRUE, real_at = now() - interval '10 hours', ends_at = '2026-11-11T11:00:00Z'`);
+    expect((await dashboard()).clock.time).toBe('13:00');
   });
 
   it('values holdings at the latest close that already happened, US ones through the dollar rate', async () => {

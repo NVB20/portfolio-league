@@ -56,7 +56,7 @@ export async function getTrade(db: Pool, uid: string): Promise<TradeView | null>
     const last = closes[closes.length - 1];
     const prev = closes[closes.length - 2];
     const h = held.get(r.symbol);
-    const exec = now ? executionFor(r.market, now.at) : null;
+    const exec = now ? executionFor(r.market, now.at, now.calendar) : null;
     return {
       symbol: r.symbol,
       nameHe: r.name_he,
@@ -69,14 +69,14 @@ export async function getTrade(db: Pool, uid: string): Promise<TradeView | null>
       dayChangePct: last && prev ? (last.close / prev.close - 1) * 100 : null,
       closes,
       holding: h ? { units: h.units, valueIls: h.valueIls, weightPct: h.weightPct } : null,
-      isOpen: now ? isMarketOpen(r.market, now.at) : false,
+      isOpen: now ? isMarketOpen(r.market, now.at, now.calendar) : false,
       execution: exec ? { priceType: exec.priceType, at: worldTime(exec.at) } : null,
       hasChart: r.has_chart,
     };
   });
 
   return {
-    clock: now ? clockView(now.at) : null,
+    clock: now ? clockView(now.at, now.calendar) : null,
     cash: owned.cash,
     totalValue: owned.totalValue,
     usdIls: await loadUsdIls(db, now),

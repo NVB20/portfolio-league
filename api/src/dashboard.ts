@@ -11,6 +11,7 @@ import type {
   Dashboard,
   HoldingView,
   LeaderRow,
+  MarketSession,
   OrderView,
   Point,
   PortfolioView,
@@ -18,7 +19,9 @@ import type {
   UsdIlsView,
   WorldTime,
 } from './contract.js';
-import { isMarketOpen, lastClosedDay, sessionOn } from './game/marketHours.js';
+import { type Calendar, lastClosedDay, marketStatus, type MarketStatus } from './game/marketHours.js';
+import { runForward } from './game/clock.js';
+import { loadCalendar } from './calendar.js';
 import { isNearCap, maxDrawdownPct, returnPct, weightPct } from './game/performance.js';
 import { addDays, hhmm, ISRAEL, isoWeek, mondayOf, weekdayOf, zonedParts, zonedToInstant } from './game/time.js';
 
@@ -30,6 +33,8 @@ const ANONYMOUS_NAME = 'שחקן';
 // closing price is already known for each market (prices after it are still the future).
 export type Now = {
   at: Date;
+  calendar: Calendar;      // the market calendar (D-016): every screen and rule uses the same one
+  endsAt: Date | null;     // the clock never passes this (D-017)
   today: string;
   monday: string;
   weekStart: Date;
@@ -62,7 +67,7 @@ export async function getDashboard(db: Pool, uid: string): Promise<Dashboard | n
   };
 
   return {
-    clock: now ? clockView(now.at) : null,
+    clock: now ? clockView(now.at, now.calendar) : null,
     portfolio,
     holdings: owned.holdings,
     pendingOrders: await loadPendingOrders(db, uid),
@@ -74,19 +79,30 @@ export async function getDashboard(db: Pool, uid: string): Promise<Dashboard | n
 
 // ---------- clock ----------
 
+// While the clock runs (D-017), "now" is the stored world time plus the real time since it was stored,
+// skipping days when neither market opens, and never past `ends_at`.
 export async function loadNow(db: Pool): Promise<Now | null> {
-  const { rows } = await db.query<{ now_at: Date }>('SELECT now_at FROM world_clock');
+  const { rows } = await db.query<{ now_at: Date; real_at: Date; running: boolean; ends_at: Date | null; real_now: Date }>(
+    'SELECT now_at, real_at, running, ends_at, now() AS real_now FROM world_clock',
+  );
   if (rows.length === 0) return null;
-  const at = rows[0].now_at;
+  const clock = rows[0];
+  const calendar = await loadCalendar(db);
+  const end = clock.ends_at ?? new Date(8.64e15);   // no end set: no limit
+  const at = clock.running
+    ? runForward(clock.now_at, clock.real_now.getTime() - clock.real_at.getTime(), end, calendar)
+    : clock.now_at;
   const today = zonedParts(at, ISRAEL).date;
   const monday = mondayOf(today);
   return {
     at,
+    calendar,
+    endsAt: clock.ends_at,
     today,
     monday,
     weekStart: zonedToInstant(monday, 0, ISRAEL),
     // The rate's daily close is only final once the day is over, so it is always yesterday's.
-    closed: { tase: lastClosedDay('TASE', at), us: lastClosedDay('US', at), fx: addDays(today, -1) },
+    closed: { tase: lastClosedDay('TASE', at, calendar), us: lastClosedDay('US', at, calendar), fx: addDays(today, -1) },
   };
 }
 
@@ -95,16 +111,27 @@ export function worldTime(at: Date): WorldTime {
   return { at: at.toISOString(), date: z.date, weekday: z.weekday, time: hhmm(z.minutes) };
 }
 
-export function clockView(at: Date): ClockView {
+export function clockView(at: Date, calendar: Calendar): ClockView {
   const t = worldTime(at);
   return {
     ...t,
     week: isoWeek(t.date),
     weekStartAt: zonedToInstant(mondayOf(t.date), 0, ISRAEL).toISOString(),
     markets: {
-      tase: { isOpen: isMarketOpen('TASE', at), session: sessionOn('TASE', t.date) },
-      us: { isOpen: isMarketOpen('US', at), session: sessionOn('US', t.date) },
+      tase: marketView(marketStatus('TASE', at, calendar)),
+      us: marketView(marketStatus('US', at, calendar)),
     },
+  };
+}
+
+// One market's status for the screens (D-022): open or not, today's hours, why it's closed, when it opens next.
+function marketView(s: MarketStatus): MarketSession {
+  return {
+    isOpen: s.state === 'open',
+    session: s.session,
+    state: s.state,
+    reason: s.reason,
+    nextOpen: s.nextOpenAt ? worldTime(s.nextOpenAt) : null,
   };
 }
 

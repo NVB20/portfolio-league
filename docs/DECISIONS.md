@@ -165,7 +165,7 @@ The API loads the data, calls this function, and saves the result.
 
 ## D-016: A market calendar table holds every weekday a market is closed
 
-**Status:** Active (09.11.2026). Table not built yet.
+**Status:** Active. Built 09.11.2026: `market_closures` table, list in `api/src/world/closures.ts` (187 rows), checked against the prices by `npm run seed:world`.
 
 **Decision:** A `market_closures(market, day, reason)` table has one row for every **Monday to Friday** on which TASE or the US is closed. Saturdays and Sundays are a rule in code and get no rows. The rows are seeded from the price data (a weekday with no price row is a closed day), then checked by hand and given a reason ("Passover", "Thanksgiving", "TASE closed on Fridays until 2026").
 
@@ -177,7 +177,7 @@ The API loads the data, calls this function, and saves the result.
 
 **Why:** The two markets have different holidays, so "is the market open?" depends on the day as well as the hour. A table makes the calendar visible and easy to fix by hand. Weekends never change, so they don't need rows.
 
-**Known weaknesses:** A day missing from Yahoo by mistake looks like a holiday until someone checks it. Early-close days (US half days, TASE holiday eves) use the normal hours, because we only have one open and one close per day.
+**Known weaknesses:** A day missing from Yahoo by mistake looks like a holiday until someone checks it. One such day exists: Friday 18.09.2026 has no TASE prices and no known holiday, so it is listed as "no trading data" and is closed in the game. Early-close days (US half days, TASE holiday eves) use the normal hours, because we only have one open and one close per day.
 
 ## D-017: The world clock runs in Israel time and moves in three ways
 
@@ -190,7 +190,7 @@ The API loads the data, calls this function, and saves the result.
 - **Move 3, running:** when no admin jumps, world time runs at real speed from where it was left. The clock row stores the world time and the real time it was set, so `now = world_at + (real now − real_at)`. When the running clock reaches a day when both markets are closed, it skips straight to the next trading day.
 - Every move runs **all events in between, in time order**. At each open and close, it executes the orders due then and saves a value snapshot for every player.
 - **Only admins** can jump the clock, including on the live link. The README explains how a reviewer gets the admin role. A ticker in the API (every minute) handles events the running clock passes. The clock never goes backwards.
-- **End of history:** the clock stops at the last day with prices (US 05.11.2026). Moves past it are refused, and the game freezes there.
+- **End of history:** the clock stops one minute before the first open that has no prices (`world_clock.ends_at`, 05.11.2026 09:59 Israel time, just before TASE would open with no data). Moves past it are refused, and the game freezes there.
 
 **Why:** Jumps let reviewers play a week in minutes. The running clock means the world never freezes while the admin is away.
 

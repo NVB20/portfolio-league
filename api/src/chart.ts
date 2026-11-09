@@ -9,6 +9,7 @@ import type { Pool } from 'pg';
 import type { ChartView } from './contract.js';
 import { barsUpTo, parseYahooDaily, toWeekly, type Bar } from './game/bars.js';
 import { lastClosedDay } from './game/marketHours.js';
+import { loadNow } from './dashboard.js';
 
 const CACHE_MS = 12 * 60 * 60 * 1000;
 const DAILY_SENT = 320;    // enough for 6 months shown + a 50-day average before them
@@ -50,18 +51,18 @@ export function cachedDaily(fetchDaily: FetchDaily, cacheMs = CACHE_MS): FetchDa
 
 // null = unknown symbol, or one without a chart.
 export async function getChart(db: Pool, fetchDaily: FetchDaily, symbol: string, tf: 'D' | 'W'): Promise<ChartView | null> {
-  const { rows } = await db.query<{ yahoo_symbol: string | null; market: 'TASE' | 'US'; currency: 'ILS' | 'USD'; now_at: Date | null }>(
-    `SELECT s.yahoo_symbol, s.market, s.currency, (SELECT now_at FROM world_clock) AS now_at
-     FROM securities s WHERE s.symbol = $1`,
+  const { rows } = await db.query<{ yahoo_symbol: string | null; market: 'TASE' | 'US'; currency: 'ILS' | 'USD' }>(
+    'SELECT s.yahoo_symbol, s.market, s.currency FROM securities s WHERE s.symbol = $1',
     [symbol],
   );
   const sec = rows[0];
   if (!sec?.yahoo_symbol) return null;
 
   // Before the world starts there is no "now", so no day is known yet: no bars.
-  if (!sec.now_at) return { symbol, currency: sec.currency, tf, lastDay: null, bars: [] };
+  const now = await loadNow(db);
+  if (!now) return { symbol, currency: sec.currency, tf, lastDay: null, bars: [] };
 
-  const lastDay = lastClosedDay(sec.market, sec.now_at);
+  const lastDay = lastClosedDay(sec.market, now.at, now.calendar);
   const daily = barsUpTo(await fetchDaily(sec.yahoo_symbol), lastDay);
   const bars = tf === 'W' ? toWeekly(daily).slice(-WEEKLY_SENT) : daily.slice(-DAILY_SENT);
   return { symbol, currency: sec.currency, tf, lastDay, bars };

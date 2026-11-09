@@ -13,10 +13,13 @@ export type WorldTime = {
   time: string;      // Israel wall clock, 'HH:MM'
 };
 
-// One market's trading session on the world clock's day, in Israel-time minutes since midnight.
+// One market's status on the world clock's day (D-022). Hours are Israel-time minutes since midnight.
 export type MarketSession = {
   isOpen: boolean;                                       // open right now (world time)
-  session: { openMin: number; closeMin: number } | null; // null = closed all day (weekend)
+  session: { openMin: number; closeMin: number } | null; // null = closed all day (weekend or holiday)
+  state: 'open' | 'pre_open' | 'after_close' | 'weekend' | 'holiday';
+  reason: string | null;                                 // why it's closed today, in Hebrew ('פסח'); null otherwise
+  nextOpen: WorldTime | null;                            // when it opens next; null while open
 };
 
 export type ClockView = WorldTime & {

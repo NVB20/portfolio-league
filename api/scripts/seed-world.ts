@@ -2,7 +2,8 @@
 //   - the 40 securities (names, market, exchange, Yahoo symbol)
 //   - their daily open/close, TASE agorot turned into shekels
 //   - the daily USD/ILS rate
-//   - the world clock, ONLY if it was never set (the start time is D-013)
+//   - the market calendar: every weekday a market is closed (D-016), checked against the prices
+//   - the world clock, ONLY if it was never set (the start time is D-013), and where it must stop (D-017)
 //
 // Safe to run again: every row is an upsert, and an existing clock is never moved.
 //
@@ -13,10 +14,13 @@
 
 import pg from 'pg';
 import { USD_ILS_YAHOO, WORLD_SECURITIES } from '../src/world/securities.js';
+import { WORLD_CLOSURES } from '../src/world/closures.js';
+import { type Calendar, makeCalendar, type Market, MARKETS, nextOpen, sessionOn } from '../src/game/marketHours.js';
+import { addDays, ISRAEL, weekdayOf, zonedToInstant } from '../src/game/time.js';
 
-// The first moment of the game: Monday 5 January 2026, 09:00 Israel time (07:00 UTC), one hour before
-// TASE opens, in the first week when TASE trades Monday to Friday (D-013).
-const WORLD_START = '2026-01-05T07:00:00Z';
+// The first moment of the game: Monday 6 November 2023, 09:00 Israel time (07:00 UTC), one hour before
+// TASE opens, on the first day of the price history (D-013).
+const WORLD_START = '2023-11-06T07:00:00Z';
 
 const PRICES_URL = process.env.PRICES_DATABASE_URL ?? 'postgres://hof:hof_dev@localhost:5432/prices';
 const GAME_URL = process.env.DATABASE_URL;
@@ -74,17 +78,71 @@ async function main() {
     await upsertDays(game, 'usd_ils', null, fx.rows);
     console.log(`USD/ILS ${fx.rows.length} days`);
 
+    // The calendar: the list in closures.ts is the source of truth, so replace the table with it.
+    await game.query('DELETE FROM market_closures');
+    await game.query(
+      `INSERT INTO market_closures (market, day, reason_he, reason_en)
+       SELECT * FROM unnest($1::text[], $2::date[], $3::text[], $4::text[])`,
+      [
+        WORLD_CLOSURES.map((c) => c.market),
+        WORLD_CLOSURES.map((c) => c.day),
+        WORLD_CLOSURES.map((c) => c.reason),
+        WORLD_CLOSURES.map((c) => c.reasonEn),
+      ],
+    );
+    const calendar = makeCalendar(WORLD_CLOSURES);
+    const lastDays = await checkCalendar(game, calendar);
+    console.log(`Calendar: ${WORLD_CLOSURES.length} closed weekdays, all match the prices`);
+
     const clock = await game.query(
       'INSERT INTO world_clock (now_at) VALUES ($1) ON CONFLICT (id) DO NOTHING RETURNING now_at',
       [WORLD_START],
     );
     console.log(clock.rowCount ? `World clock set to ${WORLD_START}` : 'World clock already set, not moved');
 
+    // The clock stops one minute before the first open that has no prices, so every event it can reach has a price.
+    const endsAt = new Date(
+      Math.min(...MARKETS.map((m) => nextOpen(m, lastClose(m, lastDays[m], calendar), calendar).at.getTime())) - 60_000,
+    );
+    await game.query('UPDATE world_clock SET ends_at = $1', [endsAt]);
+    console.log(`World clock ends at ${endsAt.toISOString()}`);
+
     await game.query('COMMIT');
   } catch (err) {
     await game.query('ROLLBACK');
     throw err;
   }
+}
+
+// A weekday must be in the calendar exactly when it has no prices, from the first day of the world to the
+// last day with prices. Any mismatch stops the seed (and rolls it back) with the list of bad days.
+// Returns each market's last day with prices.
+async function checkCalendar(db: pg.Client, calendar: Calendar): Promise<Record<Market, string>> {
+  const { rows } = await db.query<{ market: Market; days: string[] }>(
+    `SELECT s.market, array_agg(DISTINCT p.day::text) AS days
+     FROM prices p JOIN securities s USING (symbol) GROUP BY s.market`,
+  );
+  const lastDays = {} as Record<Market, string>;
+  const problems: string[] = [];
+  for (const market of MARKETS) {
+    const traded = new Set(rows.find((r) => r.market === market)?.days ?? []);
+    if (traded.size === 0) throw new Error(`No ${market} prices loaded`);
+    const last = [...traded].sort().at(-1)!;
+    lastDays[market] = last;
+    for (let day = WORLD_START.slice(0, 10); day <= last; day = addDays(day, 1)) {
+      const weekday = weekdayOf(day);
+      if (weekday === 0 || weekday === 6) continue;
+      const closed = calendar.closedReason(market, day) !== null;
+      if (closed && traded.has(day)) problems.push(`${market} ${day}: in the calendar but has prices`);
+      if (!closed && !traded.has(day)) problems.push(`${market} ${day}: no prices but not in the calendar`);
+    }
+  }
+  if (problems.length > 0) throw new Error(`The calendar doesn't match the prices:\n  ${problems.join('\n  ')}`);
+  return lastDays;
+}
+
+function lastClose(market: Market, day: string, calendar: Calendar): Date {
+  return zonedToInstant(day, sessionOn(market, day, calendar)!.closeMin, ISRAEL);
 }
 
 // One multi-row INSERT per security (about 750 rows), instead of 750 round trips.
