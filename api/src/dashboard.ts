@@ -227,13 +227,14 @@ async function loadPendingOrders(db: Pool, uid: string): Promise<Dashboard['pend
     id: string;
     symbol: string;
     side: OrderView['side'];
-    amount_ils: number;
+    amount_ils: number | null;
+    units: number | null;
     price_type: OrderView['priceType'];
     executes_at: Date;
     market: OrderView['market'];
     total: number;
   }>(
-    `SELECT o.id::text AS id, o.symbol, o.side, o.amount_ils::float8 AS amount_ils, o.price_type,
+    `SELECT o.id::text AS id, o.symbol, o.side, o.amount_ils::float8 AS amount_ils, o.units::float8 AS units, o.price_type,
             o.executes_at, s.market, count(*) OVER ()::int AS total
      FROM orders o JOIN securities s ON s.symbol = o.symbol
      WHERE o.uid = $1 AND o.status = 'pending'
@@ -248,6 +249,7 @@ async function loadPendingOrders(db: Pool, uid: string): Promise<Dashboard['pend
       symbol: r.symbol,
       side: r.side,
       amountIls: r.amount_ils,
+      units: r.units,
       priceType: r.price_type,
       market: r.market,
       executesAt: worldTime(r.executes_at),

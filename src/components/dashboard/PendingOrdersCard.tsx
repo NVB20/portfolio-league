@@ -43,6 +43,13 @@ export function PendingOrdersCard({ orders, today }: Props) {
   );
 }
 
+// A buy is a ₪ amount; a sell is a number of units (D-018).
+function size(order: OrderView): string {
+  if (order.amountIls !== null) return ils(order.amountIls);
+  const units = order.units ?? 0;
+  return `${units.toLocaleString('en-US', { maximumFractionDigits: 4 })} יח׳`;
+}
+
 function OrderRow({ order, today }: { order: OrderView; today: string | null }) {
   const { colors } = useTheme();
   const buy = order.side === 'buy';
@@ -58,7 +65,7 @@ function OrderRow({ order, today }: { order: OrderView; today: string | null }) 
       </View>
       <View style={styles.what}>
         <Text style={[styles.title, { color: colors.fg }]}>
-          {`${buy ? 'קנייה' : 'מכירה'} ${order.symbol} · ${ils(order.amountIls)}`}
+          {`${buy ? 'קנייה' : 'מכירה'} ${order.symbol} · ${size(order)}`}
         </Text>
         <Text style={[styles.detail, { color: colors.faint }]}>{`${how} · ${city}`}</Text>
       </View>

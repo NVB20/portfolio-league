@@ -56,7 +56,8 @@ export type OrderView = {
   id: string;
   symbol: string;
   side: 'buy' | 'sell';
-  amountIls: number;
+  amountIls: number | null;        // buys: the ₪ to spend (D-018)
+  units: number | null;            // sells: the units to sell (D-018)
   priceType: 'open' | 'close';     // open = sent while closed, close = sent while open (rule 3)
   market: 'TASE' | 'US';
   executesAt: WorldTime;
@@ -148,3 +149,4 @@ export type Dashboard = {
   standing: StandingView | null;   // null = no score computed for you this week
   leaderboard: { players: number; top: LeaderRow[] };
 };
+

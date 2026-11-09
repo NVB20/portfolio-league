@@ -101,7 +101,7 @@ The API loads the data, calls this function, and saves the result.
 
 ## D-009: Until Phase 2, a holding is valued at the latest close that has already happened
 
-**Status:** Temporary. Phase 2 decides intraday pricing.
+**Status:** Temporary. Replaced by D-024 (stored values, updated at each open and close) once the runner is built.
 
 **Decision:** The dashboard values each holding at its most recent daily **close** whose market has already closed in world time. Today's TASE close counts only after 17:30 (13:50 on Friday); today's US close only after New York closes. The USD/ILS rate is yesterday's close. US holdings are converted at that rate.
 
@@ -188,7 +188,7 @@ The API loads the data, calls this function, and saves the result.
 - **Move 1, "to the close":** if a market is open, jump to its next close (TASE 17:30, Friday 13:50; US 23:00 Israel time).
 - **Move 2, "to the next open":** if no market is open, jump to the next open. Weekends and days when both markets are closed (D-016) are skipped.
 - **Move 3, running:** when no admin jumps, world time runs at real speed from where it was left. The clock row stores the world time and the real time it was set, so `now = world_at + (real now − real_at)`. When the running clock reaches a day when both markets are closed, it skips straight to the next trading day.
-- Every move runs **all events in between, in time order**. At each open and close, it executes the orders due then and saves a value snapshot for every player.
+- Every move runs **all events in between, in time order**. At each open and close, it executes the orders due then and updates the value of only the players that event affects (D-021, D-024).
 - **Only admins** can jump the clock, including on the live link. The README explains how a reviewer gets the admin role. A ticker in the API (every minute) handles events the running clock passes. The clock never goes backwards.
 - **End of history:** the clock stops one minute before the first open that has no prices (`world_clock.ends_at`, 05.11.2026 09:59 Israel time, just before TASE would open with no data). Moves past it are refused, and the game freezes there.
 
@@ -209,7 +209,7 @@ The API loads the data, calls this function, and saves the result.
 
 ## D-019: Money is kept in a double-entry ledger, with stored balances
 
-**Status:** Active. Rewritten 09.11.2026. Not built yet. Diagram and a worked example: [Portfolio League Money Model](https://claude.ai/artifact/FHvdTjTcr7Nohn5SmwQyuG).
+**Status:** Active. Rewritten 09.11.2026. Schema built (`20261109140000000_engine.sql`); the engine that writes it is next. Diagram and a worked example: [Portfolio League Money Model](https://claude.ai/artifact/FHvdTjTcr7Nohn5SmwQyuG).
 
 **Decision:**
 - **Ledger.** Every money event is a `journals` row (start, reserve, release, buy, sell) with two or more `ledger_entries` rows that **add up to exactly 0**. A deferred constraint trigger refuses any transaction whose journal doesn't balance, and another trigger refuses UPDATE and DELETE. Mistakes are fixed with a reversing journal.
@@ -227,7 +227,7 @@ The API loads the data, calls this function, and saves the result.
 - **Positions** replace `holdings`. A buy from 0 units starts a new `open` row, and at 0 units it becomes `closed` and stays as history. A partial unique index allows only one open row per player per stock. Units are not money, so they live on `positions`; the executed orders (`filled_units`) can rebuild them.
 - **Orders** carry the fill: `fill_price`, `fx_rate`, `filled_units`, `filled_ils`, `realized_pnl_ils`, `position_id`. There is no executions table, because every order fills once, in full, or is rejected. `client_order_id` is unique per player, so a retried request can't create a second order.
 - **Profit is measured at average cost.** A sale's gain = units sold × (execution price × rate − average cost per unit). A sale never changes the average; only a buy does.
-- **Unrealized gain** = market value − cost basis. It is not a ledger entry, because nothing was paid or received. The runner updates it at every open and close (prices only change then) and stores it.
+- **Unrealized gain** = market value − cost basis. It is not a ledger entry, because nothing was paid or received. The runner updates and stores it at every open and close (prices only change then), for the players that event affects (D-024).
 - All money and units are `NUMERIC`: ₪ to agorot, units to 8 decimals.
 
 **Example (buy 10 units at ₪100, sell them at ₪110):**
@@ -259,20 +259,33 @@ The balances afterwards: cash_free 1,100, stock_cost 0, realized_pnl −100 (sho
 
 **Why:** An order sent while the market is open fills at that day's close. A stock at 19% when the order is sent can be at 21% by the close. Only a check at the real execution price closes that gap.
 
-## D-021: The orders table is the queue
+## D-021: Postgres is the queue: the orders table plus an event log
 
-**Status:** Active (09.11.2026). Not built yet. Replaces D-001's "one transaction per clock advance".
+**Status:** Active. Updated 09.11.2026 for a target of 1M players (decided in the admin-dashboard session). Not built yet. Replaces D-001's "one transaction per clock advance".
 
 **Decision:**
 - **Sending** is a short transaction that locks only that player's portfolio row, so players never wait for each other. The limit is **5 orders per minute** per player.
 - **Sending vs. clock moves:** sending an order takes a shared lock on the `world_clock` row (`FOR SHARE`), and a clock move takes an exclusive one. An order sent at 17:29 can't slip in after the runner has already passed the 17:30 close.
 - **Execution** happens at clock events, not when an order is sent. A rush of orders at market open only adds `pending` rows; nothing is executed in that rush.
-- **The runner:** only one runs at a time (`pg_advisory_lock`). It takes pending orders due by the event (`executes_at`, then `id`) in batches of about 500 per transaction. Each order changes status as it runs, so after a crash a retry continues where it stopped and nothing runs twice. The clock moves to its new time only after every event in between is done.
-- No Redis or BullMQ.
+- **Postgres only.** One runner at a time (`pg_advisory_lock`), working in batches. No Redis.
+  - BullMQ is ruled out because it only works with Redis.
+  - pg-boss (a job queue that runs in Postgres) is not used for the market-close engine. Events must run in order and the clock can't move until an event is fully done, so we'd still need our own event log. pg-boss is the next step for independent jobs: retention notifications, emails, and the per-minute ticker as a cron job. The README says so.
+- **Event log:** `market_events` has one row per open or close. Status goes `pending` → `orders_done` → `done`, and the row stores counts and duration.
+- **The flow for one event** (for example the TASE close):
+  1. **Orders:** run the orders due at this event in batches of about 500 (by `executes_at`, then `id`). Mark the event `orders_done`; from then on, this event's prices are in effect.
+  2. **Affected players:** players who held a position in that market before the event, plus players whose order executed at this event (a first buy, or a sale of everything). Cash-only players and players with only the other market's stocks are skipped. Page through them by uid (`WHERE uid > $last LIMIT 5000`); never load all ids into Node.
+  3. **Online players first:** two passes over the same query, first the players who are online (`users.last_seen_at`, online as D-026 defines it), then everyone else. A single `ORDER BY online DESC, uid` can't page with `uid > $last`. The second pass skips players the first already updated, through the `last_event_at` check.
+  4. **Update in batches** of about 5,000 players. Each batch is one short transaction that sets value, peak, drawdown and `last_event_at` (D-024).
+  5. **Finish:** write the median and the counts, check the ledger (D-019), and mark the event `done`. Only then come the leaderboard update and the clock move.
+- **Safe to retry:** the event log plus `portfolios.last_event_at`. A player's update applies only `WHERE last_event_at < event_at` (or `IS NULL`), so a retried batch changes nothing. Orders change status as they run. After a crash, the runner restarts at the first event that isn't `done`, at the step it stopped. Retry safety does not depend on whether a snapshot row exists.
+- **Kept in mind for the admin page** (`/admin-dashboard`, built separately). It will show players online, unique players today, repeat opens, the last run and the queue per market. For that:
+  - `market_events` stores orders executed and rejected, players updated, duration and whether the ledger balanced.
+  - `users.last_seen_at` (a heartbeat about once a minute) and `app_opens` come with the admin session's presence migration (D-026).
+  - Later, with the admin page: an `admin_actions` log.
 
-**Why:** Postgres already gives us ordering, locking and retries. A separate queue would be one more service to run and watch while we're away, with nothing gained at this size.
+**Why:** Postgres already gives us ordering, locking and retries. A separate queue would be one more service to run and watch while we're away. Updating only the players an event affects, in short batches, keeps one event's work proportional to the players it really changes.
 
-**What would make us change it:** if one event takes more than about a minute, or has more than about 100,000 orders, move the runner to its own worker service (still Postgres, with `FOR UPDATE SKIP LOCKED`).
+**What would make us change it:** if one event takes more than about a minute, move the runner to its own worker service (still Postgres, with `FOR UPDATE SKIP LOCKED` so several workers can share the batches).
 
 ## D-022: Each market's status comes from the calendar and is shown separately
 
@@ -294,3 +307,31 @@ The balances afterwards: cash_free 1,100, stock_cost 0, realized_pnl −100 (sho
 **Decision:** When an order is rejected, the player sees a toast with the reason the next time the app loads their data. A journal page that lists every rejected order comes later.
 
 **Why:** A rejection happens at a clock event, usually while the player is away. Without a message they would only notice that their cash didn't change.
+
+## D-024: Weekly running totals per player, not a snapshot of everyone
+
+**Status:** Active (09.11.2026, decided in the admin-dashboard session). Not built yet. Replaces D-009 once built.
+
+**Decision:**
+- **Running totals on `portfolios`:** `week_start` (the Monday), `week_start_value`, `peak_value`, `max_drawdown_pct`, plus `equity` (D-019) as the current value and `last_event_at`. At each event, for each affected player (D-021):
+  - `peak = max(peak, value)`
+  - `mdd = max(mdd, (peak − value) / peak)`
+
+  Scoring reads these columns and never scans history.
+- **Lazy weekly reset:** a row whose `week_start` is older than the event's week is reset the first time it is touched: `week_start_value` and `peak_value` become the value before the event, and the drawdown becomes 0. Nothing writes 1M rows when a week starts. `week_start` is a date, not a week number, because week numbers repeat every year.
+- **Untouched players:** a row nobody touched this week means the player's value didn't change, so their return is 0 and their drawdown 0. All cash-only players tie, and scoring can count them as one group.
+- **Which events change which values:** a TASE event revalues only TASE positions. A US event revalues US positions at that event's price and USD/ILS rate (the day's open rate at the open, the close rate at the close). A TASE event therefore never changes a US-only player's value, and that is what makes "affected players" correct.
+- **Chart history:** `portfolio_snapshots` gets at most one row per player per trading day. It is written at that day's last event, and only for players whose value changed that day. The value at time t is the latest row at or before t.
+- **Median player line:** one row per event in `market_events` (`median_value`, `median_return_pct`), not one row per player.
+
+**Why:** a snapshot of every player at every open and close is 1M rows per event, about 4M a day. The running totals give return and drawdown in one row per player, and the chart needs at most one row per player per day.
+
+**Known weakness:** the week chart shows one point per day, not one per open and close.
+
+## D-025: A player's value is brought up to date when they open the app
+
+**Status:** Active (09.11.2026, decided in the admin-dashboard session). Not built yet.
+
+**Decision:** when a player opens the dashboard and their `last_event_at` is behind the latest event whose prices are in effect (status `orders_done` or `done`), the API updates that one player on the spot. It uses the same function and the same `last_event_at` check as the batch, so the batch skips them later.
+
+**Why:** during an event, the batches take time to reach everyone, and an online player would see an old value until then. This keeps online players correct without a second queue. "Behind the latest finished event" is read as "behind the latest event whose orders have run", because that window, before the event is `done`, is exactly when an old value would show.

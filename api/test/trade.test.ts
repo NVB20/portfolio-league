@@ -105,9 +105,9 @@ describe('GET /me/trade', () => {
     await db.query(`UPDATE portfolios SET cash = 900000 WHERE uid = 'alice'`);
     await db.query(`INSERT INTO holdings (uid, symbol, units) VALUES ('alice', 'TEVA', 100)`);
     await db.query(
-      `INSERT INTO orders (uid, symbol, side, amount_ils, placed_at, executes_at, price_type) VALUES
-         ('alice', 'NVDA', 'buy', 40000, '2026-11-11T10:30:00Z', '2026-11-11T14:30:00Z', 'open'),
-         ('alice', 'TEVA', 'sell', 5000, '2026-11-11T10:35:00Z', '2026-11-11T15:30:00Z', 'close')`,
+      `INSERT INTO orders (uid, symbol, side, amount_ils, units, placed_at, executes_at, price_type) VALUES
+         ('alice', 'NVDA', 'buy', 40000, NULL, '2026-11-11T10:30:00Z', '2026-11-11T14:30:00Z', 'open'),
+         ('alice', 'TEVA', 'sell', NULL, 40, '2026-11-11T10:35:00Z', '2026-11-11T15:30:00Z', 'close')`,
     );
 
     const t = await (await call('GET', '/me/trade', 'alice')).json();

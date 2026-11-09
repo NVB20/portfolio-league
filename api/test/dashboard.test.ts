@@ -94,12 +94,13 @@ describe('GET /me/dashboard, seeded world', () => {
     await db.query(`UPDATE portfolios SET cash = 760000 WHERE uid = 'alice'`);
     await db.query(`INSERT INTO holdings VALUES ('alice', 'TEVA', 4000), ('alice', 'NVDA', 100)`);
 
-    await db.query(`INSERT INTO orders (uid, symbol, side, amount_ils, status, placed_at, executes_at, price_type) VALUES
-      ('alice', 'NVDA', 'buy',  40000, 'pending',  '2026-11-11T10:00:00Z', '2026-11-11T14:30:00Z', 'open'),
-      ('alice', 'TEVA', 'sell', 30000, 'pending',  '2026-11-11T10:10:00Z', '2026-11-11T15:30:00Z', 'close'),
-      ('alice', 'TEVA', 'buy',  10000, 'pending',  '2026-11-11T10:20:00Z', '2026-11-11T15:30:00Z', 'close'),
-      ('alice', 'TEVA', 'buy',  5000,  'executed', '2026-11-10T09:00:00Z', '2026-11-10T15:30:00Z', 'close'),
-      ('bob',   'TEVA', 'buy',  5000,  'pending',  '2026-11-11T09:00:00Z', '2026-11-11T09:30:00Z', 'close')`);
+    // Buys are sized in ₪, sells in units (D-018). A rejected order always has a reason.
+    await db.query(`INSERT INTO orders (uid, symbol, side, amount_ils, units, status, placed_at, executes_at, price_type, reject_reason) VALUES
+      ('alice', 'NVDA', 'buy',  40000, NULL, 'pending',  '2026-11-11T10:00:00Z', '2026-11-11T14:30:00Z', 'open',  NULL),
+      ('alice', 'TEVA', 'sell', NULL,  600,  'pending',  '2026-11-11T10:10:00Z', '2026-11-11T15:30:00Z', 'close', NULL),
+      ('alice', 'TEVA', 'buy',  10000, NULL, 'pending',  '2026-11-11T10:20:00Z', '2026-11-11T15:30:00Z', 'close', NULL),
+      ('alice', 'TEVA', 'buy',  5000,  NULL, 'rejected', '2026-11-10T09:00:00Z', '2026-11-10T15:30:00Z', 'close', 'test'),
+      ('bob',   'TEVA', 'buy',  5000,  NULL, 'pending',  '2026-11-11T09:00:00Z', '2026-11-11T09:30:00Z', 'close', NULL)`);
 
     // Last Friday's snapshot is outside this week and must not appear.
     await db.query(`INSERT INTO portfolio_snapshots VALUES
@@ -195,7 +196,7 @@ describe('GET /me/dashboard, seeded world', () => {
     expect(pendingOrders.next).toEqual([
       expect.objectContaining({ symbol: 'NVDA', side: 'buy', amountIls: 40000, priceType: 'open', market: 'US',
         executesAt: { at: '2026-11-11T14:30:00.000Z', date: '2026-11-11', weekday: 3, time: '16:30' } }),
-      expect.objectContaining({ symbol: 'TEVA', side: 'sell', amountIls: 30000, priceType: 'close', market: 'TASE' }),
+      expect.objectContaining({ symbol: 'TEVA', side: 'sell', amountIls: null, units: 600, priceType: 'close', market: 'TASE' }),
     ]);
   });
 
