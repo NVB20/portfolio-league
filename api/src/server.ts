@@ -37,6 +37,6 @@ if (!stopTicker) console.log('Ticker is off (TICKER=off): world events run only 
 process.on('SIGTERM', () => {
   const ticking = stopTicker ? stopTicker() : Promise.resolve();
   server.close(() => {
-    ticking.finally(() => db.end().finally(() => process.exit(0)));
+    void ticking.finally(() => db.end().finally(() => process.exit(0)));
   });
 });

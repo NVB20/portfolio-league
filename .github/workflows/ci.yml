@@ -57,10 +57,15 @@ jobs:
 
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run lint
+      # The same esbuild bundle the Docker image runs, so a broken build fails the PR, not the merge.
+      - run: npm run build
       - run: npm test
+      # Known vulnerabilities in what the server ships (dev tools excluded). High or critical fails.
+      - run: npm audit --omit=dev --audit-level=high
 
   app:
-    name: Type check the app
+    name: Check and build the app
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -74,7 +79,14 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - run: npm ci
-      - run: npx tsc --noEmit
+      - run: npm run typecheck
+      - run: npm run lint
+      # Bundle the web app the way Hosting gets it: catches Metro errors tsc can't see (bad imports,
+      # missing .web files). No EXPO_PUBLIC_* values are needed just to bundle.
+      - run: npx expo export --platform web
+      # Critical only: firebase pulls in @grpc/grpc-js (high, Node-only, never loaded in the browser) and
+      # npm's only "fix" is downgrading firebase to v9. Revisit when firebase updates it.
+      - run: npm audit --omit=dev --audit-level=critical
 
   image:
     name: Build and publish the API image

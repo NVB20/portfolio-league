@@ -11,7 +11,8 @@
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --migration-file-language sql --migration-filename-format utc",
     "seed:world": "tsx --env-file=.env scripts/seed-world.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@hono/node-server": "^2.1.6",
@@ -21,11 +22,15 @@
     "pg": "^8.23.1"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/node": "^22.20.5",
     "@types/pg": "^8.23.1",
     "esbuild": "^0.28.2",
+    "eslint": "^9.39.5",
+    "globals": "^17.14.0",
     "tsx": "^4.23.15",
     "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.2",
     "vitest": "^5.1.0"
   }
 }
