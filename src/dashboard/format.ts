@@ -8,6 +8,18 @@ export function ils(value: number, digits = 0): string {
   return `${sign}₪${Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 }
 
+// ₪5,000 for a whole amount, ₪1,234.50 when there are agorot: for exact figures (an order's size, cash),
+// where rounding to whole shekels would show a number that isn't the stored one.
+export function ilsExact(value: number): string {
+  return ils(value, Math.round(Math.abs(value) * 100) % 100 === 0 ? 0 : 2);
+}
+
+// An order's size (D-018): a buy is a ₪ amount, a sell a number of units ("12.5 יח׳", up to 4 decimals).
+export function orderSize(o: { side: 'buy' | 'sell'; amountIls: number | null; units: number | null }): string | null {
+  if (o.side === 'buy') return o.amountIls === null ? null : ilsExact(o.amountIls);
+  return o.units === null ? null : `${o.units.toLocaleString('en-US', { maximumFractionDigits: 4 })} יח׳`;
+}
+
 // The whole shekels and the agorot apart, for the headline: "1,023,450" + ".32".
 export function splitIls(value: number): { whole: string; agorot: string } {
   const [whole, agorot] = Math.abs(value)

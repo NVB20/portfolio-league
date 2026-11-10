@@ -75,7 +75,7 @@ function Body({ holding: h }: { holding: HoldingView }) {
 
   return (
     <>
-      <Text style={[styles.value, { color: p.fg }]}>{h.valueIls === null ? 'אין מחיר עדיין' : ils(h.valueIls)}</Text>
+      <Text style={[styles.value, { color: p.fg }]}>{ils(h.valueIls)}</Text>
       <View style={[styles.bar, ltr, { backgroundColor: p.line }]}>
         <View style={[styles.fill, { width: `${width}%`, backgroundColor: fill }]} />
         <View style={[styles.cap, { left: `${(CAP_PCT / BAR_FULL_PCT) * 100}%`, backgroundColor: inverse ? p.fg : p.sub }]} />

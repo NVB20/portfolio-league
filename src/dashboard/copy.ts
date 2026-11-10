@@ -1,8 +1,8 @@
 // The sentences under each section headline, built from the data. Each says what's true now,
 // including "nothing yet", and never fills a gap with a made-up number.
 
-import type { Dashboard, HoldingView, StandingView } from '../../api/src/contract';
-import { ils, pct } from './format';
+import type { Dashboard, HoldingView, PortfolioView, StandingView } from '../../api/src/contract';
+import { ils, ilsExact, pct } from './format';
 
 // Section 1: "You're up 2.35% since Monday, 1.15% above the median. ₪312,900 in cash and 2 orders waiting."
 export function portfolioSummary(d: Dashboard): string {
@@ -26,6 +26,13 @@ export function portfolioSummary(d: Dashboard): string {
   if (pendingOrders.total > 1) cashLine += ` ו־${pendingOrders.total} פקודות מחכות לביצוע`;
   parts.push(`${cashLine}.`);
   return parts.join(' ');
+}
+
+// The portfolio card's small print: what a new buy can spend, and the cash pending buys hold, when there is any.
+export function cashFigures(p: Pick<PortfolioView, 'availableCash' | 'reservedCash'>): { label: string; value: string }[] {
+  const out = [{ label: 'מזומן פנוי', value: ilsExact(p.availableCash) }];
+  if (p.reservedCash > 0) out.push({ label: 'שמור לפקודות ממתינות', value: ilsExact(p.reservedCash) });
+  return out;
 }
 
 // Section 2 headline, second line: how many holdings are near the 20% cap.

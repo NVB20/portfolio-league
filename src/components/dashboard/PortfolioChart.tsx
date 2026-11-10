@@ -1,5 +1,6 @@
 // "You vs. the median player": your portfolio value this week against the median player's,
 // with the weekly return and max drawdown chips (rule 6: the score uses both).
+// Underneath, small: the cash a new buy can spend, and the cash pending buys hold (D-031: stored values).
 // The x-axis is the week in time (Monday 00:00 -> Saturday 00:00 Israel), so gaps in the data look like gaps.
 //
 // Load sequence (DD-06), ms after the page appears: your line draws 500-1500 (the median 600-1600),
@@ -12,6 +13,7 @@ import Svg, { Circle, Defs, G, Line, LinearGradient, Path, Rect, Stop, Text as S
 import type { Point, PortfolioView } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
 import { ils, pct, WEEKDAY_LETTERS } from '../../dashboard/format';
+import { cashFigures } from '../../dashboard/copy';
 import { Card, Empty } from './Card';
 import { Chip } from './Chip';
 import { IconButton } from './IconButton';
@@ -75,6 +77,14 @@ export function PortfolioChartCard({ portfolio, weekStartAt, nowAt }: Props) {
       ) : (
         <Empty>הגרף יתמלא כשהשעון יתקדם ושווי התיק יירשם לאורך השבוע.</Empty>
       )}
+      <View style={[styles.cash, { borderTopColor: colors.line }]}>
+        {cashFigures(portfolio).map((f) => (
+          <View key={f.label} style={styles.cashItem}>
+            <Text style={[styles.cashLabel, { color: colors.faint }]}>{f.label}</Text>
+            <Text style={[styles.cashValue, { color: colors.muted }]}>{f.value}</Text>
+          </View>
+        ))}
+      </View>
     </Card>
   );
 }
@@ -263,4 +273,8 @@ const styles = StyleSheet.create({
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   legendSwatch: { width: 10, height: 3, borderRadius: 2 },
   legendText: { fontSize: 11.5 },
+  cash: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 24, rowGap: 6, marginTop: 14, paddingTop: 12, borderTopWidth: 1 },
+  cashItem: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
+  cashLabel: { fontSize: 11.5 },
+  cashValue: { fontSize: 12.5, fontWeight: '600', fontVariant: ['tabular-nums'] },
 });

@@ -1,4 +1,7 @@
 // The floating top bar: logo, page tabs, the world clock, and the avatar that opens the user menu (DD-09, DD-12).
+// Next to the clock, two chips: ת״א and ניו יורק, each open (pulsing dot) or closed, in words too (D-022).
+// While the admin runs the clock, the time and the chips move on by themselves between loads, like the world
+// time panel (liveClock.ts, D-017), so the two never disagree on one screen.
 // On the admin page (side="admin") a "ניהול" badge replaces the tabs and a button leads back to the player side.
 // It lies OVER the scrolling page (absolute), so the cards slide underneath it like in the mock-up.
 // Web: see-through page color + blur, no border. Phones: solid page color (no blur on native).
@@ -8,9 +11,12 @@ import { useState } from 'react';
 import { Animated, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import type { ClockView } from '../../../api/src/contract';
+import type { LiveClockView } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
-import { dayLabel } from '../../dashboard/format';
+import { dayLabel, hhmm } from '../../dashboard/format';
+import { liveTime } from '../../dashboard/liveClock';
+import { marketChips, type MarketChip } from '../../dashboard/markets';
+import { useElapsed } from '../../dashboard/useElapsed';
 import { MAX_WIDTH, useLayout } from './layout';
 import { useLoop } from './motion';
 import { UserMenu } from './UserMenu';
@@ -31,14 +37,15 @@ const LOGO_RATIO = 577 / 624;   // assets/logo.png
 // side 'admin': the admin page. A "ניהול" badge replaces the player tabs, and a button leads back.
 export type Side = 'player' | 'admin';
 
-type Props = { clock: ClockView | null; name: string; rankLine: string | null; active?: Page; side?: Side };
+type Props = { clock: LiveClockView | null; name: string; rankLine: string | null; active?: Page; side?: Side };
 
 export function TopBar({ clock, name, rankLine, active = 'dashboard', side = 'player' }: Props) {
   const { colors } = useTheme();
   const { isPhone } = useLayout();
   const [menuOpen, setMenuOpen] = useState(false);
-  const taseOpen = clock?.markets.tase.isOpen ?? false;
-  const blink = useLoop(2000);   // the live dot pulses while the market is open
+  const blink = useLoop(2000);   // a market's live dot pulses while it is open
+  const elapsed = useElapsed(clock);
+  const t = clock ? liveTime(clock, elapsed) : null;
 
   return (
     <View style={[styles.bar, Platform.OS === 'web' ? [{ backgroundColor: colors.barBackground }, blur] : { backgroundColor: colors.page }]}>
@@ -82,17 +89,12 @@ export function TopBar({ clock, name, rankLine, active = 'dashboard', side = 'pl
         )}
         </View>
 
-        {clock && !isPhone ? (
+        {clock && t && !isPhone ? (
           <View style={[styles.clock, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-            <Animated.View
-              style={[
-                styles.dot,
-                { backgroundColor: taseOpen ? colors.accent : colors.faint },
-                taseOpen && { opacity: blink.interpolate({ inputRange: [0, 1], outputRange: [1, 0.3] }) },
-              ]}
-            />
-            <Text style={[styles.clockText, { color: colors.fg }]}>{`${dayLabel(clock.weekday)} · ${clock.time}`}</Text>
-            <Text style={[styles.clockText, { color: colors.muted }]}>{taseOpen ? '· תל אביב פתוח' : '· תל אביב סגור'}</Text>
+            <Text style={[styles.clockText, { color: colors.fg }]}>{`${dayLabel(t.weekday)} · ${hhmm(t.minutes)}`}</Text>
+            {marketChips(clock.markets, t).map((m) => (
+              <MarketPill key={m.key} market={m} blink={blink} />
+            ))}
           </View>
         ) : null}
 
@@ -126,6 +128,31 @@ export function TopBar({ clock, name, rankLine, active = 'dashboard', side = 'pl
   );
 }
 
+// One market: its short name, open or closed in words, and a dot, mint and pulsing while open, grey while closed.
+function MarketPill({ market, blink }: { market: MarketChip; blink: Animated.Value }) {
+  const { colors } = useTheme();
+  const { open } = market;
+  return (
+    <View
+      accessible
+      accessibilityLabel={market.a11y}
+      style={[styles.market, { backgroundColor: open ? colors.accentTint : colors.surface2 }]}
+    >
+      <Animated.View
+        style={[
+          styles.dot,
+          { backgroundColor: open ? colors.accent : colors.faint },
+          open && { opacity: blink.interpolate({ inputRange: [0, 1], outputRange: [1, 0.3] }) },
+        ]}
+      />
+      <Text style={[styles.marketText, { color: open ? colors.accent : colors.muted }]}>
+        {market.label}
+        <Text style={styles.marketState}>{` ${market.state}`}</Text>
+      </Text>
+    </View>
+  );
+}
+
 // CSS backdrop-filter (frosted glass). Inline and cast: React Native's style types don't include it.
 const blur = { backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)' } as unknown as object;
 
@@ -141,9 +168,12 @@ const styles = StyleSheet.create({
   tabText: { fontSize: 13.5, fontWeight: '500' },
   badge: { borderRadius: 999, paddingVertical: 7, paddingHorizontal: 16 },
   badgeText: { fontSize: 13, fontWeight: '600' },
-  clock: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: 999, paddingVertical: 8, paddingHorizontal: 14 },
+  clock: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderRadius: 999, padding: 4 },
   dot: { width: 7, height: 7, borderRadius: 4 },
-  clockText: { fontSize: 13 },
+  clockText: { fontSize: 13, paddingHorizontal: 8 },
+  market: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
+  marketText: { fontSize: 12, fontWeight: '600' },
+  marketState: { fontWeight: '400' },
   user: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   avatar: { width: 38, height: 38, borderRadius: 19, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   online: { position: 'absolute', right: -1, bottom: -1, width: 11, height: 11, borderRadius: 6, borderWidth: 2 },

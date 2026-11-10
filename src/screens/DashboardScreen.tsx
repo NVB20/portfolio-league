@@ -3,6 +3,8 @@
 //   2. Holdings: one card per security with its weight against the 20% cap
 //   3. Competition: leaderboard, score breakdown, streak
 // All data comes from one request (GET /me/dashboard). Empty world = every card says what will fill it.
+// Over the page: the toast for orders rejected since the last visit (D-023). On the days only one market
+// trades, a line under the top bar says so (D-022).
 
 import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
@@ -18,9 +20,11 @@ import { CardRow, CardStack } from '../components/dashboard/CardRow';
 import { LeaderboardCard, ScoreBreakdownCard, StreakCard } from '../components/dashboard/CompetitionCards';
 import { HoldingCard } from '../components/dashboard/HoldingCard';
 import { MAX_WIDTH } from '../components/dashboard/layout';
+import { MarketsTodayLine } from '../components/dashboard/MarketsTodayLine';
 import { MotionProvider, OffsetProvider, useMeasure, useScrollMotion, useTween } from '../components/dashboard/motion';
 import { PendingOrdersCard } from '../components/dashboard/PendingOrdersCard';
 import { PortfolioChartCard } from '../components/dashboard/PortfolioChart';
+import { RejectionToasts } from '../components/dashboard/RejectionToasts';
 import { ScoreCard } from '../components/dashboard/ScoreCard';
 import { Accent, Faint, Section, Strong } from '../components/dashboard/Section';
 import { BAR_HEIGHT, TopBar } from '../components/dashboard/TopBar';
@@ -92,6 +96,9 @@ export function DashboardView({ data, isAdmin, name, rankLine }: { data: Dashboa
           <Button label="+ פקודה חדשה" variant="primary" onPress={toTrade} />
         </View>
 
+        {/* Orders the runner rejected since the last visit, under the bar; reported as seen once shown (D-031). */}
+        <RejectionToasts rejections={data.rejections} holdings={data.holdings} />
+
         {/* Last, so it draws on top: the bar floats over the scrolling page. */}
         <TopBar clock={data.clock} name={name} rankLine={rankLine} active="dashboard" />
       </View>
@@ -107,6 +114,8 @@ function Content({ d, isAdmin }: { d: Dashboard; isAdmin: boolean }) {
 
   return (
     <>
+      <MarketsTodayLine clock={d.clock} />
+
       {/* 1. Portfolio */}
       <Section
         first

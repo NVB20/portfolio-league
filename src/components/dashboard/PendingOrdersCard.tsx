@@ -4,7 +4,7 @@
 import { StyleSheet, Text, View } from 'react-native';
 import type { Dashboard, OrderView } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
-import { dayLabel, ils } from '../../dashboard/format';
+import { dayLabel, orderSize } from '../../dashboard/format';
 import { Card, Empty } from './Card';
 import { Chip } from './Chip';
 
@@ -43,19 +43,13 @@ export function PendingOrdersCard({ orders, today }: Props) {
   );
 }
 
-// A buy is a ₪ amount; a sell is a number of units (D-018).
-function size(order: OrderView): string {
-  if (order.amountIls !== null) return ils(order.amountIls);
-  const units = order.units ?? 0;
-  return `${units.toLocaleString('en-US', { maximumFractionDigits: 4 })} יח׳`;
-}
-
 function OrderRow({ order, today }: { order: OrderView; today: string | null }) {
   const { colors } = useTheme();
   const buy = order.side === 'buy';
   const when = order.executesAt.date === today ? 'היום' : dayLabel(order.executesAt.weekday);
   const how = order.priceType === 'open' ? 'נשלחה כשהשוק סגור · שער פתיחה' : 'נשלחה בזמן המסחר · שער סגירה';
   const city = order.market === 'TASE' ? 'תל אביב' : 'ניו יורק';
+  const size = orderSize(order);   // a buy is a ₪ amount; a sell a number of units (D-018)
 
   return (
     <View style={[styles.row, { backgroundColor: colors.surface2 }]}>
@@ -65,7 +59,7 @@ function OrderRow({ order, today }: { order: OrderView; today: string | null }) 
       </View>
       <View style={styles.what}>
         <Text style={[styles.title, { color: colors.fg }]}>
-          {`${buy ? 'קנייה' : 'מכירה'} ${order.symbol} · ${size(order)}`}
+          {`${buy ? 'קנייה' : 'מכירה'} ${order.symbol}${size ? ` · ${size}` : ''}`}
         </Text>
         <Text style={[styles.detail, { color: colors.faint }]}>{`${how} · ${city}`}</Text>
       </View>
