@@ -4,7 +4,7 @@ The current Postgres schema of the app's database: every table, its fields, its 
 
 - **Source of truth:** the migrations in [api/migrations/](../api/migrations/). This file describes the schema after all of them have run.
 - **Keep it in sync:** every new migration updates this file in the same commit.
-- **Last migration covered:** `20261109140000000_engine.sql`
+- **Last migration covered:** `20261110100000000_runner.sql`
 
 ## Relationships
 
@@ -13,19 +13,22 @@ erDiagram
     users ||--|| portfolios : "has one"
     users ||--o{ orders : places
     users ||--o{ standings : "ranked in"
+    users ||--o{ app_opens : visits
+    users ||--o{ admin_actions : "acts as admin"
     portfolios ||--o{ positions : holds
     portfolios ||--o{ journals : "money events"
     journals ||--|{ ledger_entries : "2+ lines, sum = 0"
     portfolios ||--o{ portfolio_snapshots : "valued over time"
     orders |o--o{ journals : "moves cash"
     orders }o--o| positions : "fills into"
+    market_events |o--o{ orders : "executed or rejected"
     securities ||--o{ positions : "held as"
     securities ||--o{ orders : "traded in"
     securities ||--o{ prices : "priced by"
     securities |o--o{ ledger_entries : "stock at cost"
 ```
 
-`usd_ils`, `world_clock`, `market_closures` and `market_events` stand alone and have no foreign keys. `holdings` is a view of the open `positions`. `market_closures.market` matches `securities.market` by value (TASE or US).
+`usd_ils`, `world_clock` and `market_closures` stand alone and have no foreign keys. `market_events` has none of its own; `orders.event_id` points to it. `holdings` is a view of the open `positions`. `market_closures.market` matches `securities.market` by value (TASE or US).
 
 | From | To | Type | On delete |
 |------|----|------|-----------|
@@ -39,11 +42,14 @@ erDiagram
 | `orders.uid` | `users.uid` | many to 1 | CASCADE |
 | `orders.symbol` | `securities.symbol` | many to 1 | blocked |
 | `orders.position_id` | `positions.id` | many to 1 | blocked |
+| `orders.event_id` | `market_events.id` | many to 1 | blocked |
 | `portfolio_snapshots.uid` | `portfolios.uid` | many to 1 | CASCADE |
 | `standings.uid` | `users.uid` | many to 1 | CASCADE |
+| `app_opens.uid` | `users.uid` | many to 1 | CASCADE |
+| `admin_actions.uid` | `users.uid` | many to 1 | CASCADE |
 | `prices.symbol` | `securities.symbol` | many to 1 | blocked |
 
-Deleting a user removes their portfolio, positions, ledger, orders, snapshots and standings (the ledger allows a delete only as part of that cascade). A security can't be deleted while anything still refers to it.
+Deleting a user removes their portfolio, positions, ledger, orders, snapshots, standings and visits (the ledger allows a delete only as part of that cascade). A security can't be deleted while anything still refers to it, and neither can a market event that orders point to.
 
 ## Tables
 
@@ -59,6 +65,29 @@ One row per player. Firebase Auth owns the login; this row owns the app data.
 | `created_at` | TIMESTAMPTZ | no | `now()` | |
 | `display_name` | TEXT | yes | | Shown on the leaderboard. Never the email |
 | `chart_settings` | JSONB | no | `'{}'` | Chart type, colors, indicators. Written only by `PATCH /me/chart-settings` |
+| `last_seen_at` | TIMESTAMPTZ | yes | | Real time of the app's last check-in (D-026). Online = within 2 minutes. NULL = never checked in. Written only by `POST /me/seen` |
+
+### `app_opens`
+One row per visit (D-026). A check-in after more than 30 minutes away, or the very first one, starts a visit. The server decides, never the app. Real time.
+
+| Field | Type | Null | Default | Notes |
+|-------|------|------|---------|-------|
+| `id` | BIGINT | no | identity | **PK** |
+| `uid` | TEXT | no | | FK → `users.uid` |
+| `at` | TIMESTAMPTZ | no | `now()` | When the visit started |
+
+### `admin_actions`
+The admin action log (D-027). One row per admin clock action, written in the same transaction as the action, so a row exists exactly when the action happened. Append-only.
+
+| Field | Type | Null | Default | Notes |
+|-------|------|------|---------|-------|
+| `id` | BIGINT | no | identity | **PK** |
+| `uid` | TEXT | no | | FK → `users.uid`. The admin who did it |
+| `action` | TEXT | no | | `clock_to_close`, `clock_to_open`, `clock_start` or `clock_stop` |
+| `world_from` | TIMESTAMPTZ | yes | | World time before the action |
+| `world_to` | TIMESTAMPTZ | yes | | World time after it |
+| `detail` | JSONB | no | `'{}'` | For example `{"events": 2, "ordersExecuted": 14}` |
+| `at` | TIMESTAMPTZ | no | `now()` | Real time |
 
 ### `securities`
 The securities in the game.
@@ -102,6 +131,10 @@ The one shared game clock. At most one row; no row means the world hasn't starte
 | `real_at` | TIMESTAMPTZ | no | `now()` | The real time when `now_at` was set |
 | `running` | BOOLEAN | no | `FALSE` | TRUE = the clock runs at real speed |
 | `ends_at` | TIMESTAMPTZ | yes | | The clock never passes it: one minute before the first open with no prices. Set by `npm run seed:world` |
+| `last_tick_at` | TIMESTAMPTZ | yes | | Real time of the ticker's last tick. It ticks every minute even when nothing is due, so the admin page shows red when it stops. NULL = never ticked |
+| `events_through` | TIMESTAMPTZ | yes | | World time of the latest event the runner has **started**; every event at or before it has started or finished. The effective "now" is never before it (`worldNow` in `api/src/game/clock.ts`), so an order sent during an admin jump runs after the event already running. NULL = no event started yet |
+
+The effective world time everyone uses (screens, order sending, the runner) is the larger of the clock time above and `events_through`.
 
 ### `market_closures`
 Every Monday-to-Friday on which a market is closed (D-016). Weekends are a rule in code and have no rows. Filled from `api/src/world/closures.ts` by `npm run seed:world`, which stops if the list doesn't match the prices.
@@ -196,8 +229,8 @@ Every order ever sent, for all players (D-004).
 | `placed_at` | TIMESTAMPTZ | no | | World time the order was sent |
 | `executes_at` | TIMESTAMPTZ | no | | World time it will run |
 | `price_type` | TEXT | no | | `open` or `close` |
-| `reject_reason` | TEXT | yes | | Set exactly when `status = 'rejected'` |
-| `created_at` | TIMESTAMPTZ | no | `now()` | Real time, for debugging |
+| `reject_reason` | TEXT | yes | | Set exactly when `status = 'rejected'`. In Hebrew, shown to the player |
+| `created_at` | TIMESTAMPTZ | no | `now()` | Real time. The rate limit counts a player's orders by it |
 | `client_order_id` | TEXT | yes | | From the app. Unique per player, so a retried request can't make a second order |
 | `fill_price` | NUMERIC(14,4) | yes | | The execution price, in the security's currency |
 | `fx_rate` | NUMERIC(10,4) | yes | | USD/ILS used (US only) |
@@ -206,6 +239,9 @@ Every order ever sent, for all players (D-004).
 | `realized_pnl_ils` | NUMERIC(16,2) | yes | | Sells only: gain at average cost |
 | `position_id` | BIGINT | yes | | FK → `positions.id`: the position it opened or changed |
 | `executed_at` | TIMESTAMPTZ | yes | | World time. A CHECK requires all fill columns exactly when `status = 'executed'` |
+| `reject_code` | TEXT | yes | | Why the runner rejected it, so the app can show English: `NO_PRICE`, `INSUFFICIENT_CASH`, `OVER_LIMIT` or `INSUFFICIENT_UNITS`. Only on a rejected order (CHECK). Refusals when sending are answered with an error and never stored |
+| `event_id` | BIGINT | yes | | FK → `market_events.id`: the event that executed or rejected it. A CHECK makes it NULL exactly while `status = 'pending'` |
+| `notified_at` | TIMESTAMPTZ | yes | | Real time the player saw the rejection toast (D-023). Only on a rejected order (CHECK). NULL = not seen yet |
 
 ### `market_events`
 The runner's event log (D-021): one row per open or close it processes. Status goes `pending` → `orders_done` (the event's prices are in effect) → `done`. The admin page reads the counts.
@@ -258,6 +294,11 @@ Every primary key and UNIQUE column has its own index. The other indexes exist f
 | Table | Index | Columns | Kind | Used for |
 |-------|-------|---------|------|----------|
 | `users` | `users_pkey` | `uid` | PK | |
+| `users` | `users_last_seen_idx` | `last_seen_at` | | Players online now, players seen today |
+| `app_opens` | `app_opens_pkey` | `id` | PK | |
+| `app_opens` | `app_opens_at_uid_idx` | `at, uid` | | Today's visits per player, from the index alone |
+| `admin_actions` | `admin_actions_pkey` | `id` | PK | |
+| `admin_actions` | `admin_actions_at_idx` | `at DESC` | | The newest admin actions first |
 | `securities` | `securities_pkey` | `symbol` | PK | |
 | `securities` | `securities_yahoo_symbol_key` | `yahoo_symbol` | unique | Chart lookup by Yahoo symbol |
 | `prices` | `prices_pkey` | `symbol, day` | PK | Price of a security on a day |
@@ -266,8 +307,9 @@ Every primary key and UNIQUE column has its own index. The other indexes exist f
 | `market_closures` | `market_closures_pkey` | `market, day` | PK | Is this market closed on this day |
 | `portfolios` | `portfolios_pkey` | `uid` | PK | |
 | `positions` | `positions_pkey` | `id` | PK | |
-| `positions` | `positions_open_idx` | `uid, symbol` WHERE `status = 'open'` | partial, unique | One open position per player per stock; paging affected players by uid |
+| `positions` | `positions_open_idx` | `uid, symbol` WHERE `status = 'open'` | partial, unique | One open position per player per stock; a player's open position in a stock |
 | `positions` | `positions_uid_idx` | `uid` | | A player's positions, open and closed |
+| `positions` | `positions_open_symbol_idx` | `symbol, uid` WHERE `status = 'open'` | partial | An event's affected players: open positions in that market's stocks, paged by uid |
 | `journals` | `journals_pkey` | `id` | PK | |
 | `journals` | `journals_id_uid_key` | `id, uid` | unique | Target of the entries' same-player foreign key |
 | `journals` | `journals_uid_idx` | `uid, id` | | A player's money history |
@@ -279,6 +321,9 @@ Every primary key and UNIQUE column has its own index. The other indexes exist f
 | `orders` | `orders_pending_idx` | `executes_at` WHERE `status = 'pending'` | partial | Finding orders due to execute |
 | `orders` | `orders_uid_idx` | `uid, placed_at DESC` | | A player's order history, newest first |
 | `orders` | `orders_client_order_idx` | `uid, client_order_id` WHERE `client_order_id IS NOT NULL` | partial, unique | A retried request can't make a second order |
+| `orders` | `orders_uid_created_idx` | `uid, created_at DESC` | | The rate limit: a player's orders in the last real minute |
+| `orders` | `orders_event_idx` | `event_id` WHERE `event_id IS NOT NULL` | partial | The orders an event executed or rejected (affected players, the ledger check) |
+| `orders` | `orders_unseen_rejections_idx` | `uid` WHERE `status = 'rejected' AND notified_at IS NULL` | partial | A player's rejection toasts not seen yet (D-023) |
 | `market_events` | `market_events_pkey` | `id` | PK | |
 | `market_events` | `market_events_market_kind_day_key` | `market, kind, day` | unique | One row per open or close |
 | `market_events` | `market_events_at_idx` | `at` | | The latest events, the admin page |

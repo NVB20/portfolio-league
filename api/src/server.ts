@@ -1,9 +1,11 @@
-// Starts the API: reads the environment, connects to Postgres, listens on PORT.
+// Starts the API: reads the environment, connects to Postgres, listens on PORT, and starts the per-minute
+// ticker (D-030) unless TICKER=off.
 
 import { serve } from '@hono/node-server';
 import pg from 'pg';
 import { createApp } from './app.js';
 import { googleKeys, makeFirebaseVerifier } from './auth.js';
+import { startTicker } from './clockActions.js';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -30,9 +32,17 @@ const server = serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 3000) 
   console.log(`API listening on port ${info.port}`),
 );
 
-// Railway sends SIGTERM before replacing a deployment: finish open requests, then close the pool.
+// The ticker runs the opens and closes the running clock passes, and writes the heartbeat the admin page
+// watches. Here and not in createApp, so tests never start it. Several instances may each tick: the runner's
+// advisory lock lets one run at a time. TICKER=off turns it off (e.g. a local API on a copy of the database).
+const stopTicker = process.env.TICKER === 'off' ? null : startTicker(db);
+if (!stopTicker) console.log('Ticker is off (TICKER=off): world events run only on admin clock moves');
+
+// Railway sends SIGTERM before replacing a deployment: stop ticking and finish open requests (and the tick in
+// progress), then close the pool. A tick cut short is safe: the next instance resumes the event (D-021).
 process.on('SIGTERM', () => {
+  const ticking = stopTicker ? stopTicker() : Promise.resolve();
   server.close(() => {
-    db.end().finally(() => process.exit(0));
+    ticking.finally(() => db.end().finally(() => process.exit(0)));
   });
 });

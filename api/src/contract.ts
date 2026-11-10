@@ -28,16 +28,28 @@ export type ClockView = WorldTime & {
   markets: { tase: MarketSession; us: MarketSession };
 };
 
+// The clock as every player sees it on the dashboard: the world time plus what the admin controls (D-017).
+export type LiveClockView = ClockView & {
+  running: boolean;            // false = the admin stopped it: world time stands still
+  endsAt: WorldTime | null;    // the clock stops here by itself (the last day with prices); null = no end set
+};
+
 export type Point = { at: string; value: number };
 
+// Every ₪ figure here is a value the runner stored (D-019, D-024); the API never adds money up on read (D-031).
 export type PortfolioView = {
-  totalValue: number;              // cash + holdings, in ₪
-  cash: number;
-  weekReturnPct: number | null;    // from this week's snapshots; null before the first snapshot
-  maxDrawdownPct: number | null;   // largest peak-to-low drop this week, as a positive %
-  vsMedianPct: number | null;      // your week return minus the median player's
-  series: Point[];                 // your value this week
-  medianSeries: Point[];           // the median player's value at the same moments
+  totalValue: number;              // equity: all cash + holdings at their last marks, in ₪
+  cash: number;                    // all cash, the reserved part included
+  availableCash: number;           // cash − reservedCash: what a new buy can spend
+  reservedCash: number;            // locked by pending buys
+  realizedPnl: number;             // gains from sales so far, + = gain
+  unrealizedPnl: number;           // holdings at their marks − what they cost
+  weekReturnPct: number | null;    // from the week's running totals; 0 = untouched this week; null = no world yet
+  maxDrawdownPct: number | null;   // largest peak-to-low drop this week, as a positive %; 0 = untouched this week
+  vsMedianPct: number | null;      // your week return minus the median player's after the latest finished event
+                                   // this week; null = no finished event this week yet
+  series: Point[];                 // your value this week: Monday 00:00, one point per trading day, now
+  medianSeries: Point[];           // the median player's value after each finished open or close this week
 };
 
 export type HoldingView = {
@@ -46,10 +58,28 @@ export type HoldingView = {
   exchange: 'TASE' | 'NASDAQ' | 'NYSE';
   currency: 'ILS' | 'USD';
   units: number;
-  valueIls: number | null;         // null = no price for it yet
-  dayChangePct: number | null;
-  weightPct: number | null;        // share of the whole portfolio
+  freeUnits: number;               // units not locked by pending sells: what a new sell can use
+  valueIls: number;                // at the last mark (the latest open or close); at cost until the first one
+  costBasisIls: number;            // ₪ paid for the units held (average cost, D-019)
+  unrealizedPnlIls: number;        // valueIls − costBasisIls
+  dayChangePct: number | null;     // the latest known close vs. the one before (display only)
+  weightPct: number | null;        // share of the whole portfolio (totalValue)
   nearCap: boolean;                // close to the 20% limit (rule 4)
+};
+
+// An order the runner rejected that the player hasn't seen yet (D-023). The app shows it as a toast, then
+// calls POST /me/rejections/seen.
+export type RejectionCode = 'NO_PRICE' | 'INSUFFICIENT_CASH' | 'OVER_LIMIT' | 'INSUFFICIENT_UNITS';
+
+export type RejectionView = {
+  id: string;
+  symbol: string;
+  side: 'buy' | 'sell';
+  amountIls: number | null;        // buys
+  units: number | null;            // sells
+  code: RejectionCode | null;      // for the English text; the runner always sets it
+  reason: string;                  // Hebrew, shown to the player
+  at: WorldTime;                   // the open or close that rejected it
 };
 
 export type OrderView = {
@@ -112,7 +142,7 @@ export type SecurityView = {
   priceDay: string | null;           // the trading day of that close
   dayChangePct: number | null;       // that close vs. the one before
   closes: { day: string; close: number }[];   // the last 11 known closes, oldest first (the 10-day chart)
-  holding: { units: number; valueIls: number | null; weightPct: number | null } | null;
+  holding: { units: number; freeUnits: number; valueIls: number; weightPct: number | null } | null;   // as in HoldingView
   isOpen: boolean;                   // its market is open right now (world time)
   execution: ExecutionView | null;   // null = the world hasn't started
   hasChart: boolean;                 // a Yahoo symbol exists, so GET /me/chart/:symbol works
@@ -121,6 +151,7 @@ export type SecurityView = {
 export type TradeView = {
   clock: ClockView | null;
   cash: number;
+  availableCash: number;             // cash − cash locked by pending buys
   totalValue: number;
   usdIls: UsdIlsView | null;
   securities: SecurityView[];
@@ -141,12 +172,165 @@ export type ChartView = {
 };
 
 export type Dashboard = {
-  clock: ClockView | null;         // null = the world hasn't started
+  clock: LiveClockView | null;     // null = the world hasn't started
   portfolio: PortfolioView;
   holdings: HoldingView[];
   pendingOrders: { total: number; next: OrderView[] };   // next = the 2 that run first (DD-07)
+  rejections: RejectionView[];     // unseen rejected orders, newest first, at most 5 (D-023)
   usdIls: UsdIlsView | null;
   standing: StandingView | null;   // null = no score computed for you this week
   leaderboard: { players: number; top: LeaderRow[] };
 };
 
+// POST /me/rejections/seen: the app showed the rejection toasts up to this order id (the largest id it showed).
+// Marks this player's rejected orders with id ≤ upToId as seen. `marked` = how many were newly marked.
+export type RejectionsSeenBody = { upToId: string };
+export type RejectionsSeenResult = { marked: number };
+
+// ---------- POST /me/orders: sending an order (D-018, D-028) ----------
+
+// The request. A buy is a ₪ amount, a sell a number of units (D-018). Sizes are exact: a decimal string, or a
+// JSON number read as String(n). At most 2 decimals for ₪ and 8 for units; nothing is rounded.
+export type SendOrderBody = {
+  symbol: string;
+  side: 'buy' | 'sell';
+  amountIls?: string | number;     // buys only, at least ₪100
+  units?: string | number;         // sells only
+  clientOrderId?: string;          // ^[A-Za-z0-9_-]{1,64}$: the same id again returns the same order
+};
+
+export type SentOrderView = OrderView & {
+  status: 'pending' | 'executed' | 'rejected';   // a new order is 'pending'; a replay shows what happened since
+  placedAt: WorldTime;             // the effective world time it was sent
+  clientOrderId: string | null;
+};
+
+// 201 = a new order; 200 = the same clientOrderId and order again (replay: true, nothing new was written).
+export type SendOrderResult = { order: SentOrderView; replay: boolean };
+
+export type SendOrderErrorCode =
+  | 'BAD_REQUEST'                  // 400
+  | 'UNKNOWN_SYMBOL' | 'NO_USER'   // 404
+  | 'NO_WORLD' | 'GAME_OVER' | 'CLIENT_ID_CONFLICT'   // 409
+  | 'BELOW_MIN' | 'INSUFFICIENT_CASH' | 'NO_POSITION' | 'INSUFFICIENT_UNITS' | 'OVER_LIMIT'   // 422
+  | 'RATE_LIMITED';                // 429, with a Retry-After header in seconds
+
+// `error` is English; `reason` is the Hebrew shown to the player, when there is one.
+export type SendOrderError = { error: string; code: SendOrderErrorCode; reason?: string };
+
+// ---------- POST /admin/clock/advance | start | stop: the admin's clock moves (D-017, D-030) ----------
+// Admins only. Every move that changes the clock writes one admin_actions row in the same transaction (D-027).
+
+// What the runner did on the way: the opens and closes it ran, and their orders and re-valued players.
+export type ClockRunCounts = { events: number; ordersExecuted: number; ordersRejected: number; playersUpdated: number };
+
+// 200: jumped to the next close of an open market, or to the next open when none is open (capped at endsAt).
+export type ClockAdvanceResult = ClockRunCounts & {
+  kind: 'to_close' | 'to_open';
+  from: WorldTime;                 // the effective world time before the jump
+  to: WorldTime;
+  clock: LiveClockView;            // after the move; a running clock keeps running from `to`
+};
+
+// 200 either way. changed: false = it was already running; nothing was written.
+export type ClockStartResult = { changed: boolean; clock: LiveClockView };
+
+// 200 either way. changed: false = it was already stopped. Otherwise every event up to `at` ran first.
+export type ClockStopResult =
+  | { changed: false; clock: LiveClockView }
+  | (ClockRunCounts & { changed: true; at: WorldTime; clock: LiveClockView });   // at = where it froze
+
+export type ClockActionErrorCode =
+  | 'NO_WORLD'                     // 409: no world_clock row yet
+  | 'CLOCK_BUSY'                   // 409: the runner is running an event (the ticker, or another move); try again
+  | 'CLOCK_AT_END';                // 409: advance at world_clock.ends_at, the last moment with prices
+
+// `error` is English, `reason` the Hebrew the admin page shows.
+export type ClockActionError = { error: string; code: ClockActionErrorCode; reason: string };
+
+// ---------- GET /admin/overview and GET /admin/players: the admin side (admins only) ----------
+// Only numbers the database already has. Metrics we don't track yet (the engine's runs, the admin
+// action log) are not here, and the screen says so instead of guessing.
+// Presence (D-026) is real time: "today" is the real Israel date, never the world clock's.
+
+export type AdminOverview = {
+  clock: (ClockView & { running: boolean; endsAt: string | null }) | null;   // null = the world hasn't started
+  players: {
+    total: number;
+    joinedToday: number;           // signed up today, real Israel date
+    withHoldings: number;          // own at least one security
+  };
+  presence: {
+    onlineNow: number;             // the app checked in during the last 2 minutes
+    seenToday: number;             // checked in at least once today; each player counts once
+    visitsToday: number;           // visits started today (a visit = a check-in after 30+ minutes away)
+    returningToday: number;        // players with 2 or more visits today
+    visitBuckets: { two: number; threeToFive: number; sixPlus: number };
+    avgVisits: number | null;      // visits per player who visited today; null = no visits yet
+  };
+  orders: {
+    pending: { tase: number; us: number };
+    rejectedThisWeek: number;      // executed this world week and rejected
+    rejectReasons: { reason: string; count: number }[];   // the most common this week, up to 3
+  };
+  world: {
+    securities: number;
+    pricesUntil: { tase: string | null; us: string | null };   // the last day with prices in the database
+    usdIlsUntil: string | null;
+  };
+  lastRun: AdminRunView | null;    // the latest open/close the engine started (market_events); null = none yet
+  eventsBehind: number;            // opens/closes already due in world time that aren't done yet
+  recentActions: AdminActionView[];   // the admin action log, newest first, up to 5
+};
+
+// One open or close the engine ran (D-021).
+export type AdminRunView = {
+  market: 'TASE' | 'US';
+  kind: 'open' | 'close';
+  at: WorldTime;                   // the event's world time
+  status: 'pending' | 'orders_done' | 'done';
+  ordersExecuted: number;
+  ordersRejected: number;
+  playersUpdated: number;
+  durationMs: number | null;       // null = still running
+  ledgerBalanced: boolean | null;  // the ledger check after the event (D-019); null = not checked yet
+  finishedAt: string | null;       // real time, ISO
+};
+
+export type AdminAction = 'clock_to_close' | 'clock_to_open' | 'clock_start' | 'clock_stop';
+
+export type AdminActionView = {
+  at: string;                      // real time, ISO
+  admin: string;                   // display name, else email
+  action: AdminAction;
+  worldFrom: string | null;        // world time before and after, ISO
+  worldTo: string | null;
+  detail: Record<string, unknown>; // e.g. { events, ordersExecuted }
+};
+
+// GET /admin/activity?days=: players per day and how many come back (D-026). Real Israel dates.
+export type RetentionRate = {
+  cohort: number;                  // players who signed up in the window, old enough to be measured
+  returned: number;                // of them, visited on day 1 (or day 7) after signing up
+  pct: number | null;              // null = nobody to measure yet
+};
+
+export type AdminActivity = {
+  days: { date: string; activePlayers: number; visits: number; signups: number }[];   // oldest first, includes today
+  retention: { d1: RetentionRate; d7: RetentionRate };
+};
+
+export type AdminPlayer = {
+  uid: string;
+  name: string | null;             // display name; null = signed up with email and no name
+  email: string;
+  isAdmin: boolean;
+  joinedAt: string;                // real time, ISO
+  totalValue: number;              // cash + holdings at the latest known closes, in ₪
+  rank: number | null;             // on the latest scored day of this week; null = not scored
+  pendingOrders: number;
+  lastSeenAt: string | null;       // real time, ISO; null = never checked in
+  visitsToday: number;
+};
+
+export type AdminPlayers = { players: AdminPlayer[]; limit: number };

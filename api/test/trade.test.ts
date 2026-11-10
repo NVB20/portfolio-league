@@ -3,6 +3,8 @@
 //
 // The seeded world: Wednesday 2026-11-11, 12:40 Israel time (10:40 UTC). TASE is open (its latest
 // KNOWN close is Tuesday's), New York hasn't opened (latest known close: Tuesday's).
+// Cash, holdings and totals are the stored values the runner writes (D-019, D-024); the screen never adds
+// them up (D-031). Security prices on the list are still the latest known closes.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import pg from 'pg';
@@ -43,7 +45,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.query('TRUNCATE users, securities, usd_ils, world_clock CASCADE');
+  await db.query('TRUNCATE users, securities, usd_ils, world_clock, market_events CASCADE');
   yahooCalls = [];
   yahooFails = false;
 });
@@ -86,6 +88,7 @@ describe('GET /me/trade', () => {
     expect(await res.json()).toEqual({
       clock: null,
       cash: 1_000_000,
+      availableCash: 1_000_000,
       totalValue: 1_000_000,
       usdIls: null,
       securities: [],
@@ -101,18 +104,12 @@ describe('GET /me/trade', () => {
 
   it('seeded world: known closes only, when an order would run, holdings and pending orders', async () => {
     await seedWorld();
-    await call('POST', '/me', 'alice');
-    await db.query(`UPDATE portfolios SET cash = 900000 WHERE uid = 'alice'`);
-    await db.query(`INSERT INTO holdings (uid, symbol, units) VALUES ('alice', 'TEVA', 100)`);
-    await db.query(
-      `INSERT INTO orders (uid, symbol, side, amount_ils, units, placed_at, executes_at, price_type) VALUES
-         ('alice', 'NVDA', 'buy', 40000, NULL, '2026-11-11T10:30:00Z', '2026-11-11T14:30:00Z', 'open'),
-         ('alice', 'TEVA', 'sell', NULL, 40, '2026-11-11T10:35:00Z', '2026-11-11T15:30:00Z', 'close')`,
-    );
+    await seedAlice();
 
     const t = await (await call('GET', '/me/trade', 'alice')).json();
     expect(t.cash).toBe(900_000);
-    expect(t.totalValue).toBeCloseTo(900_000 + 100 * 132.6, 2);
+    expect(t.availableCash).toBe(860_000);   // 40,000.00 is locked by the pending NVDA buy
+    expect(t.totalValue).toBe(913_300);      // the stored equity; 100 × Tuesday's ₪132.6 would give 913,260
     expect(t.usdIls.rate).toBe(3.72);
     expect(t.securities.map((s: { symbol: string }) => s.symbol)).toEqual(['TEVA', 'NOCH', 'NVDA']);
 
@@ -127,7 +124,8 @@ describe('GET /me/trade', () => {
       execution: { priceType: 'close', at: { date: '2026-11-11', time: '17:30' } },
     });
     expect(teva.dayChangePct).toBeCloseTo(2, 6);
-    expect(teva.holding.units).toBe(100);
+    // The stored mark (Wednesday's open, ₪133) and the stored equity, exact; 40 units are locked by the sell.
+    expect(teva.holding).toEqual({ units: 100, freeUnits: 60, valueIls: 13_300, weightPct: 1.4563 });
 
     const nvda = t.securities[2];
     expect(nvda).toMatchObject({
@@ -140,7 +138,57 @@ describe('GET /me/trade', () => {
 
     expect(t.pendingOrders.map((o: { symbol: string }) => o.symbol)).toEqual(['NVDA', 'TEVA']);
   });
+
+  it('brings me up to date before reading, during an event whose orders have run (D-025)', async () => {
+    await seedWorld();
+    await seedAlice();
+    // Alice as she was after Tuesday's TASE close (₪132.6), with Wednesday's open run but her row not reached yet.
+    await db.query(
+      `UPDATE positions SET last_price = 132.6000, market_value_ils = 13260.00, unrealized_pnl_ils = 260.00,
+         marked_at = '2026-11-10T15:30:00Z' WHERE uid = 'alice'`,
+    );
+    await db.query(
+      `UPDATE portfolios SET holdings_value = 13260.00, unrealized_pnl = 260.00, marked_at = '2026-11-10T15:30:00Z',
+         last_event_at = '2026-11-10T15:30:00Z' WHERE uid = 'alice'`,
+    );
+    await db.query(
+      `INSERT INTO market_events (market, kind, day, at, status) VALUES ('TASE', 'open', '2026-11-11', '2026-11-11T08:00:00Z', 'orders_done')`,
+    );
+
+    const t = await (await call('GET', '/me/trade', 'alice')).json();
+    expect(t.totalValue).toBe(913_300);
+    expect(t.securities[0].holding).toEqual({ units: 100, freeUnits: 60, valueIls: 13_300, weightPct: 1.4563 });
+
+    const stored = await db.query(
+      `SELECT p.equity::text AS equity, p.last_event_at, x.last_price::text AS last_price, x.market_value_ils::text AS value
+       FROM portfolios p JOIN positions x ON x.uid = p.uid WHERE p.uid = 'alice'`,
+    );
+    expect(stored.rows[0]).toEqual({
+      equity: '913300.0000', last_event_at: new Date('2026-11-11T08:00:00Z'), last_price: '133.0000', value: '13300.00',
+    });
+  });
 });
+
+// Alice after Wednesday's TASE open: 100 TEVA marked at ₪133.0000 = 13,300.00 (cost 13,000.00), 40 of them locked
+// by a pending sell; 900,000.00 cash, 40,000.00 of it locked by a pending NVDA buy. Equity 913,300.00.
+async function seedAlice() {
+  await call('POST', '/me', 'alice');
+  await db.query(
+    `UPDATE portfolios SET cash = 900000.00, reserved_cash = 40000.00, holdings_value = 13300.00, unrealized_pnl = 300.00,
+       marked_at = '2026-11-11T08:00:00Z', last_event_at = '2026-11-11T08:00:00Z'
+     WHERE uid = 'alice'`,
+  );
+  await db.query(
+    `INSERT INTO positions (uid, symbol, units, reserved_units, avg_cost_ils, cost_basis_ils, last_price, market_value_ils,
+                            unrealized_pnl_ils, marked_at, opened_at)
+     VALUES ('alice', 'TEVA', 100, 40, 130, 13000.00, 133.0000, 13300.00, 300.00, '2026-11-11T08:00:00Z', '2026-11-02T08:00:00Z')`,
+  );
+  await db.query(
+    `INSERT INTO orders (uid, symbol, side, amount_ils, units, placed_at, executes_at, price_type) VALUES
+       ('alice', 'NVDA', 'buy', 40000, NULL, '2026-11-11T10:30:00Z', '2026-11-11T14:30:00Z', 'open'),
+       ('alice', 'TEVA', 'sell', NULL, 40, '2026-11-11T10:35:00Z', '2026-11-11T15:30:00Z', 'close')`,
+  );
+}
 
 describe('GET /me/chart/:symbol', () => {
   beforeEach(async () => {

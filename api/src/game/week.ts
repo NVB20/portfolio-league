@@ -51,26 +51,35 @@ export function weekOf(at: Date): string {
   return mondayOf(zonedParts(at, ISRAEL).date);
 }
 
+// Lazy weekly reset: the first event of a new week starts the totals from the value before it, so nothing
+// has to rewrite every row when a week begins (D-024). Same week = an unchanged copy, so calling it twice
+// for one event is harmless. It never touches lastEventAt: the retry guard belongs to applyEvent.
+// The order step calls it on its own before a trade, so a player who trades at the first event of a week
+// starts the week from their value BEFORE the trade; the later applyEvent then only adds peak and drawdown.
+export function startWeek(week: WeekState, eventAt: Date, valueBefore: bigint): WeekState {
+  const eventWeek = weekOf(eventAt);
+  if (week.weekStart === eventWeek) return { ...week };
+  return {
+    weekStart: eventWeek,
+    weekStartValue: valueBefore,
+    peakValue: valueBefore,
+    maxDrawdownPct: 0n,
+    lastEventAt: week.lastEventAt,
+  };
+}
+
 // Folds one event into the week. valueBefore/valueAfter are the player's value just before and after it.
 // null = this event (or a later one) was already applied, so a retried batch changes nothing (D-021).
 export function applyEvent(week: WeekState, eventAt: Date, valueBefore: bigint, valueAfter: bigint): WeekState | null {
   if (week.lastEventAt !== null && week.lastEventAt.getTime() >= eventAt.getTime()) return null;
-  const eventWeek = weekOf(eventAt);
-
-  // Lazy weekly reset: the first event of a new week starts the totals from the value before it,
-  // so nothing has to rewrite every row when a week begins (D-024).
-  const fresh = week.weekStart !== eventWeek;
-  const startValue = fresh ? valueBefore : (week.weekStartValue ?? valueBefore);
-  const oldPeak = fresh ? valueBefore : (week.peakValue ?? valueBefore);
-  const oldDrawdown = fresh ? 0n : week.maxDrawdownPct;
-
-  const peak = bigMax(oldPeak, valueAfter);
+  const started = startWeek(week, eventAt, valueBefore);
+  const peak = bigMax(started.peakValue ?? valueBefore, valueAfter);
   const drawdown = peak > 0n ? pct(peak - valueAfter, peak) : 0n;
   return {
-    weekStart: eventWeek,
-    weekStartValue: startValue,
+    weekStart: started.weekStart,
+    weekStartValue: started.weekStartValue ?? valueBefore,
     peakValue: peak,
-    maxDrawdownPct: bigMax(oldDrawdown, drawdown),
+    maxDrawdownPct: bigMax(started.maxDrawdownPct, drawdown),
     lastEventAt: eventAt,
   };
 }

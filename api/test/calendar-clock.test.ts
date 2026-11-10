@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { executionFor, isMarketOpen, makeCalendar, marketStatus, sessionOn } from '../src/game/marketHours.js';
-import { eventsBetween, isTradingDay, jumpTarget, runForward } from '../src/game/clock.js';
+import { type ClockState, eventsBetween, isTradingDay, jumpTarget, runForward, worldNow } from '../src/game/clock.js';
 
 const cal = makeCalendar([
   { market: 'TASE', day: '2026-04-01', reason: 'פסח' },
@@ -119,5 +119,51 @@ describe('clock: running at real speed', () => {
   it('never passes the end of history', () => {
     const end = at('2026-04-03T08:00:00Z');
     expect(runForward(at('2026-04-03T07:00:00Z'), 10 * 3_600_000, end, cal)).toEqual(end);
+  });
+});
+
+describe('clock: the effective now (worldNow)', () => {
+  const FRI_OPEN = at('2026-04-03T07:00:00Z');    // Fri 03.04 10:00 Israel, TASE opens
+  const FRI_CLOSE = at('2026-04-03T10:50:00Z');   // Fri 03.04 13:50 Israel, TASE's Friday close
+  const REAL_AT = at('2026-11-10T12:00:00Z');     // the real time the row was stored
+  const realLater = (ms: number) => new Date(REAL_AT.getTime() + ms);
+  const row = (more: Partial<ClockState> = {}): ClockState => ({
+    nowAt: FRI_OPEN, realAt: REAL_AT, running: false, endsAt: null, eventsThrough: null, ...more,
+  });
+
+  it('is the stored world time while the clock is stopped, however much real time has passed', () => {
+    expect(worldNow(row(), realLater(5 * 3_600_000), cal)).toEqual(FRI_OPEN);
+  });
+
+  it('runs on by the real time since the row was stored, skipping days when both markets are closed', () => {
+    // Fri 03.04 23:00 Israel + 2 real hours: Sat, Sun and Mon 06.04 (both closed) take no time -> Tue 07.04 01:00
+    const r = row({ nowAt: at('2026-04-03T20:00:00Z'), running: true });
+    expect(worldNow(r, realLater(2 * 3_600_000), cal)).toEqual(at('2026-04-06T22:00:00Z'));
+  });
+
+  it('never runs past ends_at, and has no end when ends_at is null', () => {
+    const tenHours = realLater(10 * 3_600_000);
+    expect(worldNow(row({ running: true, endsAt: at('2026-04-03T08:00:00Z') }), tenHours, cal)).toEqual(at('2026-04-03T08:00:00Z'));
+    expect(worldNow(row({ running: true }), tenHours, cal)).toEqual(at('2026-04-03T17:00:00Z'));   // Fri 20:00 Israel
+  });
+
+  it('counts a row stored after the real now (it changed while we waited for its lock) as no time passed', () => {
+    expect(worldNow(row({ running: true }), realLater(-1_000), cal)).toEqual(FRI_OPEN);
+  });
+
+  it('is never before the latest event the runner has started (an admin jump in progress)', () => {
+    // The admin jumps to the 13:50 close: the runner has started it, the clock row still says 10:00.
+    expect(worldNow(row({ eventsThrough: FRI_CLOSE }), REAL_AT, cal)).toEqual(FRI_CLOSE);
+    expect(worldNow(row({ running: true, eventsThrough: FRI_CLOSE }), realLater(30 * 60_000), cal)).toEqual(FRI_CLOSE);
+    // So an order sent in that moment runs at the next open, not at the close that is already running:
+    // Mon 06.04 is closed, so Tue 07.04 10:00 Israel.
+    const now = worldNow(row({ eventsThrough: FRI_CLOSE }), REAL_AT, cal);
+    expect(executionFor('TASE', now, cal)).toEqual({ priceType: 'open', day: '2026-04-07', at: at('2026-04-07T07:00:00Z') });
+  });
+
+  it('is the clock time once the clock has passed the latest event', () => {
+    const r = row({ running: true, eventsThrough: FRI_OPEN });
+    expect(worldNow(r, realLater(90 * 60_000), cal)).toEqual(at('2026-04-03T08:30:00Z'));
+    expect(worldNow(row({ eventsThrough: at('2026-04-02T20:00:00Z') }), REAL_AT, cal)).toEqual(FRI_OPEN);
   });
 });

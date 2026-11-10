@@ -23,7 +23,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.query('TRUNCATE users, securities, usd_ils, world_clock CASCADE');
+  await db.query('TRUNCATE users, securities, usd_ils, world_clock, market_events CASCADE');
   await db.query(`INSERT INTO securities VALUES ('TEVA', 'טבע', 'TASE', 'TASE', 'ILS')`);
 });
 
@@ -225,7 +225,12 @@ describe('orders', () => {
   it('needs a reason to reject and a fill to execute', async () => {
     await signUp('alice');
     await insert('buy', 1000, null);
-    await expect(db.query(`UPDATE orders SET status = 'rejected'`)).rejects.toThrow(/orders_reject_check/);
-    await expect(db.query(`UPDATE orders SET status = 'executed'`)).rejects.toThrow(/orders_fill_check/);
+    // A processed order also names the event that ran it (orders_event_check), so give it one.
+    const { rows } = await db.query(
+      `INSERT INTO market_events (market, kind, day, at) VALUES ('TASE', 'close', '2026-11-11', '2026-11-11T15:30:00Z') RETURNING id`,
+    );
+    const event = rows[0].id;
+    await expect(db.query(`UPDATE orders SET status = 'rejected', event_id = $1`, [event])).rejects.toThrow(/orders_reject_check/);
+    await expect(db.query(`UPDATE orders SET status = 'executed', event_id = $1`, [event])).rejects.toThrow(/orders_fill_check/);
   });
 });

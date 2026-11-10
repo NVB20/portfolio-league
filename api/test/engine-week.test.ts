@@ -6,7 +6,9 @@ import { describe, expect, it } from 'vitest';
 import { avgCost, parse, SCALE, valueIls } from '../src/game/fixed.js';
 import type { PositionState } from '../src/game/engine.js';
 import type { Market } from '../src/game/marketHours.js';
-import { applyEvent, markPositions, median, totals, type WeekState, weekOf, weekReturnPct } from '../src/game/week.js';
+import {
+  applyEvent, markPositions, median, startWeek, totals, type WeekState, weekOf, weekReturnPct,
+} from '../src/game/week.js';
 
 const ils = (s: string) => parse(s, SCALE.ILS);
 const units = (s: string) => parse(s, SCALE.UNITS);
@@ -180,6 +182,64 @@ describe('applyEvent', () => {
     applyEvent(w, MON_CLOSE, ils('1050000.00'), ils('1000000.00'));
     applyEvent(w, NEXT_MON_OPEN, ils('1050000.00'), ils('1000000.00'));
     expect(w).toEqual(before);
+  });
+});
+
+describe('startWeek', () => {
+  const lastWeek: WeekState = {
+    weekStart: '2026-11-09', weekStartValue: ils('1000000.00'), peakValue: ils('1100000.00'),
+    maxDrawdownPct: pctOf('10'), lastEventAt: WED_OPEN,
+  };
+
+  it('starts a never-touched row from the value before the event, and leaves the retry guard alone', () => {
+    expect(startWeek(EMPTY, MON_OPEN, ils('1000000.00'))).toEqual({
+      weekStart: '2026-11-09', weekStartValue: ils('1000000.00'), peakValue: ils('1000000.00'),
+      maxDrawdownPct: 0n, lastEventAt: null,
+    });
+  });
+
+  it('resets a row from an older week, keeping its lastEventAt', () => {
+    expect(startWeek(lastWeek, NEXT_MON_OPEN, ils('1089000.00'))).toEqual({
+      weekStart: '2026-11-16', weekStartValue: ils('1089000.00'), peakValue: ils('1089000.00'),
+      maxDrawdownPct: 0n, lastEventAt: WED_OPEN,
+    });
+  });
+
+  it('changes nothing in the same week, whatever the value, and returns a copy', () => {
+    const out = startWeek(lastWeek, at('2026-11-12T15:30:00Z'), ils('1.00'));   // Thursday's close
+    expect(out).toEqual(lastWeek);
+    expect(out).not.toBe(lastWeek);
+  });
+
+  it('uses the Israel date: Monday 00:30 Israel starts a new week, Sunday 23:00 does not', () => {
+    expect(startWeek(lastWeek, at('2026-11-15T21:00:00Z'), ils('5.00'))).toEqual(lastWeek);
+    expect(startWeek(lastWeek, at('2026-11-15T22:30:00Z'), ils('5.00')).weekStart).toBe('2026-11-16');
+  });
+
+  it('is safe to call twice for the same event (a retried batch)', () => {
+    const once = startWeek(lastWeek, NEXT_MON_OPEN, ils('1089000.00'));
+    expect(startWeek(once, NEXT_MON_OPEN, ils('1200000.00'))).toEqual(once);
+  });
+
+  it('never changes the row it was given', () => {
+    const before = structuredClone(lastWeek);
+    startWeek(lastWeek, NEXT_MON_OPEN, ils('1089000.00'));
+    expect(lastWeek).toEqual(before);
+  });
+
+  it('then applyEvent at the same event: the week starts from the value before the trade, not after it', () => {
+    // Worth 1,000,000.00 before Monday's open. The open fills a sale above its last mark (+5,000.00 of value),
+    // then re-marking the rest takes 1,000.00 off. The week's gain is +4,000.00 (0.4%), all of it this week's.
+    const started = startWeek(lastWeek, NEXT_MON_OPEN, ils('1000000.00'));
+    const w = applyEvent(started, NEXT_MON_OPEN, ils('1005000.00'), ils('1004000.00'))!;
+    expect(w).toEqual({
+      weekStart: '2026-11-16', weekStartValue: ils('1000000.00'), peakValue: ils('1004000.00'),
+      maxDrawdownPct: 0n, lastEventAt: NEXT_MON_OPEN,
+    });
+    expect(weekReturnPct(w, ils('1004000.00'), '2026-11-16')).toBe(pctOf('0.4'));
+    // Without startWeek the week would start after the sale, and the sale's gain would vanish from it.
+    const late = applyEvent(lastWeek, NEXT_MON_OPEN, ils('1005000.00'), ils('1004000.00'))!;
+    expect(late.weekStartValue).toBe(ils('1005000.00'));
   });
 });
 

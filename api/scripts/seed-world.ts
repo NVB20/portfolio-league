@@ -18,9 +18,7 @@ import { WORLD_CLOSURES } from '../src/world/closures.js';
 import { type Calendar, makeCalendar, type Market, MARKETS, nextOpen, sessionOn } from '../src/game/marketHours.js';
 import { addDays, ISRAEL, weekdayOf, zonedToInstant } from '../src/game/time.js';
 
-// The first moment of the game: Monday 6 November 2023, 09:00 Israel time (07:00 UTC), one hour before
-// TASE opens, on the first day of the price history (D-013).
-const WORLD_START = '2023-11-06T07:00:00Z';
+import { HISTORY_DAYS, worldStartAt } from '../src/game/worldStart.js';
 
 const PRICES_URL = process.env.PRICES_DATABASE_URL ?? 'postgres://hof:hof_dev@localhost:5432/prices';
 const GAME_URL = process.env.DATABASE_URL;
@@ -91,14 +89,22 @@ async function main() {
       ],
     );
     const calendar = makeCalendar(WORLD_CLOSURES);
-    const lastDays = await checkCalendar(game, calendar);
+    const historyStart = await firstCommonDay(game);
+    const lastDays = await checkCalendar(game, calendar, historyStart);
     console.log(`Calendar: ${WORLD_CLOSURES.length} closed weekdays, all match the prices`);
 
+    // The world starts the first Monday at least HISTORY_DAYS after the history begins, 09:00 Israel time
+    // (D-013), so players arrive with closes already behind them. All prices are still copied from day one.
+    const worldStart = worldStartAt(historyStart);
     const clock = await game.query(
       'INSERT INTO world_clock (now_at) VALUES ($1) ON CONFLICT (id) DO NOTHING RETURNING now_at',
-      [WORLD_START],
+      [worldStart],
     );
-    console.log(clock.rowCount ? `World clock set to ${WORLD_START}` : 'World clock already set, not moved');
+    console.log(
+      clock.rowCount
+        ? `World clock set to ${worldStart.toISOString()} (history from ${historyStart}, ${HISTORY_DAYS}+ days before)`
+        : 'World clock already set, not moved',
+    );
 
     // The clock stops one minute before the first open that has no prices, so every event it can reach has a price.
     const endsAt = new Date(
@@ -114,10 +120,25 @@ async function main() {
   }
 }
 
-// A weekday must be in the calendar exactly when it has no prices, from the first day of the world to the
-// last day with prices. Any mismatch stops the seed (and rolls it back) with the list of bad days.
+// The first day on which every series has data: both markets and USD/ILS. The history starts here.
+async function firstCommonDay(db: pg.Client): Promise<string> {
+  const { rows } = await db.query<{ first: string | null }>(
+    `SELECT GREATEST(
+       (SELECT min(p.day) FROM prices p JOIN securities s USING (symbol) WHERE s.market = 'TASE'),
+       (SELECT min(p.day) FROM prices p JOIN securities s USING (symbol) WHERE s.market = 'US'),
+       (SELECT min(day) FROM usd_ils)
+     )::text AS first`,
+  );
+  const first = rows[0]?.first;
+  if (!first) throw new Error('No prices loaded: cannot work out when the history starts');
+  return first;
+}
+
+// A weekday must be in the calendar exactly when it has no prices, from the first day of the history (the
+// days before the world starts are history players see, so they must match too) to the last day with
+// prices. Any mismatch stops the seed (and rolls it back) with the list of bad days.
 // Returns each market's last day with prices.
-async function checkCalendar(db: pg.Client, calendar: Calendar): Promise<Record<Market, string>> {
+async function checkCalendar(db: pg.Client, calendar: Calendar, historyStart: string): Promise<Record<Market, string>> {
   const { rows } = await db.query<{ market: Market; days: string[] }>(
     `SELECT s.market, array_agg(DISTINCT p.day::text) AS days
      FROM prices p JOIN securities s USING (symbol) GROUP BY s.market`,
@@ -129,7 +150,7 @@ async function checkCalendar(db: pg.Client, calendar: Calendar): Promise<Record<
     if (traded.size === 0) throw new Error(`No ${market} prices loaded`);
     const last = [...traded].sort().at(-1)!;
     lastDays[market] = last;
-    for (let day = WORLD_START.slice(0, 10); day <= last; day = addDays(day, 1)) {
+    for (let day = historyStart; day <= last; day = addDays(day, 1)) {
       const weekday = weekdayOf(day);
       if (weekday === 0 || weekday === 6) continue;
       const closed = calendar.closedReason(market, day) !== null;

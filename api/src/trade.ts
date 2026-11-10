@@ -1,14 +1,15 @@
-// GET /me/trade: everything the trading screen shows, in one read-only request.
+// GET /me/trade: everything the trading screen shows, in one request.
 // The 40 securities with their latest known close, the player's cash and holdings, when an order sent
 // now would run, the pending orders, and the player's chart settings.
 //
-// Prices follow D-009: the latest daily close that has already happened in world time.
-// Nothing is written here. Sending an order (POST /me/orders) comes with the game engine.
+// The list's prices are the latest daily close already known in world time (a display price; orders fill at
+// the next open or close). Cash, holdings and totals are the stored values, as on the dashboard (D-031).
+// The only write is the catch-up before reading (D-025); sending an order is POST /me/orders.
 
 import type { Pool } from 'pg';
 import type { OrderView, SecurityView, TradeView } from './contract.js';
 import { withDefaults } from './chartSettings.js';
-import { clockView, loadNow, loadPortfolio, loadUsdIls, worldTime } from './dashboard.js';
+import { catchUp, clockView, loadNow, loadPortfolio, loadUsdIls, worldTime } from './dashboard.js';
 import { executionFor, isMarketOpen } from './game/marketHours.js';
 
 const CLOSES_SHOWN = 11;      // the 10-day chart: ten closes back + the latest
@@ -28,6 +29,7 @@ type SecurityRow = {
 
 // Returns null when the user has no portfolio row yet (POST /me was never called).
 export async function getTrade(db: Pool, uid: string): Promise<TradeView | null> {
+  await catchUp(db, uid);
   const now = await loadNow(db);
   const owned = await loadPortfolio(db, uid, now);
   if (!owned) return null;
@@ -68,7 +70,7 @@ export async function getTrade(db: Pool, uid: string): Promise<TradeView | null>
       priceDay: last?.day ?? null,
       dayChangePct: last && prev ? (last.close / prev.close - 1) * 100 : null,
       closes,
-      holding: h ? { units: h.units, valueIls: h.valueIls, weightPct: h.weightPct } : null,
+      holding: h ? { units: h.units, freeUnits: h.freeUnits, valueIls: h.valueIls, weightPct: h.weightPct } : null,
       isOpen: now ? isMarketOpen(r.market, now.at, now.calendar) : false,
       execution: exec ? { priceType: exec.priceType, at: worldTime(exec.at) } : null,
       hasChart: r.has_chart,
@@ -77,8 +79,9 @@ export async function getTrade(db: Pool, uid: string): Promise<TradeView | null>
 
   return {
     clock: now ? clockView(now.at, now.calendar) : null,
-    cash: owned.cash,
-    totalValue: owned.totalValue,
+    cash: owned.totals.cash,
+    availableCash: owned.totals.availableCash,
+    totalValue: owned.totals.totalValue,
     usdIls: await loadUsdIls(db, now),
     securities,
     pendingOrders: await loadAllPending(db, uid),

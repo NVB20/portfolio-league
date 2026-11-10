@@ -71,6 +71,28 @@ export function jumpTarget(now: Date, end: Date, calendar: Calendar = NO_CLOSURE
   return jump.to > end ? { ...jump, to: end } : jump;
 }
 
+// The world_clock row that "now" is computed from (D-017, D-021).
+export type ClockState = {
+  nowAt: Date;                 // the world time the clock was last set to
+  realAt: Date;                // the real time it was set
+  running: boolean;
+  endsAt: Date | null;         // the clock never passes it; null = no end
+  eventsThrough: Date | null;  // the latest event the runner has started
+};
+
+const NO_END = new Date(8.64e15);   // the latest Date there is
+
+// The world's "now": the clock time, but never before the latest event the runner has started.
+// During an admin jump the runner starts the 17:30 close before the clock row moves. An order sent in that
+// moment must go to the next open, not into a close that is already running, and the screens must show the
+// same time the order rules use. The screens, order sending and the runner all call this one function.
+export function worldNow(row: ClockState, realNow: Date, calendar: Calendar): Date {
+  const clock = row.running
+    ? runForward(row.nowAt, realNow.getTime() - row.realAt.getTime(), row.endsAt ?? NO_END, calendar)
+    : row.nowAt;
+  return row.eventsThrough !== null && row.eventsThrough > clock ? row.eventsThrough : clock;
+}
+
 // Move 3: the world time after `realElapsedMs` of real time has passed since `worldAt`.
 // Real time is spent only on days when a market opens. On reaching a day when neither does, the clock
 // moves straight to midnight of the next trading day. Capped at `end`.
