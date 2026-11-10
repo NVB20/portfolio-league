@@ -37,6 +37,18 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     clearTimeout(timer);
   }
 
-  if (!res.ok) throw new Error(`API ${init.method ?? 'GET'} ${path} failed: ${res.status}`);
+  if (!res.ok) {
+    // Keep the JSON error body ({ error, code, reason, ... }) so a screen can show the API's own Hebrew reason.
+    const body = await res.json().catch(() => null);
+    throw new ApiError(`API ${init.method ?? 'GET'} ${path} failed: ${res.status}`, res.status, body);
+  }
   return res.json() as Promise<T>;
+}
+
+// A non-2xx answer. `body` is the parsed JSON error, or null when there was none.
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly body: unknown) {
+    super(message);
+    this.name = 'ApiError';
+  }
 }

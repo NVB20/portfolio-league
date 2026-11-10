@@ -261,7 +261,8 @@ export type ClockActionError = { error: string; code: ClockActionErrorCode; reas
 // Presence (D-026) is real time: "today" is the real Israel date, never the world clock's.
 
 export type AdminOverview = {
-  clock: (ClockView & { running: boolean; endsAt: string | null }) | null;   // null = the world hasn't started
+  // null = the world hasn't started. lastTickAt = the ticker's last beat, real time (D-030); null = never ticked.
+  clock: (LiveClockView & { lastTickAt: string | null }) | null;
   players: {
     total: number;
     joinedToday: number;           // signed up today, real Israel date
@@ -298,9 +299,11 @@ export type AdminRunView = {
   status: 'pending' | 'orders_done' | 'done';
   ordersExecuted: number;
   ordersRejected: number;
-  playersUpdated: number;
+  playersUpdated: number;          // players the runner's own pages updated; catch-ups on read (D-025) don't count
   durationMs: number | null;       // null = still running
-  ledgerBalanced: boolean | null;  // the ledger check after the event (D-019); null = not checked yet
+  // The ledger check (D-019), run inside each order batch: false as soon as any batch found a mismatch,
+  // final when the event is done. null = no batch checked yet.
+  ledgerBalanced: boolean | null;
   finishedAt: string | null;       // real time, ISO
 };
 

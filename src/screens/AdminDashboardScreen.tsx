@@ -5,24 +5,25 @@
 // cards, one inverse card per section (DD-04). Design: the "Admin Dashboard Vision" artifact.
 //   1. Overview: who is online now, who came today, who came back several times (D-026), sign-ups,
 //      30-day trend with next-day / 7-day return
-//   2. World clock: the clock, both markets, the engine's last run, the order queue
-//      (advance buttons wait for the engine's clock endpoints)
+//   2. World clock: advance / start / stop (POST /admin/clock/*), the ticker light, both markets, the
+//      engine's last run, the order queue
 //   3. Players: up to 50, searchable
 //   4. System: how far the data goes, the admin action log
 // Numbers we don't have yet say what will fill them, never a made-up value.
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { AdminActionView, AdminOverview, AdminPlayer, AdminRunView } from '../../api/src/contract';
 import { useAuth } from '../auth/AuthProvider';
 import { useTheme } from '../useTheme';
-import { useAdminActivity, useAdminOverview, useAdminPlayers } from '../admin/useAdmin';
+import { useAdminActivity, useAdminOverview, useAdminPlayers, useClockAction } from '../admin/useAdmin';
 import {
   actionLabel,
+  advanceLabel,
+  clockOutcomeLine,
   clockSummary,
   count,
   dateHe,
-  instantDateHe,
   lastSeenLabel,
   marketsLine,
   playersSummary,
@@ -31,6 +32,7 @@ import {
   realTimeLabel,
   RUN_STATUS,
   runLabel,
+  tickerState,
 } from '../admin/copy';
 import { dayLabel, ils } from '../dashboard/format';
 import { Button } from '../components/dashboard/Button';
@@ -43,7 +45,8 @@ import { Accent, Faint, Section, Strong } from '../components/dashboard/Section'
 import { BAR_HEIGHT, TopBar } from '../components/dashboard/TopBar';
 import { WorldClockCard } from '../components/dashboard/WorldClockCard';
 
-const ENGINE_HINT = 'יחובר כשמנוע הביצוע וקידום השעון ייבנו';
+// Advancing can't be undone (the clock never goes back), so the first press only arms the button.
+const CONFIRM_MS = 4_000;
 
 export default function AdminDashboardScreen() {
   const { colors } = useTheme();
@@ -51,7 +54,7 @@ export default function AdminDashboardScreen() {
   const { data, error, isLoading, reload } = useAdminOverview();
   const name = user?.displayName || user?.email?.split('@')[0] || 'מנהל';
 
-  if (data) return <AdminView data={data} name={name} />;
+  if (data) return <AdminView data={data} name={name} reload={reload} />;
 
   return (
     <View style={[styles.page, { direction: 'rtl', backgroundColor: colors.page }]}>
@@ -72,7 +75,7 @@ export default function AdminDashboardScreen() {
   );
 }
 
-function AdminView({ data, name }: { data: AdminOverview; name: string }) {
+function AdminView({ data, name, reload }: { data: AdminOverview; name: string; reload: () => void }) {
   const { colors } = useTheme();
   const { motion, onScroll } = useScrollMotion();
   const wrap = useMeasure(0);
@@ -84,7 +87,7 @@ function AdminView({ data, name }: { data: AdminOverview; name: string }) {
           <View style={styles.wrap} onLayout={wrap.onLayout}>
             <OffsetProvider value={wrap.abs}>
               <Overview d={data} />
-              <ClockSection d={data} />
+              <ClockSection d={data} reload={reload} />
               <PlayersSection total={data.players.total} />
               <SystemSection d={data} />
             </OffsetProvider>
@@ -214,9 +217,32 @@ function TrendCard() {
 
 // ---------- 2. World clock ----------
 
-function ClockSection({ d }: { d: AdminOverview }) {
+function ClockSection({ d, reload }: { d: AdminOverview; reload: () => void }) {
   const c = d.clock;
   const o = d.orders;
+  const { colors } = useTheme();
+  const clock = useClockAction(reload);
+  const [armed, setArmed] = useState(false);
+  const disarm = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (disarm.current) clearTimeout(disarm.current);
+  }, []);
+
+  const atEnd = c?.endsAt != null && c.at >= c.endsAt.at;
+  const idle = clock.busy === null && c !== null;
+  const ticker = c ? tickerState(c.lastTickAt, Date.now()) : null;
+
+  const onAdvance = () => {
+    if (disarm.current) clearTimeout(disarm.current);
+    if (!armed) {
+      setArmed(true);
+      disarm.current = setTimeout(() => setArmed(false), CONFIRM_MS);
+      return;
+    }
+    setArmed(false);
+    if (c) clock.run('advance', { from: c.at });
+  };
+
   return (
     <Section
       alt
@@ -238,10 +264,27 @@ function ClockSection({ d }: { d: AdminOverview }) {
       body={clockSummary(c)}
       actions={
         <>
-          <Button label="קדם לפתיחה הבאה" variant="primary" disabled hint={ENGINE_HINT} />
-          <Button label="קדם לסגירה" disabled hint={ENGINE_HINT} />
-          <Button label={c?.running ? 'עצור את השעון' : 'הפעל את השעון'} disabled hint={ENGINE_HINT} />
+          <Button
+            label={clock.busy === 'advance' ? 'מקדם…' : armed ? 'לחצו שוב לאישור' : advanceLabel(c)}
+            variant={armed ? 'ink' : 'primary'}
+            onPress={onAdvance}
+            disabled={!idle || atEnd}
+            hint={atEnd ? 'השעון הגיע לסוף המחירים' : 'מריץ את כל הפתיחות והסגירות שבדרך. אי אפשר לחזור אחורה'}
+          />
+          <Button
+            label={clock.busy === 'stop' ? 'עוצר…' : clock.busy === 'start' ? 'מפעיל…' : c?.running ? 'עצור את השעון' : 'הפעל את השעון'}
+            onPress={() => clock.run(c?.running ? 'stop' : 'start')}
+            disabled={!idle || (!c?.running && atEnd)}
+          />
+          {ticker ? <Chip variant={ticker.variant}>{ticker.label}</Chip> : null}
         </>
+      }
+      after={
+        clock.error || clock.outcome ? (
+          <Text style={[styles.clockNote, { color: clock.error ? colors.negative : colors.muted }]}>
+            {clock.error ?? (clock.outcome ? clockOutcomeLine(clock.outcome) : '')}
+          </Text>
+        ) : null
       }
     >
       <CardRow>
@@ -297,7 +340,7 @@ function LastRunCard({ run, behind }: { run: AdminRunView | null; behind: number
       ) : (
         <Empty>
           {behind > 0
-            ? `${count(behind)} פתיחות וסגירות כבר הגיעו ועוד לא רצו. הן ירוצו כשמנוע הביצוע יפעל.`
+            ? `${count(behind)} פתיחות וסגירות כבר הגיעו ועוד לא רצו. הטיקר יריץ אותן בדקה הקרובה.`
             : 'עוד לא רצה אף פתיחה או סגירה. כאן יופיעו כמה פקודות בוצעו וכמה נדחו, כמה זמן זה לקח, והאם היומן מאוזן.'}
         </Empty>
       )}
@@ -441,7 +484,7 @@ function SystemSection({ d }: { d: AdminOverview }) {
             <Line label="מחירי תל אביב עד" value={w.pricesUntil.tase ? dateHe(w.pricesUntil.tase) : '—'} warn={!w.pricesUntil.tase} />
             <Line label="מחירי ניו יורק עד" value={w.pricesUntil.us ? dateHe(w.pricesUntil.us) : '—'} warn={!w.pricesUntil.us} />
             <Line label="שער הדולר עד" value={w.usdIlsUntil ? dateHe(w.usdIlsUntil) : '—'} warn={!w.usdIlsUntil} />
-            <Line label="השעון נעצר ב־" value={d.clock?.endsAt ? instantDateHe(d.clock.endsAt) : '—'} />
+            <Line label="השעון נעצר ב־" value={d.clock?.endsAt ? dateHe(d.clock.endsAt.date) : '—'} />
           </View>
           {!loaded ? <SubText>להרצה: npm run seed:world בתיקיית api.</SubText> : null}
         </Card>
@@ -551,6 +594,7 @@ const styles = StyleSheet.create({
   barAxis: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
   axisText: { fontSize: 10.5 },
   logTime: { fontSize: 12, width: 78 },
+  clockNote: { fontSize: 14, lineHeight: 21, marginTop: 14, maxWidth: 520 },
   tr: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, borderBottomWidth: 1 },
   th: { fontSize: 12, fontWeight: '500' },
   td: { fontSize: 13.5 },

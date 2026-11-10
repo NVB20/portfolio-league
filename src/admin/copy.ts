@@ -1,6 +1,7 @@
 // Words and numbers for the admin page. Pure functions, no React, so every card says things the same way.
 
 import type { AdminActionView, AdminOverview, AdminRunView, ClockView } from '../../api/src/contract';
+import type { ClockOutcome } from './useAdmin';
 
 // 1234 → "1,234"
 export function count(n: number): string {
@@ -63,6 +64,41 @@ export function actionLabel(a: AdminActionView): string {
   return executed !== null ? `${base} · ${count(executed)} פקודות בוצעו` : base;
 }
 
+// The ticker writes last_tick_at every minute (D-030). Older than this = it stopped.
+export const TICKER_STALE_MINUTES = 2;
+
+// The ticker light: up = beating, down = stopped (with how long ago), warn = never ticked.
+export function tickerState(lastTickAt: string | null, nowMs: number): { variant: 'up' | 'down' | 'warn'; label: string } {
+  if (!lastTickAt) return { variant: 'warn', label: 'הטיקר עוד לא רץ' };
+  const minutes = Math.floor((nowMs - new Date(lastTickAt).getTime()) / 60_000);
+  if (minutes < TICKER_STALE_MINUTES) return { variant: 'up', label: 'הטיקר פועל' };
+  return { variant: 'down', label: `הטיקר עצר · ${lastSeenLabel(lastTickAt, nowMs)}` };
+}
+
+// What the advance button will do: the API picks it the same way (a market open → its close, else the next open).
+export function advanceLabel(clock: ClockView | null): string {
+  return clock && (clock.markets.tase.isOpen || clock.markets.us.isOpen) ? 'קדם לסגירה' : 'קדם לפתיחה הבאה';
+}
+
+function runCounts(r: { events: number; ordersExecuted: number; ordersRejected: number }): string {
+  if (r.events === 0) return 'לא עברו פתיחות או סגירות.';
+  return `${count(r.events)} ${r.events === 1 ? 'אירוע רץ' : 'אירועים רצו'}: ${count(r.ordersExecuted)} פקודות בוצעו, ${count(r.ordersRejected)} נדחו.`;
+}
+
+// One line after a clock move, from the API's answer.
+export function clockOutcomeLine(o: ClockOutcome): string {
+  switch (o.move) {
+    case 'advance': {
+      const to = o.result.to;
+      return `${o.result.kind === 'to_close' ? 'קודם לסגירה' : 'קודם לפתיחה'}: ${dateHe(to.date)} ${to.time}. ${runCounts(o.result)}`;
+    }
+    case 'start':
+      return o.result.changed ? 'השעון הופעל ורץ עכשיו בזמן אמת.' : 'השעון כבר רץ.';
+    case 'stop':
+      return o.result.changed ? `השעון נעצר ב־${dateHe(o.result.at.date)} ${o.result.at.time}. ${runCounts(o.result)}` : 'השעון כבר עצור.';
+  }
+}
+
 // A percentage from the API (already rounded to 1 decimal), or a dash when there is nobody to measure.
 export function rateLabel(pct: number | null): string {
   return pct === null ? '—' : `${pct}%`;
@@ -83,7 +119,7 @@ export function marketsLine(clock: ClockView): string {
 
 export function clockSummary(clock: AdminOverview['clock']): string {
   if (!clock) return 'שעון העולם עוד לא הופעל. הוא מתחיל כשמריצים את npm run seed:world.';
-  const end = clock.endsAt ? ` הוא נעצר ב־${instantDateHe(clock.endsAt)}, כשנגמרים המחירים.` : '';
+  const end = clock.endsAt ? ` הוא נעצר ב־${dateHe(clock.endsAt.date)}, כשנגמרים המחירים.` : '';
   return clock.running
     ? `השעון רץ בזמן אמת. קידום מריץ את כל האירועים שבדרך, לפי הסדר, ולא חוזר אחורה.${end}`
     : `השעון עצור. הזמן בעולם לא זז עד שמנהל מקדם או מפעיל אותו.${end}`;

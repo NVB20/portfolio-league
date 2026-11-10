@@ -4,11 +4,67 @@
 // The API checks the admin role on both; this file only fetches.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { apiFetch } from '../api';
-import type { AdminActivity, AdminOverview, AdminPlayers } from '../../api/src/contract';
+import { ApiError, apiFetch } from '../api';
+import type {
+  AdminActivity,
+  AdminOverview,
+  AdminPlayers,
+  ClockActionError,
+  ClockAdvanceBody,
+  ClockAdvanceResult,
+  ClockStartResult,
+  ClockStopResult,
+} from '../../api/src/contract';
 
 const SEARCH_PAUSE_MS = 300;
 const REFRESH_MS = 60_000;
+// A jump runs every open and close on the way, for every affected player. Give it longer than a normal read.
+const CLOCK_TIMEOUT_MS = 120_000;
+
+export type ClockMove = 'advance' | 'start' | 'stop';
+export type ClockOutcome =
+  | { move: 'advance'; result: ClockAdvanceResult }
+  | { move: 'start'; result: ClockStartResult }
+  | { move: 'stop'; result: ClockStopResult };
+
+// POST /admin/clock/{advance,start,stop}. One move at a time; `onDone` reloads the page's numbers after
+// any answer, good or bad, because the clock may have moved even when the answer got lost.
+// Advance sends `from`: the world time the page showed. If an open or close ran since then (a retried click
+// after a lost answer, or the ticker), the API answers 409 CLOCK_MOVED and nothing jumps twice.
+export function useClockAction(onDone: () => void) {
+  const [busy, setBusy] = useState<ClockMove | null>(null);
+  const [outcome, setOutcome] = useState<ClockOutcome | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = useCallback(
+    async (move: ClockMove, body?: ClockAdvanceBody) => {
+      setBusy(move);
+      setError(null);
+      setOutcome(null);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), CLOCK_TIMEOUT_MS);
+      try {
+        const result = await apiFetch<ClockAdvanceResult & ClockStartResult & ClockStopResult>(`/admin/clock/${move}`, {
+          method: 'POST',
+          body: body ? JSON.stringify(body) : undefined,
+          signal: controller.signal,
+        });
+        setOutcome({ move, result } as ClockOutcome);
+      } catch (e) {
+        console.error(`Clock ${move} failed`, e);
+        const reason = e instanceof ApiError ? (e.body as Partial<ClockActionError> | null)?.reason : undefined;
+        setError(reason ?? 'הפעולה לא הצליחה. רעננו את העמוד ובדקו את השעון לפני שמנסים שוב.');
+      } finally {
+        clearTimeout(timer);
+        setBusy(null);
+        onDone();
+      }
+    },
+    [onDone],
+  );
+
+  return { busy, outcome, error, run };
+}
 
 type State<T> = { data: T | null; error: string | null; isLoading: boolean };
 

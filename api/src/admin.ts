@@ -39,7 +39,7 @@ export function requireAdmin(db: Pool): MiddlewareHandler<AppEnv> {
 export async function getAdminOverview(db: Pool): Promise<AdminOverview> {
   const now = await loadNow(db);
   return {
-    clock: now ? loadClock(now) : null,
+    clock: now ? await loadClock(db, now) : null,
     players: await loadPlayerCounts(db),
     presence: await loadPresence(db),
     orders: await loadOrders(db, now),
@@ -178,11 +178,14 @@ export async function getAdminActivity(db: Pool, days: number): Promise<AdminAct
   };
 }
 
-function loadClock(now: Now): NonNullable<AdminOverview['clock']> {
+// The world clock plus the ticker's heartbeat: last_tick_at is real time, written every minute (D-030).
+async function loadClock(db: Pool, now: Now): Promise<NonNullable<AdminOverview['clock']>> {
+  const { rows } = await db.query<{ last_tick_at: Date | null }>('SELECT last_tick_at FROM world_clock');
   return {
     ...clockView(now.at, now.calendar),
     running: now.running,
-    endsAt: now.endsAt?.toISOString() ?? null,
+    endsAt: now.endsAt ? worldTime(now.endsAt) : null,
+    lastTickAt: rows[0]?.last_tick_at?.toISOString() ?? null,
   };
 }
 
@@ -293,55 +296,35 @@ type PlayerRow = {
 };
 
 // The first PLAYERS_LIMIT players by this week's rank, then by value. `q` filters by name or email.
-// Values use the same rule as the dashboard (D-009): the latest close already known in world time.
+// The value is the stored equity the runner keeps current after every event (D-019, D-024): nothing is
+// added up here (D-031), so it always matches the player's dashboard.
 // Fine for an admin page; at a million players this would read the engine's stored values instead.
 export async function getAdminPlayers(db: Pool, q: string | null): Promise<AdminPlayers> {
   const now = await loadNow(db);
   // ILIKE treats % and _ as wildcards; escape them (and the escape character) so they match themselves.
   const pattern = q ? `%${q.replace(/[\\%_]/g, '\\$&')}%` : null;
   const { rows } = await db.query<PlayerRow>(
-    `WITH fx AS (
-       SELECT close FROM usd_ils WHERE ($1::date IS NULL OR day <= $1::date) ORDER BY day DESC LIMIT 1
-     ), px AS (
-       SELECT DISTINCT ON (p.symbol) p.symbol, p.close, s.currency
-       FROM prices p JOIN securities s ON s.symbol = p.symbol
-       WHERE $2::date IS NULL OR p.day <= CASE WHEN s.market = 'TASE' THEN $2::date ELSE $3::date END
-       ORDER BY p.symbol, p.day DESC
-     ), held AS (
-       SELECT h.uid, sum(h.units * px.close * CASE WHEN px.currency = 'USD' THEN (SELECT close FROM fx) ELSE 1 END) AS value
-       FROM holdings h JOIN px ON px.symbol = h.symbol
-       GROUP BY h.uid
-     ), board AS (
+    `WITH board AS (
        SELECT uid, rank FROM standings
-       WHERE day = (SELECT max(day) FROM standings WHERE day BETWEEN $4::date AND $5::date)
+       WHERE day = (SELECT max(day) FROM standings WHERE day BETWEEN $1::date AND $2::date)
      ), pend AS (
        SELECT uid, count(*)::int AS n FROM orders WHERE status = 'pending' GROUP BY uid
      ), vis AS (
-       SELECT uid, count(*)::int AS n FROM app_opens WHERE at >= $8 GROUP BY uid
+       SELECT uid, count(*)::int AS n FROM app_opens WHERE at >= $5 GROUP BY uid
      )
      SELECT u.uid, u.display_name, u.email, 'admin' = ANY(u.roles) AS is_admin, u.created_at,
-            (p.cash + COALESCE(held.value, 0))::float8 AS total_value,
+            p.equity::float8 AS total_value,
             board.rank, COALESCE(pend.n, 0) AS pending,
             u.last_seen_at, COALESCE(vis.n, 0) AS visits_today
      FROM users u
      JOIN portfolios p ON p.uid = u.uid
-     LEFT JOIN held ON held.uid = u.uid
      LEFT JOIN board ON board.uid = u.uid
      LEFT JOIN pend ON pend.uid = u.uid
      LEFT JOIN vis ON vis.uid = u.uid
-     WHERE $6::text IS NULL OR u.display_name ILIKE $6 OR u.email ILIKE $6
-     ORDER BY board.rank NULLS LAST, total_value DESC, u.uid
-     LIMIT $7`,
-    [
-      now?.closed.fx ?? null,
-      now?.closed.tase ?? null,
-      now?.closed.us ?? null,
-      now?.monday ?? null,
-      now?.today ?? null,
-      pattern,
-      PLAYERS_LIMIT,
-      realTodayStart(),
-    ],
+     WHERE $3::text IS NULL OR u.display_name ILIKE $3 OR u.email ILIKE $3
+     ORDER BY board.rank NULLS LAST, p.equity DESC, u.uid
+     LIMIT $4`,
+    [now?.monday ?? null, now?.today ?? null, pattern, PLAYERS_LIMIT, realTodayStart()],
   );
 
   return {

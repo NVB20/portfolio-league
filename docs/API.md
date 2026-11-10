@@ -137,7 +137,7 @@ Everything under `/admin` needs a valid token **and** `'admin'` in the caller's 
 ### `GET /admin/overview`
 The admin page's numbers, in one request. Returns `AdminOverview`:
 
-- `clock`: the world clock (like the dashboard's) plus `running` and `endsAt`; null before the world starts
+- `clock`: the world clock, like the dashboard's (`running`, `endsAt`), plus `lastTickAt`: the ticker's last beat in real time (D-030; null = never ticked). The page shows the ticker as stopped when it is more than 2 minutes old. null before the world starts
 - `players`: `total`, `joinedToday` (signed up today, real Israel date), `withHoldings` (own at least one security)
 - `presence` (D-026, real time): `onlineNow` (checked in during the last 2 minutes), `seenToday`, `visitsToday`, `returningToday` (2+ visits today), `visitBuckets` (`two`, `threeToFive`, `sixPlus`), `avgVisits` (null = no visits yet)
 - `orders`: pending orders per market (`tase`, `us`), `rejectedThisWeek` (this world week), and the 3 most common `rejectReasons`
@@ -155,7 +155,7 @@ Up to 50 players, by rank on the latest scored day of this week, then by portfol
 
 - `q` (optional) filters by display name or email, case-insensitive. `%` and `_` match themselves.
 - `q` longer than 100 characters: 400.
-- Values use the same rule as the dashboard (D-009): the latest close already known in world time.
+- `totalValue` is the stored `portfolios.equity` the runner keeps current after every event (D-019, D-024), the same number the player's dashboard shows. Nothing is added up on read (D-031).
 
 ### Admin clock moves: `POST /admin/clock/advance`, `/start`, `/stop`
 The admin's clock buttons (D-017, D-030; [api/src/clockActions.ts](../api/src/clockActions.ts)). Admins only, like every `/admin` route. Start and stop take no body; advance takes an optional one (below).

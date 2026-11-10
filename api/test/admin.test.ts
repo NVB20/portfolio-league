@@ -241,7 +241,8 @@ describe('admin, seeded world', () => {
       ('2026-11-09', 3.76, 3.75), ('2026-11-10', 3.74, 3.70), ('2026-11-11', 9, 9.99)`);
 
     // Alice: 760,000 cash + 4,000 TEVA (200,000) + 100 NVDA ($11,000 = ₪40,700) = 1,000,700.
-    await db.query(`UPDATE portfolios SET cash = 760000 WHERE uid = 'alice'`);
+    // The runner stores holdings_value after each event; equity = cash + holdings_value (D-019, D-024).
+    await db.query(`UPDATE portfolios SET cash = 760000, holdings_value = 240700 WHERE uid = 'alice'`);
     await db.query(`INSERT INTO holdings VALUES ('alice', 'TEVA', 4000), ('alice', 'NVDA', 100)`);
 
     // A rejected or executed order points at the market event that ran it (the runner's orders_event_check),
@@ -270,9 +271,16 @@ describe('admin, seeded world', () => {
 
   it('shows the clock with its running flag and end', async () => {
     const { clock } = await (await call('GET', '/admin/overview', 'root')).json();
-    expect(clock).toMatchObject({ date: '2026-11-11', weekday: 3, week: 46, running: true, endsAt: '2026-11-20T07:59:00.000Z' });
+    expect(clock).toMatchObject({ date: '2026-11-11', weekday: 3, week: 46, running: true, lastTickAt: null });
+    expect(clock.endsAt).toMatchObject({ at: '2026-11-20T07:59:00.000Z', date: '2026-11-20' });
     expect(clock.time).toMatch(/^12:4\d$/);   // running: a second or two may pass during the test
     expect(clock.markets.tase.isOpen).toBe(true);
+  });
+
+  it('shows the ticker last beat (D-030)', async () => {
+    await db.query(`UPDATE world_clock SET last_tick_at = '2026-11-10T12:34:00Z'`);
+    const { clock } = await (await call('GET', '/admin/overview', 'root')).json();
+    expect(clock.lastTickAt).toBe('2026-11-10T12:34:00.000Z');
   });
 
   it('counts players, sign-ups today and players who own something', async () => {
