@@ -38,7 +38,7 @@ const server = serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 3000) 
 const stopTicker = process.env.TICKER === 'off' ? null : startTicker(db);
 if (!stopTicker) console.log('Ticker is off (TICKER=off): world events run only on admin clock moves');
 
-// Railway sends SIGTERM before replacing a deployment: stop ticking and finish open requests (and the tick in
+// The host sends SIGTERM before replacing a container: stop ticking and finish open requests (and the tick in
 // progress), then close the pool. A tick cut short is safe: the next instance resumes the event (D-021).
 process.on('SIGTERM', () => {
   const ticking = stopTicker ? stopTicker() : Promise.resolve();

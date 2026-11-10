@@ -1,6 +1,6 @@
 # API
 
-The app never talks to Postgres. Every read and write goes through our API (`api/`, Hono on Railway).
+The app never talks to Postgres. Every read and write goes through our API (`api/`, Hono).
 The app calls it with `apiFetch` ([src/api.ts](../src/api.ts)), which adds the player's Firebase token.
 
 - **Base URL:** `EXPO_PUBLIC_API_URL` (local: `http://localhost:3000`)
@@ -30,7 +30,7 @@ Players can never write cash, holdings, prices, the clock, scores or roles (D-00
 ## Routes
 
 ### `GET /health`
-No auth. `{ "ok": true }` when the API is up and can reach Postgres. For Railway's health check.
+No auth. `{ "ok": true }` when the API is up and can reach Postgres. For the host's health check and uptime monitors.
 
 ### `POST /me`
 Called by the app right after login. Creates the user (role `user`) and the portfolio the first time.

@@ -46,7 +46,7 @@ export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDai
   // Refuse bodies over 16 KB before reading them, so one huge request can't fill the server's memory.
   app.use('*', bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: 'body too large' }, 413) }));
 
-  // For Railway's healthcheck and uptime monitors: is the API up, and can it reach the database?
+  // For the host's health check and uptime monitors: is the API up, and can it reach the database?
   app.get('/health', async (c) => {
     await db.query('SELECT 1');
     return c.json({ ok: true });

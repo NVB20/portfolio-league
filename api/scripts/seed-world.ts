@@ -10,7 +10,7 @@
 //   cd api && npm run seed:world
 //
 // Reads PRICES_DATABASE_URL (default: the local Docker price DB) and DATABASE_URL (the game DB) from api/.env.
-// To seed Railway: run it locally with DATABASE_URL pointing at the Railway database.
+// To seed production: run it locally with DATABASE_URL pointing at the production database.
 
 import pg from 'pg';
 import { USD_ILS_YAHOO, WORLD_SECURITIES } from '../src/world/securities.js';

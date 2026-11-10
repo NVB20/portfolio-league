@@ -6,7 +6,7 @@ Gaps in the brief, and the choices we made. Each entry: what we decided, why, an
 
 **Status:** Active. The "one transaction" part is replaced by batches (D-021).
 
-**Decision:** Players can only create *pending* orders. When an admin advances the world clock, the API (`api/`, on Railway) runs the execution logic and writes trades, cash, holdings and snapshots to Postgres in **one transaction**. Only users with the `admin` role can call it.
+**Decision:** Players can only create *pending* orders. When an admin advances the world clock, the API (`api/`) runs the execution logic and writes trades, cash, holdings and snapshots to Postgres in **one transaction**. Only users with the `admin` role can call it.
 
 **Why:**
 - Code in the browser can be changed by anyone, so it can't be trusted with money. The API is the only thing that writes to Postgres.
@@ -22,8 +22,8 @@ executeOrders(pendingOrders, prices, usdIls, portfolios) → { trades, updatedPo
 The API loads the data, calls this function, and saves the result.
 
 **Known weaknesses:**
-- A person still has to advance the clock. A Railway cron job could do it on a schedule later.
-- One API service and one database node on Railway Hobby: no built-in backups or uptime monitors (Phase 7 adds a `pg_dump` cron and an external uptime check).
+- A person still has to advance the clock. A cron job could do it on a schedule later.
+- One API service and one database node: no built-in backups or uptime monitors (Phase 7 adds a `pg_dump` cron and an external uptime check).
 
 ## D-002: Local Postgres (Docker) for development
 
@@ -37,7 +37,7 @@ The API loads the data, calls this function, and saves the result.
 **Why:**
 - We fetch the prices once and keep them, so we don't call Yahoo again every time we develop.
 - SQL tables are the most structured way to store them. `daily_prices` has the key `(symbol, day)`, so there's one row per security per day, no duplicate days, and the types are checked.
-- Developing against the same database engine as production (Postgres on Railway) catches SQL problems early.
+- Developing against the same database engine as production (Postgres) catches SQL problems early.
 
 **Gotchas:**
 - TASE prices from Yahoo are in **agorot** (`currency = 'ILA'`). Divide by 100 for ₪.

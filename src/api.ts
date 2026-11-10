@@ -1,4 +1,4 @@
-// Calls our API (api/ folder, deployed on Railway) with the logged-in user's Firebase token.
+// Calls our API (api/ folder) with the logged-in user's Firebase token.
 // The API checks the token, so it knows who is calling without trusting anything else we send.
 
 import { auth } from './firebase';

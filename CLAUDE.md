@@ -16,7 +16,7 @@ The rules are incomplete on purpose. Every gap we fill is written down in [docs/
 
 ## Stack
 
-See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript, Firebase (Auth, Hosting), and a TypeScript API (Hono) with Postgres, both on Railway.
+See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript, Firebase (Auth, Hosting), and a TypeScript API (Hono) with Postgres. The API ships as a Docker image (GHCR, built by CI).
 
 - **Firebase knows who the user is; the API and Postgres decide what they may do.** Firebase handles login and the JWT. The API checks that token on every request.
 - **The app never talks to Postgres directly.** Every read and write goes through the API (`src/api.ts` → `api/`).

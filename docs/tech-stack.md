@@ -4,8 +4,8 @@
 |-------|--------|-------|
 | App | Expo (React Native) + TypeScript | One codebase for iOS, Android and web |
 | Auth | Firebase Authentication | Login, sessions and tokens (JWT) |
-| API | TypeScript API on Railway | Checks the Firebase token, enforces permissions, runs the game logic |
-| Database | Postgres on Railway | All application data. Only the API connects to it |
+| API | TypeScript API (Hono), Docker image on GHCR | Checks the Firebase token, enforces permissions, runs the game logic |
+| Database | Postgres | All application data. Only the API connects to it |
 | Hosting (web) | Firebase Hosting | Serves the Expo web build; preview channels for testing before release |
 | Dev data (local only) | Postgres in Docker | 3 years of daily open/close from Yahoo: USD/ILS, 20 TASE and 20 US stocks. See [DECISIONS.md](DECISIONS.md) D-002 |
 
