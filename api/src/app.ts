@@ -7,14 +7,15 @@ import { bodyLimit } from 'hono/body-limit';
 import type { Pool } from 'pg';
 import { requireAuth, type AppEnv, type VerifyToken } from './auth.js';
 import { setTheme, upsertUser } from './users.js';
-import { getDashboard, markRejectionsSeen, parseUpToId } from './dashboard.js';
+import { getDashboard, markRejectionsSeen, parseSeenIds } from './dashboard.js';
 import { getTrade, saveChartSettings } from './trade.js';
 import { cachedDaily, fetchYahooDaily, getChart, type FetchDaily } from './chart.js';
 import { pickChartSettings } from './chartSettings.js';
 import { ACTIVITY_DAYS, getAdminActivity, getAdminOverview, getAdminPlayers, requireAdmin } from './admin.js';
 import { recordSeen } from './presence.js';
 import { sendOrder } from './orders.js';
-import { advanceClock, startClock, stopClock } from './clockActions.js';
+import { parseOrderJson } from './game/orderRules.js';
+import { advanceClock, parseAdvanceBody, startClock, stopClock } from './clockActions.js';
 
 export type Deps = {
   db: Pool;
@@ -89,7 +90,7 @@ export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDai
     return c.json(updated);
   });
 
-  // Everything the trading screen shows, in one request. Read-only.
+  // Everything the trading screen shows, in one request. Its only write is the D-025 catch-up before reading.
   me.get('/trade', async (c) => {
     const trade = await getTrade(db, c.get('user').uid);
     if (!trade) return c.json({ error: 'user not found, call POST /me first' }, 404);
@@ -124,18 +125,20 @@ export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDai
   // Sends an order (D-018, D-028). Body: { symbol, side, amountIls (buy) | units (sell), clientOrderId? }.
   // 201 = a new pending order; 200 = the same clientOrderId again (a replay: nothing new is written).
   // Errors carry a stable `code` and, for the player, a Hebrew `reason`. Orders can't be changed or cancelled.
+  // The body is read from its text, so a size sent as a JSON number keeps its exact digits (parseOrderJson).
   me.post('/orders', async (c) => {
-    const out = await sendOrder(db, c.get('user').uid, await c.req.json().catch(() => undefined));
+    const body = parseOrderJson(await c.req.text().catch(() => ''));
+    const out = await sendOrder(db, c.get('user').uid, body);
     if ('retryAfter' in out && out.retryAfter !== undefined) c.header('Retry-After', String(out.retryAfter));
     return c.json(out.body, out.status);
   });
 
-  // The app showed the rejection toasts (D-023). Body: { "upToId": "<order id>" }, the largest id it showed.
-  // Marks only this player's rejected orders with id ≤ upToId. Returns { marked }.
+  // The app showed the rejection toasts (D-023). Body: { "ids": ["<order id>", ...] }, exactly the ones it
+  // showed (1 to 5). Marks only those of this player's rejected orders. Returns { marked }.
   me.post('/rejections/seen', async (c) => {
-    const upToId = parseUpToId(await c.req.json().catch(() => null));
-    if (upToId === null) return c.json({ error: 'upToId must be an order id: a string of digits' }, 400);
-    const marked = await markRejectionsSeen(db, c.get('user').uid, upToId);
+    const ids = parseSeenIds(await c.req.json().catch(() => null));
+    if (ids === null) return c.json({ error: 'ids must be 1 to 5 order ids, each a string of digits' }, 400);
+    const marked = await markRejectionsSeen(db, c.get('user').uid, ids);
     if (marked === null) return c.json({ error: 'user not found, call POST /me first' }, 404);
     return c.json({ marked });
   });
@@ -167,11 +170,14 @@ export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDai
     return c.json(await getAdminActivity(db, days));
   });
 
-  // The clock moves (D-017, D-030). No body. Each runs the opens and closes it passes, then moves the clock
-  // and logs the action in one transaction. 409 NO_WORLD | CLOCK_BUSY (the runner is busy; try again) |
-  // CLOCK_AT_END (advance only).
+  // The clock moves (D-017, D-030). Each runs the opens and closes it passes, then moves the clock and logs the
+  // action in one transaction. 409 NO_WORLD | CLOCK_BUSY (the runner is busy; try again) | CLOCK_AT_END and
+  // CLOCK_MOVED (advance only). Advance takes an optional body { from }: the world time the page showed, so a
+  // click sent again after a lost answer doesn't jump twice. Start and stop take no body.
   admin.post('/clock/advance', async (c) => {
-    const out = await advanceClock(db, c.get('user').uid);
+    const body = parseAdvanceBody(await c.req.json().catch(() => null));
+    if (!body.ok) return c.json({ error: body.error }, 400);
+    const out = await advanceClock(db, c.get('user').uid, { seen: body.seen });
     return c.json(out.body, out.status);
   });
   admin.post('/clock/start', async (c) => {

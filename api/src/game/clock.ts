@@ -71,6 +71,15 @@ export function jumpTarget(now: Date, end: Date, calendar: Calendar = NO_CLOSURE
   return jump.to > end ? { ...jump, to: end } : jump;
 }
 
+// Has the world moved past what the admin saw? `seen` is the world time the admin page showed when the admin
+// clicked advance. Every jump runs at least the open or close it lands on, so events_through > seen means a
+// jump already went through since (a retry whose first answer was lost) or the ticker ran an event meanwhile:
+// either way the click was about a world that is gone, and jumping again would skip a session for every
+// player. A running clock that merely ticked on, with no event in between, has not moved in this sense.
+export function movedSince(seen: Date, eventsThrough: Date | null): boolean {
+  return eventsThrough !== null && eventsThrough > seen;
+}
+
 // The world_clock row that "now" is computed from (D-017, D-021).
 export type ClockState = {
   nowAt: Date;                 // the world time the clock was last set to

@@ -2,10 +2,10 @@
 // ticker (D-030) unless TICKER=off.
 
 import { serve } from '@hono/node-server';
-import pg from 'pg';
 import { createApp } from './app.js';
 import { googleKeys, makeFirebaseVerifier } from './auth.js';
 import { startTicker } from './clockActions.js';
+import { createPool } from './db.js';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -13,14 +13,8 @@ function requireEnv(name: string): string {
   return value;
 }
 
-const db = new pg.Pool({
-  connectionString: requireEnv('DATABASE_URL'),
-  max: 10,                        // Postgres allows ~100 connections in total; keep room for replicas and migrations
-  connectionTimeoutMillis: 5000,  // fail fast instead of waiting forever for a free connection
-  statement_timeout: 10000,       // no single query may run longer than 10 s
-});
-// An idle connection dropped by the server must not crash the process.
-db.on('error', (err) => console.error('Postgres pool error', err));
+// 10 connections, 10 s per statement, and a lost connection never crashes the process (db.ts).
+const db = createPool(requireEnv('DATABASE_URL'));
 
 const app = createApp({
   db,

@@ -19,7 +19,7 @@ Only these write to the database. Everything else is read-only.
 | `PATCH /me/chart-settings` | the full chart's settings | `users.chart_settings` (JSONB, known keys only) | Yes, only that column |
 | `POST /me/orders` | a new `pending` order, and what it sets aside: a buy's cash, a sell's units | `orders` (one row). Buy: a `reserve` journal (`journals` + 2 `ledger_entries`) and `portfolios.reserved_cash`. Sell: `positions.reserved_units` | Only by sending an order the rules allow (D-028). Never cash, units, prices or the clock directly. An order can't be changed or cancelled |
 | `POST /me/rejections/seen` | the rejection toasts the app showed (D-023) | `orders.notified_at` of the player's own rejected orders | Only that column, only on their own rejected orders |
-| `GET /me/dashboard`, `GET /me/trade` (the catch-up before reading, D-025) | the player's value at the latest open or close whose orders have run, when the runner's batch hasn't reached them yet | that player's `portfolios` totals and week columns, the marks of their `positions`, and that event's `market_events.players_updated` | No. The runner's own update, for this one player (D-031) |
+| `GET /me/dashboard`, `GET /me/trade` (the catch-up before reading, D-025) | the player's value at the latest open or close whose orders have run, when the runner's batch hasn't reached them yet | that player's `portfolios` totals and week columns, and the marks of their `positions` | No. The runner's own update, for this one player (D-031) |
 | `POST /admin/clock/advance`, `/start`, `/stop` (admins only) | the clock move; advance and stop first run every open and close they pass (the runner, D-021, D-029) | The run: `market_events`, executed/rejected `orders`, `journals` + `ledger_entries`, `positions`, `portfolios`, `portfolio_snapshots`, `world_clock.events_through`. Then one transaction: `world_clock` (`now_at`, `real_at`, `running`) + one `admin_actions` row | No. Admins only (D-017, D-030) |
 | The ticker (inside the API process, every minute) | the heartbeat, and the opens and closes the running clock passes (the runner) | `world_clock.last_tick_at`, and the same run as above. Never moves `now_at` or `running` | No. Nobody calls it (D-030) |
 | `npm run seed:world` (script, not an endpoint) | the 40 securities, their daily open/close, the USD/ILS rate, the clock's start | `securities`, `prices`, `usd_ils`, `world_clock` | No. Run by a developer with the database URL |
@@ -39,7 +39,7 @@ Returns `{ email, roles, theme }`.
 ### `GET /me/dashboard`
 Everything the dashboard shows, in one request: clock, portfolio value and chart, holdings, the next pending orders, unseen rejections, USD/ILS, standing, leaderboard top 5. 404 before `POST /me`.
 
-Before reading, it brings the player up to the latest open or close whose orders have run, if the runner hasn't reached them yet (`catchUpPlayer`, D-025). That is its only write; if it fails, the error is logged and the stored values are shown. Every ₪ figure is a value the runner stored (D-019, D-024); nothing is added up on read (D-031).
+Before reading, it brings the player up to the latest open or close whose orders have run, if the runner hasn't reached them yet (`catchUpPlayer`, D-025). While a later open or close is still running its orders, it does nothing: a player filled there already holds that event's prices, and the runner updates them next. It never waits for a lock: if the player's row is busy (the runner's batch, or their own order being sent), this read shows the stored values and the next one catches up. That is its only write; if it fails, the error is logged and the stored values are shown. Every ₪ figure is a value the runner stored (D-019, D-024); nothing is added up on read (D-031).
 
 - `clock` (`LiveClockView`): the world time and both markets (like `/me/trade`), plus what the admin controls: `running` (false = stopped) and `endsAt` (where the clock stops by itself, as world time; null = no end). The app moves the time on by itself while `running` (D-017), so it doesn't need to poll.
 - `portfolio` (`PortfolioView`): `totalValue` (the stored equity), `cash`, `availableCash` (cash − cash locked by pending buys), `reservedCash`, `realizedPnl`, `unrealizedPnl`, and the week:
@@ -50,9 +50,9 @@ Before reading, it brings the player up to the latest open or close whose orders
 - `rejections[]` (`RejectionView`, D-023): rejected orders the player hasn't seen yet, newest rejection first, at most 5: `{ id, symbol, side, amountIls, units, code, reason, at }`. `code` is one of `NO_PRICE`, `INSUFFICIENT_CASH`, `OVER_LIMIT`, `INSUFFICIENT_UNITS` (for English text); `reason` is the Hebrew; `at` is the open or close that rejected it.
 
 ### `POST /me/rejections/seen`
-The app showed the rejection toasts. Body `{ "upToId": "<order id>" }`: the largest `rejections[].id` it showed, as a string. Sets `notified_at` on this player's rejected orders with id ≤ `upToId` that weren't seen yet, and returns `{ marked }` (how many). Only their own rows, only rejected orders; calling it again marks nothing.
+The app showed the rejection toasts. Body `{ "ids": ["<order id>", ...] }`: exactly the `rejections[].id`s it showed, 1 to 5, as strings. Sets `notified_at` on those of this player's rejected orders that weren't seen yet, and returns `{ marked }` (how many). Only their own rows, only rejected orders; an id that is someone else's, pending or already seen marks nothing, so calling it again is harmless. A rejection that arrives after the read is not touched, whatever its id, and shows on the next read (D-031).
 
-- 400 when `upToId` isn't a string of digits that fits a BIGINT (a JSON number is refused too, like every order id). 404 before `POST /me`.
+- 400 when `ids` isn't an array of 1 to 5 strings of digits that fit a BIGINT (a JSON number is refused too, like every order id). 404 before `POST /me`.
 
 ### `PATCH /me/theme`
 Body `{ "theme": "dark" | "light" }`. Other fields are ignored. Returns `{ email, roles, theme }`.
@@ -60,10 +60,10 @@ Body `{ "theme": "dark" | "light" }`. Other fields are ignored. Returns `{ email
 ### `GET /me/trade`
 Everything the trading screen shows, in one request. Like the dashboard, it first runs the catch-up (D-025) and then only reads stored values (D-031). Returns `TradeView`:
 
-- `clock`: world time and whether TASE / US are open (null before the world starts)
+- `clock` (`LiveClockView`, as on the dashboard): world time, whether TASE / US are open, `running`, and `endsAt` (where the price history ends; null = no end). null before the world starts
 - `cash`, `availableCash` (cash − cash locked by pending buys: what a new buy can spend), `totalValue` (the stored equity)
 - `usdIls`: the latest known rate
-- `securities[]`: the 40 securities, each with the latest close **already known in world time** (a display price, as in D-009), the day change, the last 11 closes (the 10-day chart), your holding (`units`, `freeUnits`, `valueIls` at the last mark, `weightPct`: the same numbers as the dashboard's holdings), and `execution`: when an order sent now would run (today's close if its market is open, otherwise the next open)
+- `securities[]`: the 40 securities, each with the latest close **already known in world time** (a display price, as in D-009), the day change, the last 11 closes (the 10-day chart), your holding (`units`, `freeUnits`, `valueIls` at the last mark, `weightPct`: the same numbers as the dashboard's holdings), and `execution`: when an order sent now would run (today's close if its market is open, otherwise the next open), with `gameOver: true` when that moment is after `endsAt`: the open never comes, and `POST /me/orders` would refuse the order with `GAME_OVER` (D-022, D-028)
 - `pendingOrders[]`: all your pending orders, in the order they will run
 - `chartSettings`: your saved chart settings on top of the defaults
 
@@ -93,7 +93,7 @@ Body (`SendOrderBody`): `{ symbol, side, amountIls?, units?, clientOrderId? }`
 
 - `symbol`: `^[A-Z0-9-]{1,10}$` (400), and in the game (404 `UNKNOWN_SYMBOL`).
 - `side: "buy"` takes `amountIls` (₪, up to 2 decimals) and no `units`. `side: "sell"` takes `units` (up to 8 decimals) and no `amountIls` (D-018).
-- Sizes are a decimal string (`"100000.00"`) or a JSON number, read as `String(n)`. Positive, at most 20 characters, no exponent. Nothing is rounded: `0.1 + 0.2` or `"100.001"` is a 400, not a rounded order.
+- Sizes are a decimal string (`"100000.00"`) or a JSON number, read from the request's own text, digit for digit (never through a double). Positive, at most 20 characters, no exponent. Nothing is rounded: `0.1 + 0.2`, `"100.001"`, `100.0000000000000001` or `1e2` is a 400, not a rounded order.
 - `clientOrderId` (optional, `^[A-Za-z0-9_-]{1,64}$`): send the same id again after a lost response and you get the same order back.
 
 What it checks, in this order:
@@ -101,12 +101,12 @@ What it checks, in this order:
 | Check | Answer |
 |-------|--------|
 | The body | 400 `BAD_REQUEST` |
-| The world has started (a `world_clock` row) | 409 `NO_WORLD` |
 | The player exists (`POST /me` was called) | 404 `NO_USER` |
 | The symbol is in the game | 404 `UNKNOWN_SYMBOL` |
 | `clientOrderId` already used by this player: the same symbol, side and size | **200** `{ order, replay: true }`: the stored order as it is now (its `status` may have changed). No new row, no second reserve, doesn't count toward the rate limit |
 | … the same id with a different order | 409 `CLIENT_ID_CONFLICT` |
 | More than 5 orders in the last real minute | 429 `RATE_LIMITED`, with `Retry-After` (seconds until one more is allowed, at least 1) |
+| The world has started (a `world_clock` row) | 409 `NO_WORLD` |
 | It would run after the world's end (`world_clock.ends_at`), or the clock is at the end | 409 `GAME_OVER` |
 | Buy: under ₪100 | 422 `BELOW_MIN` |
 | Buy: over the available cash (cash − reserved cash) | 422 `INSUFFICIENT_CASH` |
@@ -122,7 +122,7 @@ What it checks, in this order:
 
 Errors are `{ error, code, reason? }` (`SendOrderError`): `error` in English, a stable `code`, and `reason` in Hebrew for the player (on 409 `NO_WORLD`/`GAME_OVER`, 422 and 429). A refused send writes nothing; only orders the runner rejects are stored (with `reject_code`, D-023).
 
-**When it runs:** the send uses the effective world time (`worldNow`: the running clock, capped at `ends_at`, never before the latest event the runner has started). During an admin jump that has already started the 17:30 close, an order goes to the next open, not into the close. The send holds the clock row `FOR SHARE` and the player's portfolio `FOR UPDATE`, so a clock move waits for sends in progress, one player's sends run one at a time, and other players never wait (D-021).
+**When it runs:** the send uses the effective world time (`worldNow`: the running clock, capped at `ends_at`, never before the latest event the runner has started). During an admin jump that has already started the 17:30 close, an order goes to the next open, not into the close. The send holds the player's portfolio `FOR UPDATE` and then the clock row `FOR SHARE`, so one player's sends run one at a time, other players never wait, and a clock move or event start waits for the sends in progress. Those writers lock the clock table in `EXCLUSIVE` mode, which Postgres queues fairly: a send that arrives after one waits behind it, so a stream of sends can't hold an event back (D-021).
 
 ### `POST /me/seen`
 The app checks in when it opens and every 60 seconds while it is open and visible (D-026). The body is ignored. Returns `{ ok: true }`; 404 before `POST /me`.
@@ -158,13 +158,14 @@ Up to 50 players, by rank on the latest scored day of this week, then by portfol
 - Values use the same rule as the dashboard (D-009): the latest close already known in world time.
 
 ### Admin clock moves: `POST /admin/clock/advance`, `/start`, `/stop`
-The admin's clock buttons (D-017, D-030; [api/src/clockActions.ts](../api/src/clockActions.ts)). No body. Admins only, like every `/admin` route.
+The admin's clock buttons (D-017, D-030; [api/src/clockActions.ts](../api/src/clockActions.ts)). Admins only, like every `/admin` route. Start and stop take no body; advance takes an optional one (below).
 
 A move that changes the clock writes **one `admin_actions` row in the same transaction as the move** (D-027): `uid`, `action`, `world_from`, `world_to` and, for advance and stop, `detail = { events, ordersExecuted, ordersRejected, playersUpdated }`. If the move fails, there is no row.
 
 - **`advance`**: from the effective world time (`worldNow`), jump to the next close of a market that is open (`kind: "to_close"`), or to the next open when neither is (`kind: "to_open"`), never past `ends_at`. It first runs every open and close up to the target, in order (the runner: orders, then the affected players, D-021). Then, in one transaction, `now_at` = the target and `real_at` = now, so a running clock keeps running from there. Action `clock_to_close` or `clock_to_open`.
   Returns `ClockAdvanceResult`: `{ kind, from, to, events, ordersExecuted, ordersRejected, playersUpdated, clock }`. `from` and `to` are `WorldTime`, and `clock` is the dashboard's `LiveClockView` after the move.
-- **`start`**: a stopped clock starts running from where it stands (`running = true`, `real_at` = now). Nothing runs, so it never waits for the runner. Action `clock_start`, with `world_from` = `world_to` = `now_at`. Returns `{ changed: true, clock }`. Already running: `{ changed: false, clock }`, and nothing is written.
+  Optional body (`ClockAdvanceBody`): `{ "from": "<ISO time>" }`, the world time the admin page showed when the admin clicked (`clock.at`). If an open or close has started after that time (the click already went through and its answer was lost, or the ticker ran one meanwhile), the answer is 409 `CLOCK_MOVED` and nothing moves, so a click sent twice moves once. A `from` that isn't an ISO time is a 400. No body, or no `from`: every click jumps.
+- **`start`**: a stopped clock starts running from where it stands: `now_at` = the effective world time every screen shows (the later of `now_at` and `events_through`), `running = true`, `real_at` = now. Nothing runs, so it never waits for the runner. Action `clock_start`, with `world_from` = `world_to` = that time. Returns `{ changed: true, clock }`. Already running: `{ changed: false, clock }`, and nothing is written.
 - **`stop`**: freezes a running clock at the effective world time of the moment the runner lock was taken. First it runs every open and close up to that time, then in one transaction sets `now_at` = that time and `running = false`. Action `clock_stop`, with `world_from` = `world_to` = that time. Returns `{ changed: true, at, events, ordersExecuted, ordersRejected, playersUpdated, clock }`. Already stopped: `{ changed: false, clock }`, and nothing is written.
 
 Errors are `{ error, code, reason }` (`ClockActionError`: English, a stable code, Hebrew):
@@ -174,8 +175,9 @@ Errors are `{ error, code, reason }` (`ClockActionError`: English, a stable code
 | 409 `NO_WORLD` | No `world_clock` row yet |
 | 409 `CLOCK_BUSY` | advance or stop while the runner is running (the ticker, another API instance, or another click). Try again in a moment. Nothing was written |
 | 409 `CLOCK_AT_END` | advance with the clock at `ends_at` |
+| 409 `CLOCK_MOVED` | advance with `from`, and an open or close has started after that time. Reload and look at the clock first. Nothing was written |
 
-**The ticker** runs inside the API process, not as a route. It ticks once at start-up and then every minute. Each tick writes `world_clock.last_tick_at` (real time, the heartbeat the admin page watches), even when nothing is due or the runner is busy. It then takes the runner lock (busy = skip this tick) and runs every open and close up to the effective now: what a running clock has passed, plus any event a crash left unfinished. It never moves `now_at` or `running`, and never writes `admin_actions`. Ticks never overlap; a failed run is logged and resumed by the next tick. `TICKER=off` turns it off.
+**The ticker** runs inside the API process, not as a route. It ticks once at start-up and then every minute. Each tick writes `world_clock.last_tick_at` (real time, the heartbeat the admin page watches), even when nothing is due or the runner is busy. It then takes the runner lock (busy = skip this tick) and runs every open and close up to the effective now: what a running clock has passed, plus any event a crash left unfinished. It never moves `now_at` or `running`, and never writes `admin_actions`. Ticks never overlap; a failed run is logged and resumed by the next tick, also when the database drops the run's connection (a restart or failover fails the run, never the process, D-029). `TICKER=off` turns it off.
 
 ## Outside services we call
 

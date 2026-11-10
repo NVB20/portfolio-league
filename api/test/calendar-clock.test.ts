@@ -7,7 +7,9 @@
 
 import { describe, expect, it } from 'vitest';
 import { executionFor, isMarketOpen, makeCalendar, marketStatus, sessionOn } from '../src/game/marketHours.js';
-import { type ClockState, eventsBetween, isTradingDay, jumpTarget, runForward, worldNow } from '../src/game/clock.js';
+import { type ClockState, eventsBetween, isTradingDay, jumpTarget, movedSince, runForward, worldNow } from '../src/game/clock.js';
+import { addDays } from '../src/game/time.js';
+import { WORLD_CLOSURES } from '../src/world/closures.js';
 
 const cal = makeCalendar([
   { market: 'TASE', day: '2026-04-01', reason: 'פסח' },
@@ -105,6 +107,18 @@ describe('clock: admin jumps', () => {
   });
 });
 
+describe('clock: has the world moved past what the admin saw?', () => {
+  const seen = at('2026-11-09T10:00:00Z');   // Monday 12:00 Israel on the admin page
+  it('no: nothing has run yet, or only events at or before that time', () => {
+    expect(movedSince(seen, null)).toBe(false);
+    expect(movedSince(seen, at('2026-11-09T08:00:00Z'))).toBe(false);   // the 10:00 open
+    expect(movedSince(seen, seen)).toBe(false);                         // the page showed the event it landed on
+  });
+  it('yes: an open or close after that time has started (the jump went through, or the ticker ran one)', () => {
+    expect(movedSince(seen, at('2026-11-09T15:30:00Z'))).toBe(true);    // the 17:30 close
+  });
+});
+
 describe('clock: running at real speed', () => {
   it('moves by real time inside a trading day', () => {
     expect(runForward(at('2026-04-03T07:00:00Z'), 90 * 60_000, FAR, cal)).toEqual(at('2026-04-03T08:30:00Z'));
@@ -165,5 +179,43 @@ describe('clock: the effective now (worldNow)', () => {
     const r = row({ running: true, eventsThrough: FRI_OPEN });
     expect(worldNow(r, realLater(90 * 60_000), cal)).toEqual(at('2026-04-03T08:30:00Z'));
     expect(worldNow(row({ eventsThrough: at('2026-04-02T20:00:00Z') }), REAL_AT, cal)).toEqual(FRI_OPEN);
+  });
+});
+
+// The numbers D-013, D-016 and D-022 quote about the world's calendar (they end up in the README's rules table).
+// If the closures list changes, these change, and so must the decisions.
+describe('the world calendar, as the decisions describe it', () => {
+  const tase = WORLD_CLOSURES.filter((c) => c.market === 'TASE');
+  const taseClosed = new Set(tase.map((c) => c.day));
+  const usClosed = new Set(WORLD_CLOSURES.filter((c) => c.market === 'US').map((c) => c.day));
+
+  it('D-016: 187 closed weekdays; TASE 156 = 113 Fridays before 2026 + 43 holidays; US 31', () => {
+    const fridays = tase.filter((c) => c.reasonEn.startsWith('TASE closed on Fridays'));
+    expect(WORLD_CLOSURES).toHaveLength(187);
+    expect(tase).toHaveLength(156);
+    expect(fridays).toHaveLength(113);
+    expect(tase.length - fridays.length).toBe(43);
+    expect(usClosed.size).toBe(31);
+    expect([fridays[0].day, fridays[fridays.length - 1].day]).toEqual(['2023-11-10', '2026-01-02']);
+  });
+
+  it('D-016 / D-022: from 06.11.2023 to 04.11.2026, 28 days only TASE trades, 153 only the US, 3 neither', () => {
+    let onlyTase = 0;
+    let onlyUs = 0;
+    let neither = 0;
+    for (let d = '2023-11-06'; d <= '2026-11-04'; d = addDays(d, 1)) {
+      const weekday = new Date(`${d}T12:00:00Z`).getUTCDay();
+      if (weekday === 0 || weekday === 6) continue;
+      if (taseClosed.has(d) && usClosed.has(d)) neither++;
+      else if (taseClosed.has(d)) onlyUs++;
+      else if (usClosed.has(d)) onlyTase++;
+    }
+    expect({ onlyTase, onlyUs, neither }).toEqual({ onlyTase: 28, onlyUs: 153, neither: 3 });
+  });
+
+  it('D-013: 154 game weeks, from Monday 27.11.2023 to the week of Monday 02.11.2026', () => {
+    let weeks = 0;
+    for (let d = '2023-11-27'; d <= '2026-11-02'; d = addDays(d, 7)) weeks++;
+    expect(weeks).toBe(154);
   });
 });

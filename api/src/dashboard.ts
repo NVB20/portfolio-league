@@ -13,6 +13,7 @@ import type {
   Dashboard,
   HoldingView,
   LeaderRow,
+  LiveClockView,
   MarketSession,
   OrderView,
   Point,
@@ -65,9 +66,7 @@ export async function getDashboard(db: Pool, uid: string): Promise<Dashboard | n
   const competition = now ? await loadCompetition(db, uid, now) : { standing: null, leaderboard: { players: 0, top: [] } };
 
   return {
-    clock: now
-      ? { ...clockView(now.at, now.calendar), running: now.running, endsAt: now.endsAt ? worldTime(now.endsAt) : null }
-      : null,
+    clock: now ? liveClockView(now) : null,
     portfolio: { ...owned.totals, ...week },
     holdings: owned.holdings,
     pendingOrders: await loadPendingOrders(db, uid),
@@ -160,6 +159,11 @@ export function clockView(at: Date, calendar: Calendar): ClockView {
       us: marketView(marketStatus('US', at, calendar)),
     },
   };
+}
+
+// The clock as the dashboard and the trading screen show it: the world time plus what the admin controls.
+export function liveClockView(now: Now): LiveClockView {
+  return { ...clockView(now.at, now.calendar), running: now.running, endsAt: now.endsAt ? worldTime(now.endsAt) : null };
 }
 
 // One market's status for the screens (D-022): open or not, today's hours, why it's closed, when it opens next.
@@ -418,26 +422,33 @@ async function loadRejections(db: Pool, uid: string): Promise<RejectionView[]> {
   }));
 }
 
-// The body of POST /me/rejections/seen: { upToId } is an order id as the API sends it, a string of digits that
-// fits a BIGINT. Anything else (a number, a sign, a decimal point, too big) → null, answered with 400.
-export function parseUpToId(body: unknown): string | null {
-  const v = body !== null && typeof body === 'object' ? (body as Record<string, unknown>).upToId : undefined;
-  if (typeof v !== 'string' || !/^(0|[1-9]\d{0,18})$/.test(v) || BigInt(v) > MAX_BIGINT) return null;
-  return v;
+// The body of POST /me/rejections/seen: { ids }, the rejections the app showed, 1 to 5 order ids as the API sends
+// them (strings of digits that fit a BIGINT). Exactly those, not "everything up to an id": order ids follow the
+// order orders were SENT, while rejections come at the events, so a rejection of a lower id can arrive between
+// the dashboard read and this call, and "up to" would mark a toast nobody saw (D-023). Anything else → null,
+// answered with 400.
+export function parseSeenIds(body: unknown): string[] | null {
+  const ids = body !== null && typeof body === 'object' ? (body as Record<string, unknown>).ids : undefined;
+  if (!Array.isArray(ids) || ids.length === 0 || ids.length > REJECTIONS_SHOWN) return null;
+  for (const v of ids) {
+    if (typeof v !== 'string' || !/^(0|[1-9]\d{0,18})$/.test(v) || BigInt(v) > MAX_BIGINT) return null;
+  }
+  return ids as string[];
 }
 
-// Marks this player's unseen rejected orders with id ≤ upToId as seen (real time). Only their own rows, only
-// rejected ones; a second call marks nothing. Returns how many were marked, or null when the player has no
-// portfolio (POST /me never called). One statement.
-export async function markRejectionsSeen(db: Pool, uid: string, upToId: string): Promise<number | null> {
+// Marks these of the player's rejected orders as seen (real time). Only their own rows, only rejected ones
+// not seen yet; an id that is someone else's, pending, or already seen marks nothing, so a retry is harmless.
+// Returns how many were marked, or null when the player has no portfolio (POST /me never called). One
+// statement; the primary key finds the rows.
+export async function markRejectionsSeen(db: Pool, uid: string, ids: string[]): Promise<number | null> {
   const { rows } = await db.query<{ known: boolean; marked: number }>(
     `WITH seen AS (
        UPDATE orders SET notified_at = now()
-       WHERE uid = $1 AND status = 'rejected' AND notified_at IS NULL AND id <= $2::bigint
+       WHERE uid = $1 AND id = ANY($2::bigint[]) AND status = 'rejected' AND notified_at IS NULL
        RETURNING 1
      )
      SELECT EXISTS (SELECT 1 FROM portfolios WHERE uid = $1) AS known, (SELECT count(*)::int FROM seen) AS marked`,
-    [uid, upToId],
+    [uid, ids],
   );
   return rows[0].known ? rows[0].marked : null;
 }

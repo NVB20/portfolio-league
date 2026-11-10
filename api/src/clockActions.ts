@@ -22,9 +22,9 @@ import type {
 } from './contract.js';
 import { loadCalendar } from './calendar.js';
 import { CLOCK_COLUMNS, type ClockSqlRow, clockView, effectiveNow, worldTime } from './dashboard.js';
-import { jumpTarget } from './game/clock.js';
+import { jumpTarget, movedSince } from './game/clock.js';
 import type { Calendar } from './game/marketHours.js';
-import { type RunSummary, runUntil, withRunnerLock } from './runner.js';
+import { lockClock, type RunSummary, runUntil, withRunnerLock } from './runner.js';
 
 export const TICK_MS = 60_000;
 const NO_END = new Date(8.64e15);   // the latest Date there is: a world with no ends_at
@@ -42,6 +42,10 @@ const ERRORS: Record<ClockActionErrorCode, { error: string; reason: string }> = 
     error: 'the clock is at the end of the price history',
     reason: 'השעון הגיע לסוף נתוני המחירים, אין לאן להתקדם',
   },
+  CLOCK_MOVED: {
+    error: 'an open or close has run since the time you saw; reload and check the clock before moving it again',
+    reason: 'השעון כבר התקדם מאז שהעמוד נטען: פתיחה או סגירה כבר רצו. רעננו ובדקו את השעון לפני שמזיזים אותו שוב',
+  },
 };
 
 function fail(code: ClockActionErrorCode): Failure {
@@ -56,12 +60,21 @@ function ok<T>(body: T): ClockOutcome<T> {
 
 // Move 1 or 2 (D-017). Under the runner lock, so the ticker or a second click can't run events at the same
 // time; busy = 409 CLOCK_BUSY at once rather than an HTTP request waiting behind a long event.
-export async function advanceClock(db: Pool, uid: string): Promise<ClockOutcome<ClockAdvanceResult>> {
+// `seen` = the world time the admin page showed when the admin clicked (the body's `from`). A click whose answer
+// was lost and is sent again must not jump a second time: if an open or close has run since that time, the
+// answer is 409 CLOCK_MOVED and nothing moves (movedSince, game/clock.ts). Checked under the lock, so two
+// clicks can't both pass it.
+export async function advanceClock(
+  db: Pool,
+  uid: string,
+  opts: { seen?: Date | null } = {},
+): Promise<ClockOutcome<ClockAdvanceResult>> {
   // Loaded before taking a connection: a cold cache needs a second one (orders.ts does the same).
   const calendar = await loadCalendar(db);
   const out = await withRunnerLock(db, async (client): Promise<ClockOutcome<ClockAdvanceResult>> => {
     const row = await readClock(client);
     if (!row) return fail('NO_WORLD');
+    if (opts.seen && movedSince(opts.seen, row.events_through)) return fail('CLOCK_MOVED');
     const from = effectiveNow(row, calendar);
     const jump = jumpTarget(from, row.ends_at ?? NO_END, calendar);
     if (!jump) return fail('CLOCK_AT_END');
@@ -84,12 +97,17 @@ export async function startClock(db: Pool, uid: string): Promise<ClockOutcome<Cl
   const client = await db.connect();
   try {
     return await inTransaction(client, async (): Promise<ClockOutcome<ClockStartResult>> => {
-      const row = (await client.query<ClockSqlRow>(`SELECT ${CLOCK_COLUMNS} FROM world_clock FOR UPDATE`)).rows[0];
+      await lockClock(client);
+      const row = (await client.query<ClockSqlRow>(`SELECT ${CLOCK_COLUMNS} FROM world_clock`)).rows[0];
       if (!row) return fail('NO_WORLD');
       if (row.running) return ok({ changed: false, clock: liveClock(row, calendar) });
-      // From now on, world time = now_at + the real time since this moment (D-017).
-      const started = await updateClock(client, 'running = TRUE, real_at = now()', []);
-      await logAction(client, uid, 'clock_start', row.now_at, row.now_at, {});
+      // From now on, world time = the anchor + the real time since this moment (D-017). The anchor is the
+      // effective now, the time every screen shows: for a stopped clock, the later of now_at and
+      // events_through. After an advance whose final transaction failed, events_through is ahead of now_at;
+      // anchored at the old now_at, the "running" world would stand still at events_through for hours.
+      const from = effectiveNow(row, calendar);
+      const started = await updateClock(client, 'now_at = $1, running = TRUE, real_at = now()', [from]);
+      await logAction(client, uid, 'clock_start', from, from, {});
       return ok({ changed: true, clock: liveClock(started, calendar) });
     });
   } finally {
@@ -117,6 +135,19 @@ export async function stopClock(db: Pool, uid: string): Promise<ClockOutcome<Clo
   return out ?? fail('CLOCK_BUSY');
 }
 
+// The body of POST /admin/clock/advance (ClockAdvanceBody). It is optional: no body, or no `from`, means an
+// unguarded click. `from` must be an ISO instant (clock.at from the admin page); anything else is a 400, so a
+// typo never turns into an unguarded jump.
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
+
+export function parseAdvanceBody(body: unknown): { ok: true; seen: Date | null } | { ok: false; error: string } {
+  const from = body !== null && typeof body === 'object' ? (body as Record<string, unknown>).from : undefined;
+  if (from === undefined || from === null) return { ok: true, seen: null };
+  const seen = typeof from === 'string' && ISO_INSTANT.test(from) ? new Date(from) : null;
+  if (!seen || Number.isNaN(seen.getTime())) return { ok: false, error: 'from must be an ISO time, as clock.at shows it' };
+  return { ok: true, seen };
+}
+
 // ---------- the ticker ----------
 
 export type TickerOptions = {
@@ -128,9 +159,18 @@ export type TickerOptions = {
 const runToTarget = (client: PoolClient, target: Date) => runUntil(client, target);
 
 // The ticker's heartbeat, in real time. Written on every tick, even when nothing is due or the lock is busy,
-// so the admin page can tell a quiet world from a ticker that stopped.
+// so the admin page can tell a quiet world from a ticker that stopped. It writes the clock row, so it takes the
+// fairly queued exclusive lock first (lockClock): a stream of order sends can't starve it.
 export async function heartbeat(db: Pool): Promise<void> {
-  await db.query('UPDATE world_clock SET last_tick_at = now()');
+  const client = await db.connect();
+  try {
+    await inTransaction(client, async () => {
+      await lockClock(client);
+      await client.query('UPDATE world_clock SET last_tick_at = now()');
+    });
+  } finally {
+    client.release();
+  }
 }
 
 // Runs whatever is due: an event a crash left unfinished, then every event up to the effective now (where the
@@ -201,9 +241,11 @@ async function readClock(client: PoolClient): Promise<ClockSqlRow | null> {
   return rows[0] ?? null;
 }
 
-// One UPDATE of the single clock row (it takes the row lock that order sending waits on with FOR SHARE).
+// One UPDATE of the single clock row, inside the caller's transaction. It takes the fairly queued exclusive
+// clock lock first (lockClock, D-021), so order sends (FOR SHARE) can't keep the move waiting.
 // RETURNING's now() is this transaction's start: the real_at just written, so the returned clock is exact.
 async function updateClock(client: PoolClient, set: string, params: unknown[]): Promise<ClockSqlRow> {
+  await lockClock(client);
   const { rows } = await client.query<ClockSqlRow>(`UPDATE world_clock SET ${set} RETURNING ${CLOCK_COLUMNS}`, params);
   if (!rows[0]) throw new Error('the world_clock row is gone');
   return rows[0];

@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { parse, SCALE } from '../src/game/fixed.js';
 import {
-  checkSend, checkTiming, type HeldPosition, MIN_ORDER_ILS, parseSendBody, RATE_LIMIT, retryAfterSeconds,
+  checkSend, checkTiming, type HeldPosition, MIN_ORDER_ILS, parseOrderJson, parseSendBody, RATE_LIMIT, retryAfterSeconds,
   SEND_REASONS,
 } from '../src/game/orderRules.js';
 
@@ -106,6 +106,41 @@ describe('parseSendBody', () => {
   it('says what is wrong, in English', () => {
     expect(bad({ symbol: 'TEVA', side: 'buy', amountIls: '1.234' })).toMatch(/amountIls/);
     expect(bad({ symbol: 'TEVA', side: 'sell', units: 'x' })).toMatch(/units/);
+  });
+});
+
+// JSON.parse turns a number into a double before anyone sees it: 100.0000000000000001 becomes 100, and would
+// pass the exact-size rule as a ₪100.00 order (D-028). The request text is read with each size's own digits.
+describe('parseOrderJson', () => {
+  const size = (text: string) => {
+    const body = parseOrderJson(text) as Record<string, unknown>;
+    return { amountIls: body.amountIls, units: body.units };
+  };
+
+  it('keeps a JSON number size as the digits that were sent', () => {
+    expect(size('{"amountIls":100.0000000000000001}').amountIls).toBe('100.0000000000000001');
+    expect(size('{"amountIls":99.999999999999999}').amountIls).toBe('99.999999999999999');
+    expect(size('{"units":1.000000000000000001}').units).toBe('1.000000000000000001');
+    expect(size('{"amountIls": 100.50 }').amountIls).toBe('100.50');
+    expect(size('{"amountIls":1e2}').amountIls).toBe('1e2');
+    expect(size('{"amountIls":"100.5"}').amountIls).toBe('100.5');   // a string stays as it is
+  });
+
+  it('so the size rules see what was sent: more digits than a double holds is a 400, not a rounded order', () => {
+    const read = (text: string) => parseSendBody(parseOrderJson(text));
+    expect(read('{"symbol":"TEVA","side":"buy","amountIls":100.0000000000000001}').ok).toBe(false);
+    expect(read('{"symbol":"TEVA","side":"buy","amountIls":99.999999999999999}').ok).toBe(false);
+    expect(read('{"symbol":"TEVA","side":"sell","units":1.000000000000000001}').ok).toBe(false);
+    expect(read('{"symbol":"TEVA","side":"buy","amountIls":1e2}').ok).toBe(false);   // an exponent, as in "1e2"
+    expect(read('{"symbol":"TEVA","side":"buy","amountIls":100.50}')).toMatchObject({ ok: true, order: { amount: 10_050n } });
+    expect(read('{"symbol":"TEVA","side":"sell","units":3}')).toMatchObject({ ok: true, order: { units: 300_000_000n } });
+  });
+
+  it('leaves everything else alone, and gives undefined for a body that isn\'t JSON', () => {
+    expect(parseOrderJson('{"symbol":"TEVA","side":"buy","n":1.5,"clientOrderId":"a"}'))
+      .toEqual({ symbol: 'TEVA', side: 'buy', n: 1.5, clientOrderId: 'a' });
+    expect(parseOrderJson('not json')).toBeUndefined();
+    expect(parseOrderJson('')).toBeUndefined();
   });
 });
 

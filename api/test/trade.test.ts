@@ -139,6 +139,30 @@ describe('GET /me/trade', () => {
     expect(t.pendingOrders.map((o: { symbol: string }) => o.symbol)).toEqual(['NVDA', 'TEVA']);
   });
 
+  it('says when an order sent now could never run because the history ends first, as POST /me/orders does (D-028)', async () => {
+    // The real end (D-017): 05.11.2026 09:59 Israel. Wednesday 04.11 18:00: TASE has closed for the last time,
+    // New York is open until 23:00. A TASE order would go to Thursday's 10:00 open, after the end.
+    await db.query(`INSERT INTO world_clock (now_at, ends_at) VALUES ('2026-11-04T16:00:00Z', '2026-11-05T07:59:00Z')`);
+    await db.query(
+      `INSERT INTO securities (symbol, name_he, market, exchange, currency) VALUES
+         ('TEVA', 'טבע', 'TASE', 'TASE', 'ILS'), ('NVDA', 'אנבידיה', 'US', 'NASDAQ', 'USD')`,
+    );
+    await db.query(`INSERT INTO prices (symbol, day, open, close) VALUES ('TEVA', '2026-11-04', 40, 40)`);
+    await call('POST', '/me', 'alice');
+
+    const t = await (await call('GET', '/me/trade', 'alice')).json();
+    const [teva, nvda] = t.securities;
+    expect(teva.execution).toEqual({ priceType: 'open', at: expect.objectContaining({ date: '2026-11-05', time: '10:00' }), gameOver: true });
+    expect(nvda.execution).toEqual({ priceType: 'close', at: expect.objectContaining({ date: '2026-11-04', time: '23:00' }), gameOver: false });
+    // The ticket can say why, like the dashboard's clock: where the clock stops, and whether it runs.
+    expect(t.clock).toMatchObject({ running: false, endsAt: { date: '2026-11-05', time: '09:59' } });
+
+    const sent = await call('POST', '/me/orders', 'alice', { symbol: 'TEVA', side: 'buy', amountIls: '1000.00' });
+    expect(sent.status).toBe(409);
+    expect((await sent.json()).code).toBe('GAME_OVER');
+    expect((await call('POST', '/me/orders', 'alice', { symbol: 'NVDA', side: 'buy', amountIls: '1000.00' })).status).toBe(201);
+  });
+
   it('brings me up to date before reading, during an event whose orders have run (D-025)', async () => {
     await seedWorld();
     await seedAlice();

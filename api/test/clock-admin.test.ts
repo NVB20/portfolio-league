@@ -12,7 +12,8 @@ import { runner as migrate } from 'node-pg-migrate';
 import { createApp } from '../src/app.js';
 import { makeFirebaseVerifier } from '../src/auth.js';
 import { forgetCalendar } from '../src/calendar.js';
-import { advanceClock, runDue, startTicker, stopClock } from '../src/clockActions.js';
+import { createPool } from '../src/db.js';
+import { advanceClock, heartbeat, runDue, startTicker, stopClock } from '../src/clockActions.js';
 import { RUNNER_LOCK_KEY, type RunSummary, startEvent } from '../src/runner.js';
 import { eventsBetween } from '../src/game/clock.js';
 import { type Market, type MarketEvent, NO_CLOSURES } from '../src/game/marketHours.js';
@@ -347,6 +348,35 @@ describe('POST /admin/clock/advance', () => {
     expect(await events()).toEqual([]);
   });
 
+  it('with the time the admin saw (from), a retry after a lost response answers CLOCK_MOVED instead of jumping again', async () => {
+    // The move commits, then the response is lost (a proxy timeout at scale, D-030), and the admin clicks again.
+    // Without `from` the second click would jump on to New York's close and skip a session for every player.
+    await world({ nowAt: israel(MON, '12:00') });
+    const seen = israel(MON, '12:00').toISOString();   // clock.at on the admin page
+    const advance = async (body: unknown) => {
+      const res = await call('POST', '/admin/clock/advance', 'root', body);
+      return { status: res.status, body: await res.json() };
+    };
+    expect(await advance({ from: seen })).toMatchObject({ status: 200, body: { kind: 'to_close', to: { time: '17:30' } } });
+    expect(await advance({ from: seen })).toMatchObject({ status: 409, body: { code: 'CLOCK_MOVED', reason: expect.any(String) } });
+    expect(await clock()).toMatchObject({ now_at: israel(MON, '17:30').toISOString() });
+    expect(await actions()).toHaveLength(1);
+    expect((await events()).map((e) => `${e.market} ${e.kind}`)).toEqual(['US open', 'TASE close']);
+
+    // From the time the page shows now, the next click is a new move.
+    expect(await advance({ from: israel(MON, '17:30').toISOString() })).toMatchObject({ status: 200, body: { to: { time: '23:00' } } });
+    // A running clock moves on between the page's read and the click: still the same move, as long as no open
+    // or close ran in between.
+    await db.query(`UPDATE world_clock SET running = TRUE, real_at = now() - interval '5 minutes'`);
+    expect(await advance({ from: israel(MON, '23:00').toISOString() })).toMatchObject({ status: 200, body: { kind: 'to_open' } });
+    expect(await actions()).toHaveLength(3);
+
+    // No `from` (an older admin page) is still allowed; a bad one is refused before anything runs.
+    expect(await advance({ from: 'yesterday' })).toMatchObject({ status: 400 });
+    expect(await advance({ from: 1731164400000 })).toMatchObject({ status: 400 });
+    expect(await actions()).toHaveLength(3);
+  });
+
   it('a failure inside the final transaction leaves no log row and no clock move', async () => {
     await world({ nowAt: israel(MON, '12:00') });
     await signUp('alice');
@@ -438,6 +468,36 @@ describe('POST /admin/clock/start and /stop', () => {
     expect(await actions()).toEqual([
       { uid: 'root', action: 'clock_stop', world_from: c.now_at, world_to: c.now_at,
         detail: { events: 1, ordersExecuted: 1, ordersRejected: 0, playersUpdated: 1 } },
+    ]);
+  });
+
+  it('start after a failed advance runs on from the time the screens show, and logs that time', async () => {
+    // Friday 23:30, stopped. Advance ("to the next open") runs Monday's 10:00 TASE open, then its final
+    // transaction fails (D-030's known weakness; a crash or a timeout mid-run leaves the same state): now_at is
+    // still Friday 23:30, events_through is Monday 10:00, and every screen and order already uses Monday 10:00.
+    const FRI = '2026-11-13';
+    const NEXT_MON = '2026-11-16';
+    await world({ nowAt: israel(FRI, '23:30') });
+    const failing = poolFailingTheLog();
+    try {
+      await expect(advanceClock(failing, 'root')).rejects.toThrow('the disk is full');
+    } finally {
+      await failing.end();
+    }
+    expect(await clock()).toMatchObject({ now_at: israel(FRI, '23:30').toISOString(), events_through: israel(NEXT_MON, '10:00').toISOString() });
+
+    const started = await admin('/admin/clock/start');
+    expect(started).toMatchObject({ status: 200, body: { changed: true, clock: { running: true, date: NEXT_MON, time: '10:00' } } });
+    // Anchored at Monday 10:00, not Friday 23:30: one real hour later the world is at 11:00, instead of standing
+    // still at 10:00 for ten and a half hours while it looks like it is running.
+    expect(await clock()).toMatchObject({ now_at: israel(NEXT_MON, '10:00').toISOString(), running: true });
+    await db.query(`UPDATE world_clock SET real_at = real_at - interval '1 hour'`);
+    const later = await call('GET', '/me/dashboard', 'root');
+    expect((await later.json()).clock).toMatchObject({ date: NEXT_MON, time: '11:00' });
+    // The log says what the screens showed when the admin pressed start.
+    expect(await actions()).toEqual([
+      { uid: 'root', action: 'clock_start', world_from: israel(NEXT_MON, '10:00').toISOString(),
+        world_to: israel(NEXT_MON, '10:00').toISOString(), detail: {} },
     ]);
   });
 
@@ -588,6 +648,85 @@ describe('the ticker', () => {
     await sleep(80);
     expect(runs).toBe(n);
     expect((await clock()).last_tick_at).toBe(beat);
+  });
+
+  it('the heartbeat waits only for sends already holding the clock row; a send arriving after it queues behind it', async () => {
+    await world({ nowAt: israel(MON, '12:00') });
+    const lockWaiters = async () => (await db.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+    )).rows[0].n;
+    const inFlight = await db.connect();
+    const late = await db.connect();
+    try {
+      await inFlight.query('BEGIN');
+      await inFlight.query('SELECT now_at FROM world_clock FOR SHARE');   // as POST /me/orders holds it
+      const done: string[] = [];
+      const beat = heartbeat(db).then(() => { done.push('heartbeat'); });
+      await until(async () => (await lockWaiters()) === 1);
+
+      // On the row lock alone this share request is granted at once, and overlapping sends starve the heartbeat
+      // (the admin page then shows a dead ticker). Queued fairly, it waits for the heartbeat.
+      await late.query('BEGIN');
+      const share = late.query('SELECT now_at FROM world_clock FOR SHARE').then(() => { done.push('send'); });
+      await until(async () => done.length > 0 || (await lockWaiters()) === 2);
+      expect(done).toEqual([]);
+
+      await inFlight.query('COMMIT');
+      await Promise.all([beat, share]);
+      expect(done).toEqual(['heartbeat', 'send']);
+      await late.query('COMMIT');
+      expect((await clock()).last_tick_at).not.toBeNull();
+    } finally {
+      await inFlight.query('ROLLBACK').catch(() => {});
+      await late.query('ROLLBACK').catch(() => {});
+      inFlight.release();
+      late.release();
+    }
+  });
+
+  it('on the API\'s pool: a run whose connection the database ends is logged, nothing crashes, and the next tick finishes the event once', async () => {
+    // A database restart or failover mid-run. node-postgres emits 'error' on the run's checked-out client;
+    // unheard, Node throws it and the whole API process exits (D-030: nothing is thrown out of the timer).
+    const teva = await closeIsDue();
+    const api = createPool(DATABASE_URL);   // server.ts's pool
+    // Another session holds alice's portfolio row, so the run's order batch waits on it: a long run.
+    const blocker = await db.connect();
+    await blocker.query('BEGIN');
+    await blocker.query(`SELECT 1 FROM portfolios WHERE uid = 'alice' FOR UPDATE`);
+    const uncaught: unknown[] = [];
+    const onUncaught = (err: unknown) => { uncaught.push(err); };
+    process.on('uncaughtException', onUncaught);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const stop = startTicker(api, { intervalMs: 50 });
+    try {
+      let pid = 0;
+      await until(async () => {
+        const { rows } = await db.query<{ pid: number }>(
+          `SELECT pid FROM pg_stat_activity
+           WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%FROM portfolios WHERE uid = ANY%'`,
+        );
+        pid = rows[0]?.pid ?? 0;
+        return pid !== 0;
+      });
+      await db.query('SELECT pg_terminate_backend($1)', [pid]);
+      await until(async () => errors.mock.calls.some((c) => c[0] === 'ticker: run failed; the next tick resumes it'));
+      await blocker.query('ROLLBACK');
+      // The next tick takes the lock again (the server dropped it with the session) and runs the close.
+      await until(async () => (await order(teva)).status === 'executed' && (await events())[0]?.status === 'done');
+    } finally {
+      await stop();
+      await blocker.query('ROLLBACK').catch(() => {});
+      blocker.release();
+      log.mockRestore();
+      errors.mockRestore();
+      process.off('uncaughtException', onUncaught);
+      await api.end();
+    }
+    expect(uncaught).toEqual([]);
+    const { rows } = await db.query<{ n: number }>(`SELECT count(*)::int AS n FROM journals WHERE kind = 'buy'`);
+    expect(rows[0].n).toBe(1);
+    expect(await portfolio('alice')).toMatchObject({ cash: '990000.0000', reserved_cash: '0.00', holdings_value: '10000.00' });
   });
 
   it('runDue: null while the lock is busy, nothing to do without a world', async () => {

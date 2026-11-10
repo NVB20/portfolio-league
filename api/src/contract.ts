@@ -128,8 +128,9 @@ export type ChartSettings = {
   lastLine: boolean;
 };
 
-// When an order sent now would run (rule 3).
-export type ExecutionView = { priceType: 'open' | 'close'; at: WorldTime };
+// When an order sent now would run (rule 3). gameOver: true = that moment is after the end of the price history
+// (world_clock.ends_at), so POST /me/orders refuses the order with GAME_OVER (D-028): show that, not the time.
+export type ExecutionView = { priceType: 'open' | 'close'; at: WorldTime; gameOver: boolean };
 
 export type SecurityView = {
   symbol: string;
@@ -149,7 +150,7 @@ export type SecurityView = {
 };
 
 export type TradeView = {
-  clock: ClockView | null;
+  clock: LiveClockView | null;       // as on the dashboard: with running and endsAt (where the history ends)
   cash: number;
   availableCash: number;             // cash − cash locked by pending buys
   totalValue: number;
@@ -182,9 +183,9 @@ export type Dashboard = {
   leaderboard: { players: number; top: LeaderRow[] };
 };
 
-// POST /me/rejections/seen: the app showed the rejection toasts up to this order id (the largest id it showed).
-// Marks this player's rejected orders with id ≤ upToId as seen. `marked` = how many were newly marked.
-export type RejectionsSeenBody = { upToId: string };
+// POST /me/rejections/seen: the rejection toasts the app showed, by order id (1 to 5, the `rejections[].id`s).
+// Marks exactly those of this player's rejected orders as seen. `marked` = how many were newly marked.
+export type RejectionsSeenBody = { ids: string[] };
 export type RejectionsSeenResult = { marked: number };
 
 // ---------- POST /me/orders: sending an order (D-018, D-028) ----------
@@ -224,6 +225,11 @@ export type SendOrderError = { error: string; code: SendOrderErrorCode; reason?:
 // What the runner did on the way: the opens and closes it ran, and their orders and re-valued players.
 export type ClockRunCounts = { events: number; ordersExecuted: number; ordersRejected: number; playersUpdated: number };
 
+// POST /admin/clock/advance body (optional). from = the world time the admin page showed when the admin clicked
+// (clock.at, ISO). If an open or close has run since (the click already went through and its answer was lost,
+// or the ticker ran one meanwhile), the answer is 409 CLOCK_MOVED and nothing moves. Without it, any click jumps.
+export type ClockAdvanceBody = { from?: string };
+
 // 200: jumped to the next close of an open market, or to the next open when none is open (capped at endsAt).
 export type ClockAdvanceResult = ClockRunCounts & {
   kind: 'to_close' | 'to_open';
@@ -243,7 +249,8 @@ export type ClockStopResult =
 export type ClockActionErrorCode =
   | 'NO_WORLD'                     // 409: no world_clock row yet
   | 'CLOCK_BUSY'                   // 409: the runner is running an event (the ticker, or another move); try again
-  | 'CLOCK_AT_END';                // 409: advance at world_clock.ends_at, the last moment with prices
+  | 'CLOCK_AT_END'                 // 409: advance at world_clock.ends_at, the last moment with prices
+  | 'CLOCK_MOVED';                 // 409: advance with `from`, and an open or close has run since that time
 
 // `error` is English, `reason` the Hebrew the admin page shows.
 export type ClockActionError = { error: string; code: ClockActionErrorCode; reason: string };

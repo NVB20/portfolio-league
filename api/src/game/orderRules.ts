@@ -43,9 +43,26 @@ const CLIENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const PLAIN_DECIMAL = /^\d+(?:\.(\d+))?$/;
 const MAX_SIZE_CHARS = 20;
 
-// A size as the player sent it: a decimal string, or a JSON number read through String(n). Nothing is
-// rounded: a number we would have to round (too many decimals, 0.1 + 0.2, an exponent) is refused, so the
-// order stored is exactly the order sent. null = not a valid size.
+// The body of POST /me/orders, from the request's text. JSON.parse turns a number into a double before anyone
+// sees it: 100.0000000000000001 would arrive as 100 and pass the exact-size rule as a ₪100.00 order. A size
+// sent as a JSON number is kept as its own digits instead (the reviver's source text, Node 21+), so readSize
+// judges exactly what was sent: too many decimals or an exponent ("1e2") is a 400, like the same string.
+// Everything else is parsed as usual. undefined = not JSON (answered with 400).
+export function parseOrderJson(text: string): unknown {
+  try {
+    return JSON.parse(text, (key: string, value: unknown, context?: { source?: string }) =>
+      (key === 'amountIls' || key === 'units') && typeof value === 'number' && typeof context?.source === 'string'
+        ? context.source
+        : value);
+  } catch {
+    return undefined;
+  }
+}
+
+// A size as the player sent it: a decimal string, or a JSON number as its digits (parseOrderJson; a number
+// handed over directly is read through String(n)). Nothing is rounded: a number we would have to round (too
+// many decimals, 0.1 + 0.2, an exponent) is refused, so the order stored is exactly the order sent.
+// null = not a valid size.
 function readSize(v: unknown, scale: number): bigint | null {
   const s = typeof v === 'number' ? String(v) : v;
   if (typeof s !== 'string' || s.length > MAX_SIZE_CHARS) return null;

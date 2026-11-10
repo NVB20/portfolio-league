@@ -1,6 +1,6 @@
 // GET /me/trade: everything the trading screen shows, in one request.
 // The 40 securities with their latest known close, the player's cash and holdings, when an order sent
-// now would run, the pending orders, and the player's chart settings.
+// now would run (or that it never would: the end of the history), the pending orders, and the chart settings.
 //
 // The list's prices are the latest daily close already known in world time (a display price; orders fill at
 // the next open or close). Cash, holdings and totals are the stored values, as on the dashboard (D-031).
@@ -9,8 +9,9 @@
 import type { Pool } from 'pg';
 import type { OrderView, SecurityView, TradeView } from './contract.js';
 import { withDefaults } from './chartSettings.js';
-import { catchUp, clockView, loadNow, loadPortfolio, loadUsdIls, worldTime } from './dashboard.js';
+import { catchUp, liveClockView, loadNow, loadPortfolio, loadUsdIls, worldTime } from './dashboard.js';
 import { executionFor, isMarketOpen } from './game/marketHours.js';
+import { checkTiming } from './game/orderRules.js';
 
 const CLOSES_SHOWN = 11;      // the 10-day chart: ten closes back + the latest
 const PENDING_LIMIT = 50;
@@ -59,6 +60,9 @@ export async function getTrade(db: Pool, uid: string): Promise<TradeView | null>
     const prev = closes[closes.length - 2];
     const h = held.get(r.symbol);
     const exec = now ? executionFor(r.market, now.at, now.calendar) : null;
+    // The same timing rule as POST /me/orders (D-028): at the end of the history the next open never comes,
+    // and the screen must not promise it.
+    const gameOver = now && exec ? checkTiming(now.at, exec.at, now.endsAt) !== null : false;
     return {
       symbol: r.symbol,
       nameHe: r.name_he,
@@ -72,13 +76,13 @@ export async function getTrade(db: Pool, uid: string): Promise<TradeView | null>
       closes,
       holding: h ? { units: h.units, freeUnits: h.freeUnits, valueIls: h.valueIls, weightPct: h.weightPct } : null,
       isOpen: now ? isMarketOpen(r.market, now.at, now.calendar) : false,
-      execution: exec ? { priceType: exec.priceType, at: worldTime(exec.at) } : null,
+      execution: exec ? { priceType: exec.priceType, at: worldTime(exec.at), gameOver } : null,
       hasChart: r.has_chart,
     };
   });
 
   return {
-    clock: now ? clockView(now.at, now.calendar) : null,
+    clock: now ? liveClockView(now) : null,
     cash: owned.totals.cash,
     availableCash: owned.totals.availableCash,
     totalValue: owned.totals.totalValue,

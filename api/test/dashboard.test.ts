@@ -412,8 +412,15 @@ describe('GET /me/dashboard, seeded world', () => {
     // Once only: the batch (and the next read) skip her through last_event_at. Bob holds nothing: untouched.
     await dashboard();
     await dashboard('bob');
+    const again = await db.query(
+      `SELECT holdings_value::text, equity::text, unrealized_pnl::text, peak_value::text, max_drawdown_pct::text, last_event_at
+       FROM portfolios WHERE uid = 'alice'`,
+    );
+    expect(again.rows[0]).toEqual(stored.rows[0]);
+    // A read's catch-up doesn't add to the event's players_updated: that counts the runner's own pages, and a
+    // burst of reads all writing that one row queued on its lock (D-025).
     const event = await db.query(`SELECT players_updated FROM market_events WHERE id = $1`, [usOpen.rows[0].id]);
-    expect(event.rows[0].players_updated).toBe(1);
+    expect(event.rows[0].players_updated).toBe(0);
     const bob = await db.query(`SELECT last_event_at FROM portfolios WHERE uid = 'bob'`);
     expect(bob.rows[0].last_event_at).toBeNull();
   });
@@ -505,35 +512,60 @@ describe('GET /me/dashboard, seeded world', () => {
       expect((await dashboard('bob')).rejections.map((r: { id: string }) => r.id)).toEqual([ids.b1]);
     });
 
-    it('POST /me/rejections/seen marks only my own rejected orders up to the id, once', async () => {
-      const res = await call('POST', '/me/rejections/seen', 'alice', { body: { upToId: ids.a5 } });
+    it('POST /me/rejections/seen marks exactly the rejections the app showed, only my own, once', async () => {
+      const shown = (await dashboard()).rejections.map((r: { id: string }) => r.id);   // a6, a5, a7, a3, a2
+      const res = await call('POST', '/me/rejections/seen', 'alice', { body: { ids: shown } });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ marked: 4 });   // a1, a2, a3, a5; "seen" was marked before
+      expect(await res.json()).toEqual({ marked: 5 });
 
       const rows = await db.query<{ uid: string; label: string | null; status: string; notified_at: Date | null }>(
         `SELECT uid, client_order_id AS label, status, notified_at FROM orders ORDER BY id`,
       );
       const marked = rows.rows.filter((r) => r.notified_at !== null && r.label !== 'seen').map((r) => r.label);
-      expect(marked).toEqual(['a1', 'a2', 'a3', 'a5']);
-      // Bob's rejection (an id below upToId) and every pending order (ids below it too) are untouched.
+      expect(marked).toEqual(['a2', 'a3', 'a5', 'a6', 'a7']);   // a1, the 6th, wasn't shown: it is still unseen
       expect(rows.rows.filter((r) => r.uid === 'bob' || r.status === 'pending').every((r) => r.notified_at === null)).toBe(true);
       const seen = rows.rows.find((r) => r.label === 'seen')!;
       expect(seen.notified_at).toEqual(new Date('2026-11-10T16:00:00Z'));   // not moved to now
 
-      expect((await dashboard()).rejections.map((r: { id: string }) => r.id)).toEqual([ids.a6, ids.a7]);
+      expect((await dashboard()).rejections.map((r: { id: string }) => r.id)).toEqual([ids.a1]);
 
-      const again = await call('POST', '/me/rejections/seen', 'alice', { body: { upToId: ids.a5 } });
+      // Again (a retry): nothing new. Bob's id, a pending order's id or an unknown id mark nothing either.
+      const again = await call('POST', '/me/rejections/seen', 'alice', { body: { ids: shown } });
       expect(await again.json()).toEqual({ marked: 0 });
+      const pending = (await db.query(`SELECT id::text AS id FROM orders WHERE uid = 'alice' AND status = 'pending' LIMIT 1`)).rows[0].id;
+      const others = await call('POST', '/me/rejections/seen', 'alice', { body: { ids: [ids.b1, pending, '999999'] } });
+      expect(await others.json()).toEqual({ marked: 0 });
+      expect((await dashboard('bob')).rejections.map((r: { id: string }) => r.id)).toEqual([ids.b1]);
+    });
+
+    // Order ids follow the order orders were sent; rejections follow the events. "Up to an id" marked a
+    // rejection of a lower id that came in after the dashboard read, and its toast was never shown (D-023).
+    it('a rejection that arrives between the read and the "seen" call is still shown next time', async () => {
+      const shown = (await dashboard()).rejections.map((r: { id: string }) => r.id);
+      // An open rejects an order alice sent before all of these: a lower id than every one shown (id 0 is below
+      // anything the identity hands out).
+      await db.query(
+        `INSERT INTO orders (id, uid, symbol, side, amount_ils, status, placed_at, executes_at, price_type,
+                             reject_reason, reject_code, event_id)
+         OVERRIDING SYSTEM VALUE
+         VALUES (0, 'alice', 'TEVA', 'buy', 7000, 'rejected', '2026-11-02T10:00:00Z', $1, 'open',
+                 'אין מספיק מזומן פנוי', 'INSUFFICIENT_CASH', $2)`,
+        [WED_TASE_OPEN, eventIds.wedTaseOpen],
+      );
+      const res = await call('POST', '/me/rejections/seen', 'alice', { body: { ids: shown } });
+      expect(await res.json()).toEqual({ marked: 5 });
+      expect((await dashboard()).rejections.map((r: { id: string }) => r.id)).toEqual(['0', ids.a1]);
     });
 
     it('POST /me/rejections/seen refuses a bad body, an unknown user and a missing token', async () => {
-      for (const body of [{}, { upToId: 5 }, { upToId: '' }, { upToId: 'abc' }, { upToId: '-1' }, { upToId: '1.5' },
-        { upToId: '9223372036854775808' }, 'not json']) {
+      for (const body of [{}, { ids: [] }, { ids: ids.a5 }, { ids: [5] }, { ids: [''] }, { ids: ['abc'] }, { ids: ['-1'] },
+        { ids: ['1.5'] }, { ids: ['9223372036854775808'] }, { ids: ['1', '2', '3', '4', '5', '6'] }, { upToId: ids.a5 },
+        'not json']) {
         const res = await call('POST', '/me/rejections/seen', 'alice', { body });
         expect(res.status, JSON.stringify(body)).toBe(400);
       }
-      expect((await call('POST', '/me/rejections/seen', 'ghost', { body: { upToId: ids.a6 } })).status).toBe(404);
-      expect((await app.request('/me/rejections/seen', { method: 'POST', body: '{"upToId":"1"}' })).status).toBe(401);
+      expect((await call('POST', '/me/rejections/seen', 'ghost', { body: { ids: [ids.a6] } })).status).toBe(404);
+      expect((await app.request('/me/rejections/seen', { method: 'POST', body: '{"ids":["1"]}' })).status).toBe(401);
       const unseen = await db.query(`SELECT count(*)::int AS n FROM orders WHERE status = 'rejected' AND notified_at IS NULL`);
       expect(unseen.rows[0].n).toBe(7);   // nothing was marked
     });

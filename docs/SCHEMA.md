@@ -258,14 +258,14 @@ The runner's event log (D-021): one row per open or close it processes. Status g
 | `finished_at` | TIMESTAMPTZ | yes | | Real time |
 | `orders_executed` | INTEGER | no | `0` | |
 | `orders_rejected` | INTEGER | no | `0` | |
-| `players_updated` | INTEGER | no | `0` | |
+| `players_updated` | INTEGER | no | `0` | Players the runner's own pages re-valued (step 2). A player brought up to date by a read's catch-up (D-025) is not counted |
 | `duration_ms` | INTEGER | yes | | |
-| `ledger_balanced` | BOOLEAN | yes | | The check after the event (D-019) |
+| `ledger_balanced` | BOOLEAN | yes | | The ledger check (D-019, D-029), run in each order batch for that batch's players: `false` as soon as one batch finds a mismatch, `true` when the event is done with none. NULL = not done and nothing wrong found yet |
 | `median_value` | NUMERIC(16,2) | yes | | The median player line (D-024) |
 | `median_return_pct` | NUMERIC(10,4) | yes | | |
 
 ### `portfolio_snapshots`
-Chart history: at most one row per player per trading day, written at that day's last event and only when the value changed (D-024). The value at time t is the latest row at or before t. Weekly return and drawdown come from the running totals on `portfolios`, not from here.
+Chart history: at most one row per player per trading day, written at that day's last event for every player an open or close re-valued that day (`last_event_at` on that day), whether or not the value moved (D-024, D-029). Cash-only players and players nothing touched that day get no row. The value at time t is the latest row at or before t. Weekly return and drawdown come from the running totals on `portfolios`, not from here.
 
 | Field | Type | Null | Default | Notes |
 |-------|------|------|---------|-------|

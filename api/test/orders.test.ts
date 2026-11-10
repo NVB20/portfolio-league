@@ -10,6 +10,9 @@ import pg from 'pg';
 import { runner } from 'node-pg-migrate';
 import { createApp } from '../src/app.js';
 import { makeFirebaseVerifier } from '../src/auth.js';
+import { sendOrder } from '../src/orders.js';
+import { startEvent } from '../src/runner.js';
+import type { MarketEvent } from '../src/game/marketHours.js';
 import { makeTestKeys, PROJECT_ID, signToken } from './helpers.js';
 
 const DATABASE_URL =
@@ -369,6 +372,24 @@ describe('POST /me/orders: bad requests', () => {
     expect((await written('alice')).orders).toBe(0);
   });
 
+  it('400 for a JSON number with more digits than a double holds: never stored as the rounded order (D-028)', async () => {
+    // JSON.parse alone reads 100.0000000000000001 as 100 and 99.999999999999999 as 100 (past the ₪100 minimum).
+    for (const raw of [
+      '{"symbol":"TEVA","side":"buy","amountIls":100.0000000000000001}',
+      '{"symbol":"TEVA","side":"buy","amountIls":99.999999999999999}',
+      '{"symbol":"TEVA","side":"buy","amountIls":1e3}',
+    ]) {
+      const res = await send('alice', raw);
+      expect(res.status, raw).toBe(400);
+      expect(res.body.code).toBe('BAD_REQUEST');
+    }
+    expect((await written('alice')).orders).toBe(0);
+    // An exact JSON number is still fine.
+    const ok = await send('alice', '{"symbol":"TEVA","side":"buy","amountIls":100.50}');
+    expect(ok.status).toBe(201);
+    expect(ok.body.order.amountIls).toBe(100.5);
+  });
+
   it('404 UNKNOWN_SYMBOL for a well-formed ticker that isn\'t in the game', async () => {
     const res = await send('alice', { symbol: 'NOPE', side: 'buy', amountIls: '1000' });
     expect(res.status).toBe(404);
@@ -574,6 +595,92 @@ describe('POST /me/orders: locks', () => {
       mover.release();
     }
   });
+
+  // The runner's start of Wednesday's 17:30 TASE close.
+  const CLOSE_EVENT: MarketEvent = { market: 'TASE', kind: 'close', day: '2026-11-11', at: new Date(TASE_CLOSE) };
+
+  async function lockWaiters(): Promise<number> {
+    const { rows } = await db.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+    );
+    return rows[0].n;
+  }
+
+  async function until(check: () => Promise<boolean>, timeoutMs = 3000): Promise<void> {
+    const end = Date.now() + timeoutMs;
+    while (!(await check()) && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+  }
+
+  it('a send that arrives while the runner waits to start an event queues behind it, and its order runs after that event (D-021)', async () => {
+    await startWorld();
+    await signUp('bob');
+    const inFlight = await db.connect();   // a send that already holds the clock row
+    const runner = await db.connect();
+    try {
+      await inFlight.query('BEGIN');
+      await inFlight.query('SELECT now_at FROM world_clock FOR SHARE');
+      let started = false;
+      const start = startEvent(runner, CLOSE_EVENT).then(() => { started = true; });
+      await until(async () => (await lockWaiters()) === 1);
+
+      // bob sends now. On the row lock alone his share request would be granted at once (Postgres doesn't queue
+      // a share request behind a waiting exclusive one on a row), and a steady stream of sends would keep the
+      // start waiting for ever. It has to queue behind the start instead.
+      let sent = false;
+      const pending = send('bob', { symbol: 'TEVA', side: 'buy', amountIls: '1000' }).then((r) => { sent = true; return r; });
+      await until(async () => sent || (await lockWaiters()) === 2);
+      expect({ started, sent }).toEqual({ started: false, sent: false });
+
+      await inFlight.query('COMMIT');
+      await start;
+      const res = await pending;
+      expect(res.status).toBe(201);
+      // It got the clock after the close had started, so it goes to the next open.
+      expect(res.body.order).toMatchObject({
+        priceType: 'open',
+        executesAt: worldTime(THU_TASE_OPEN, '2026-11-12', 4, '10:00'),
+        placedAt: { at: TASE_CLOSE, time: '17:30' },
+      });
+    } finally {
+      await inFlight.query('ROLLBACK').catch(() => {});
+      inFlight.release();
+      runner.release();
+    }
+  });
+
+  it('a flood of refused sends, from one player and from several, can\'t keep the runner from starting an event', async () => {
+    await startWorld();
+    for (const uid of ['mallory', 'trent', 'oscar']) await signUp(uid);
+    // More than the cash: every send is a 422 that stores nothing, so the 5-per-minute limit never applies (D-028).
+    const body = { symbol: 'TEVA', side: 'buy', amountIls: '2000000' };
+    let stop = false;
+    let refused = 0;
+    const loop = async (uid: string) => {
+      while (!stop) {
+        expect((await sendOrder(db, uid, body)).status).toBe(422);
+        refused++;
+      }
+    };
+    // Four parallel loops from one player (they queue on her portfolio row), and two each from two others.
+    const loops = ['mallory', 'mallory', 'mallory', 'mallory', 'trent', 'trent', 'oscar', 'oscar'].map(loop);
+    // The runner's own connection, with a statement timeout like production's (server.ts).
+    const runner = new pg.Client({ connectionString: DATABASE_URL, statement_timeout: 5000 });
+    await runner.connect();
+    try {
+      await new Promise((r) => setTimeout(r, 300));   // the flood is going
+      const t = Date.now();
+      await startEvent(runner as unknown as pg.PoolClient, CLOSE_EVENT);
+      // It waits only for the sends already in flight: milliseconds, not the whole flood.
+      expect(Date.now() - t).toBeLessThan(1000);
+    } finally {
+      stop = true;
+      await Promise.allSettled(loops);
+      await runner.end();
+    }
+    await Promise.all(loops);
+    expect(refused).toBeGreaterThan(20);
+    expect((await db.query(`SELECT status FROM market_events`)).rows).toEqual([{ status: 'pending' }]);
+  }, 20_000);
 });
 
 // ---------- the effective now ----------

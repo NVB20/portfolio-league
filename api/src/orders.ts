@@ -1,7 +1,7 @@
 // POST /me/orders: sending an order (D-018, D-019, D-020, D-021, D-028).
 // One short transaction per send, on one pool connection. It locks only this player's portfolio row, so
-// players never wait for each other, and takes a SHARED lock on the clock row, so an order can't slip past
-// an event the runner has already started (a clock move takes the row FOR UPDATE). Nothing executes here:
+// players never wait for each other, and then takes a SHARED lock on the clock row, so an order can't slip
+// past an event the runner has already started (a clock writer locks it exclusively). Nothing executes here:
 // the order waits as `pending` for its open or close, with its cash (buy) or units (sell) set aside.
 // Every rule lives in game/orderRules.ts; this file loads, calls and writes.
 
@@ -89,13 +89,9 @@ export async function sendOrder(db: Pool, uid: string, body: unknown): Promise<S
 }
 
 async function sendIn(c: PoolClient, uid: string, req: SendRequest, calendar: Calendar): Promise<SendOutcome> {
-  // 1. The clock, shared lock (D-021). A clock move holds it FOR UPDATE, so this send either commits before
-  //    the runner starts the next event, or waits and then sees that event as started (events_through).
-  const clock = (await c.query<ClockSqlRow>(`SELECT ${CLOCK_COLUMNS} FROM world_clock FOR SHARE`)).rows[0];
-  if (!clock) return fail(409, 'NO_WORLD', 'the world has not started yet', SEND_REASONS.NO_WORLD);
-
-  // 2. The player's portfolio, FOR UPDATE: one player's sends run one at a time, so the cash, units, rate
+  // 1. The player's portfolio, FOR UPDATE: one player's sends run one at a time, so the cash, units, rate
   //    limit and client id checks below can't be beaten by sending in parallel. Other players never wait.
+  //    Taken BEFORE the clock: a player's sends queued here hold nothing the runner needs (D-021).
   const portfolio = (await c.query<{ available_cash: string; equity: string }>(
     'SELECT available_cash, equity FROM portfolios WHERE uid = $1 FOR UPDATE',
     [uid],
@@ -105,7 +101,7 @@ async function sendIn(c: PoolClient, uid: string, req: SendRequest, calendar: Ca
   const security = (await c.query<{ market: Market }>('SELECT market FROM securities WHERE symbol = $1', [req.symbol])).rows[0];
   if (!security) return fail(404, 'UNKNOWN_SYMBOL', 'unknown symbol');
 
-  // 3. A retried request (the response was lost): the same id and the same order get the stored order back,
+  // 2. A retried request (the response was lost): the same id and the same order get the stored order back,
   //    with no new row and no second reserve, whatever has happened to it since.
   if (req.clientOrderId !== null) {
     const prior = (await c.query<ViewRow & { amount_exact: string | null; units_exact: string | null }>(
@@ -122,7 +118,7 @@ async function sendIn(c: PoolClient, uid: string, req: SendRequest, calendar: Ca
     }
   }
 
-  // 4. The rate limit, in real time (D-021). Only stored orders count: a refused send writes nothing.
+  // 3. The rate limit, in real time (D-021). Only stored orders count: a refused send writes nothing.
   const recent = (await c.query<{ created_at: Date; real_now: Date }>(
     `SELECT created_at, now() AS real_now FROM orders
      WHERE uid = $1 AND created_at > now() - make_interval(secs => $2)
@@ -133,6 +129,12 @@ async function sendIn(c: PoolClient, uid: string, req: SendRequest, calendar: Ca
   if (wait !== null) {
     return { ...fail(429, 'RATE_LIMITED', `too many orders: at most ${RATE_LIMIT.orders} per minute`, SEND_REASONS.RATE_LIMITED), retryAfter: wait };
   }
+
+  // 4. The clock, shared lock (D-021), held until COMMIT. A clock writer (the event start, a clock move) locks it
+  //    exclusively, so this send either commits before the runner starts the next event, or waits and then
+  //    sees that event as started (events_through). That wait is short and fair: see lockClock in runner.ts.
+  const clock = (await c.query<ClockSqlRow>(`SELECT ${CLOCK_COLUMNS} FROM world_clock FOR SHARE`)).rows[0];
+  if (!clock) return fail(409, 'NO_WORLD', 'the world has not started yet', SEND_REASONS.NO_WORLD);
 
   // 5. When it would run, from the effective now: the same formula as the screens (loadNow), on the row we
   //    hold locked. An event the runner has started is already in the past.

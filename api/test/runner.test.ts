@@ -8,12 +8,12 @@
 //   TASE open 10:00 / 08:00Z, US open 16:30 / 14:30Z, TASE close 17:30 / 15:30Z, US close 23:00 / 21:00Z.
 //   Friday 13.11 the TASE closes at 13:50 / 11:50Z.
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import pg from 'pg';
 import { runner as migrate } from 'node-pg-migrate';
 import {
-  affectedPage, catchUpPlayer, isLastEventOfDay, ledgerMismatches, loadEventPrices, medians, RUNNER_LOCK_KEY,
-  runEvent, runOrderBatch, type RunOptions, runUntil, startEvent, updatePlayers, withRunnerLock,
+  affectedPage, catchUpPlayer, finishEvent, isLastEventOfDay, ledgerMismatches, loadEventPrices, medians, RUNNER_LOCK_KEY,
+  eachSlice, runEvent, runOrderBatch, type RunOptions, runUntil, startEvent, updatePlayers, withRunnerLock,
 } from '../src/runner.js';
 import { avgCost, format, parse, SCALE } from '../src/game/fixed.js';
 import { reserveJournal } from '../src/game/ledger.js';
@@ -819,6 +819,44 @@ describe('the median player line', () => {
     await run(at);
     expect(await eventOf('TASE', 'close', MON)).toMatchObject({ median_value: '1000000.03', median_return_pct: '0.0000' });
   });
+
+  // finishEvent runs at READ COMMITTED, where each statement sees what committed before it started. A player
+  // signing up (POST /me) between a count and an OFFSET read would give a median of neither set of players.
+  it('is the median of one set of players, even while players sign up during it', async () => {
+    // 1,000,000 · 1,200,000 · 1,400,000: the median is 1,200,000. Every new player is worth 1,000,000.
+    await world(israel(MON, '12:00'));
+    await equityOf('m1', '1000000.00', { start: MON, value: '1000000.00' });
+    await equityOf('m2', '1200000.00', { start: MON, value: '1000000.00' });
+    await equityOf('m3', '1400000.00', { start: MON, value: '1000000.00' });
+    const e = await withClient((c) => startEventRow(c, 'TASE', 'close', MON));
+    await db.query(`UPDATE market_events SET status = 'orders_done' WHERE id = $1`, [e.id]);
+
+    await withClient(async (c) => {
+      const query = c.query.bind(c) as (...args: unknown[]) => Promise<unknown>;
+      let n = 0;
+      // The runner's client, unchanged, except that a new player signs up after each statement of the median.
+      (c as unknown as { query: unknown }).query = async (...args: unknown[]) => {
+        const r = await query(...args);
+        const sql = typeof args[0] === 'string' ? args[0] : '';
+        if (sql.includes('FROM portfolios') && !sql.includes('portfolio_snapshots')) await player(`new${++n}`);
+        return r;
+      };
+      try {
+        await finishEvent(c, e, NO_CLOSURES);
+      } finally {
+        (c as unknown as { query: unknown }).query = query;
+      }
+      expect(n).toBeGreaterThan(0);
+    });
+    // Before the first sign-up: 1,200,000.00 and +20%. After one: (1,000,000 + 1,200,000) / 2 and +10%.
+    // Never a value from one set and a return from another, or a row picked from a shifted offset.
+    const stored = await eventOf('TASE', 'close', MON);
+    expect([
+      { median_value: '1200000.00', median_return_pct: '20.0000' },
+      { median_value: '1100000.00', median_return_pct: '10.0000' },
+    ]).toContainEqual({ median_value: stored.median_value, median_return_pct: stored.median_return_pct });
+    expect(stored.status).toBe('done');
+  });
 });
 
 describe('the ledger check', () => {
@@ -854,25 +892,92 @@ describe('the ledger check', () => {
     await price('TEVA', MON, '100.0000', '100.0000');
     await sendBuy('alice', 'TEVA', '1000.00', ev('TASE', 'close', MON));
     await run(ev('TASE', 'close', MON).at);
-    const id = (await eventOf('TASE', 'close', MON)).id;
     await withClient(async (c) => {
-      expect(await ledgerMismatches(c, id)).toEqual([]);
+      expect(await ledgerMismatches(c, ['alice'])).toEqual([]);
       await db.query(`UPDATE positions SET cost_basis_ils = cost_basis_ils - 0.01 WHERE uid = 'alice'`);
-      expect(await ledgerMismatches(c, id)).toEqual(['alice']);
+      expect(await ledgerMismatches(c, ['alice'])).toEqual(['alice']);
+      expect(await ledgerMismatches(c, [])).toEqual([]);
     });
+  });
+
+  // The check re-sums each player's whole ledger history. One statement over every player with an order at the
+  // event passed the 10 s statement timeout at about 150,000 such players, inside the finish transaction, so the
+  // event never finished. Inside each order batch it covers at most `orderBatch` players, whose rows the batch
+  // has locked, so its cost is bounded by the batch however big the event is.
+  it('runs inside each order batch, for that batch\'s players only; a mismatch stays on the event', async () => {
+    await world(israel(MON, '12:00'));
+    for (const uid of ['bob', 'alice', 'carol']) await player(uid);
+    await price('TEVA', MON, '100.0000', '100.0000');
+    const close = ev('TASE', 'close', MON);
+    await sendBuy('bob', 'TEVA', '1000.00', close);   // the first batch
+    await sendBuy('alice', 'TEVA', '1000.00', close);
+    await sendBuy('carol', 'TEVA', '1000.00', close);
+    await db.query(`UPDATE portfolios SET cash = cash + 0.01 WHERE uid = 'bob'`);   // money from nowhere
+
+    const checked: unknown[] = [];
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await withClient(async (c) => {
+        const query = c.query.bind(c) as (...args: unknown[]) => Promise<unknown>;
+        (c as unknown as { query: unknown }).query = (...args: unknown[]) => {
+          if (typeof args[0] === 'string' && args[0].includes('FROM ledger_entries')) checked.push((args[1] as unknown[])[0]);
+          return query(...args);
+        };
+        try {
+          await runUntil(c, close.at, { orderBatch: 1 });
+        } finally {
+          (c as unknown as { query: unknown }).query = query;
+        }
+      });
+      // One check per batch of one player; the finish step reads no ledger at all.
+      expect(checked).toEqual([['bob'], ['alice'], ['carol']]);
+      // bob's batch found the mismatch; the clean batches after it don't turn the flag back.
+      expect(await eventOf('TASE', 'close', MON)).toMatchObject({ status: 'done', ledger_balanced: false });
+      expect(errors).toHaveBeenCalledTimes(1);
+      expect(String(errors.mock.calls[0][0])).toMatch(/ledger check failed .*: bob$/);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('a check that fails rolls back with its batch, so a re-run checks again', async () => {
+    await world(israel(MON, '12:00'));
+    await player('alice');
+    await price('TEVA', MON, '100.0000', '100.0000');
+    const close = ev('TASE', 'close', MON);
+    await sendBuy('alice', 'TEVA', '1000.00', close);
+    await withClient(async (c) => {
+      const query = c.query.bind(c) as (...args: unknown[]) => Promise<unknown>;
+      (c as unknown as { query: unknown }).query = (...args: unknown[]) =>
+        typeof args[0] === 'string' && args[0].includes('FROM ledger_entries')
+          ? Promise.reject(new Error('the server went away'))
+          : query(...args);
+      try {
+        await expect(runUntil(c, close.at)).rejects.toThrow('the server went away');
+      } finally {
+        (c as unknown as { query: unknown }).query = query;
+      }
+      expect(await eventOf('TASE', 'close', MON)).toMatchObject({ status: 'pending', orders_executed: 0, ledger_balanced: null });
+      await runUntil(c, close.at);
+    });
+    expect(await eventOf('TASE', 'close', MON)).toMatchObject({ status: 'done', orders_executed: 1, ledger_balanced: true });
   });
 });
 
 describe('daily chart rows', () => {
-  it('are written only at the last event of a day, only for players whose value changed that day', async () => {
+  // D-024 / D-029: one row per player per trading day, for every player an open or close re-valued that day
+  // (last_event_at on that day), whether or not the value moved. Cash-only players get none.
+  it('are written only at the last event of a day, for every player an event re-valued that day', async () => {
     await world(israel(MON, '09:00'));
-    for (const uid of ['alice', 'carol', 'dave']) await player(uid);
+    for (const uid of ['alice', 'carol', 'dave', 'erin']) await player(uid);
     const old = ev('TASE', 'close', '2026-11-06').at;
     await holding('alice', 'TEVA', '10', '1000.00', { price: '100.0000', value: '1000.00', at: old });
     await holding('dave', 'NVDA', '10', '5550.00', { price: '150.0000', fx: '3.7000', value: '5550.00', at: old });
+    await holding('erin', 'LUMI', '20', '1000.00', { price: '50.0000', value: '1000.00', at: old });
     await price('TEVA', MON, '100.0000', '101.0000');
     await price('NVDA', MON, '150.0000', '151.0000');
-    await price('TEVA', TUE, '102.0000', '103.0000');
+    await price('LUMI', MON, '50.0000', '50.0000');   // flat all day: erin's value doesn't move
+    await price('TEVA', TUE, '102.0000', '103.0000');   // no LUMI price on Tuesday
     await fx(MON, '3.7000', '3.7000');
 
     await run(ev('TASE', 'close', MON).at);   // TASE open, US open, TASE close: the US close is still to come
@@ -882,15 +987,67 @@ describe('daily chart rows', () => {
     const usClose = ev('US', 'close', MON).at.toISOString();
     expect(await snapshots()).toEqual([
       { uid: 'alice', at: usClose, value: '1000010.00' },   // 10 × 101 = 1,010 → 999,000 + 1,010
-      { uid: 'dave', at: usClose, value: '1000037.00' },                   // 10 × 151 × 3.70 = 5,587 → 994,450 + 5,587
+      { uid: 'dave', at: usClose, value: '1000037.00' },    // 10 × 151 × 3.70 = 5,587 → 994,450 + 5,587
+      { uid: 'erin', at: usClose, value: '1000000.00' },    // re-valued, unchanged
     ]);
 
-    // Tuesday New York is closed (a fixture holiday): the TASE close is Tuesday's last event.
+    // Tuesday New York is closed (a fixture holiday): the TASE close is Tuesday's last event. erin's LUMI has no
+    // price that day, so it keeps its mark; the close still re-valued her.
     await db.query(`INSERT INTO market_closures VALUES ('US', $1, 'חג', 'Holiday')`, [TUE]);
     await run(israel(TUE, '23:59'));
-    expect((await snapshots()).slice(2)).toEqual([
-      { uid: 'alice', at: ev('TASE', 'close', TUE).at.toISOString(), value: '1000030.00' },
+    const tueClose = ev('TASE', 'close', TUE).at.toISOString();
+    expect((await snapshots()).slice(3)).toEqual([
+      { uid: 'alice', at: tueClose, value: '1000030.00' },
+      { uid: 'erin', at: tueClose, value: '1000000.00' },
     ]);
+  });
+
+  it('are written in pages of players, each its own statement, before the event is done; a crash between pages is resumed', async () => {
+    // One statement over every player touched that day passes the 10 s statement timeout at scale, and then the
+    // event never finishes and no later event runs. Pages keep each statement small.
+    await db.query(`INSERT INTO market_closures VALUES ('US', $1, 'חג', 'Holiday')`, [TUE]);   // the TASE close ends Tuesday
+    await world(israel(TUE, '12:00'));
+    await price('TEVA', TUE, '100.0000', '110.0000');
+    const old = ev('TASE', 'close', '2026-11-06').at;
+    const holders = ['h1', 'h2', 'h3', 'h4', 'h5'];
+    for (const uid of holders) {
+      await player(uid);
+      await holding(uid, 'TEVA', '10', '1000.00', { price: '100.0000', value: '1000.00', at: old });
+    }
+    await player('cash');   // untouched today: no row
+    const close = ev('TASE', 'close', TUE).at;
+
+    await withClient(async (c) => {
+      const query = c.query.bind(c) as (...args: unknown[]) => Promise<unknown>;
+      let pages = 0;
+      let crashed = false;
+      (c as unknown as { query: unknown }).query = (...args: unknown[]) => {
+        if (typeof args[0] === 'string' && args[0].includes('INSERT INTO portfolio_snapshots')) {
+          if (!crashed && pages === 1) {
+            crashed = true;
+            return Promise.reject(new Error('the server went away'));
+          }
+          pages++;
+        }
+        return query(...args);
+      };
+      try {
+        await expect(runUntil(c, close, { playerBatch: 2 })).rejects.toThrow('the server went away');
+        // The first page is kept; the event is not done, so the next run finishes it.
+        expect(await snapshots()).toEqual(['h1', 'h2'].map((uid) => ({ uid, at: close.toISOString(), value: '1000100.00' })));
+        expect(await eventOf('TASE', 'close', TUE)).toMatchObject({ status: 'orders_done', players_updated: 5 });
+
+        expect(await runUntil(c, close, { playerBatch: 2 })).toEqual({ events: 1, ordersExecuted: 0, ordersRejected: 0, playersUpdated: 0 });
+        expect(pages).toBe(1 + 3);   // one page before the crash, then pages of 2, 2 and 1 (the first adds nothing again)
+        const once = await everything();
+        expect(await runUntil(c, close, { playerBatch: 2 })).toMatchObject({ events: 0 });
+        expect(await everything()).toEqual(once);
+      } finally {
+        (c as unknown as { query: unknown }).query = query;
+      }
+    });
+    expect(await snapshots()).toEqual(holders.map((uid) => ({ uid, at: close.toISOString(), value: '1000100.00' })));
+    expect(await eventOf('TASE', 'close', TUE)).toMatchObject({ status: 'done', players_updated: 5 });
   });
 
   it('isLastEventOfDay follows the calendar', () => {
@@ -980,9 +1137,254 @@ describe('catchUpPlayer', () => {
 
       expect(await runEvent(c, row)).toMatchObject({ playersUpdated: 1 });   // bob only
     });
-    expect(await eventOf('TASE', 'close', MON)).toMatchObject({ status: 'done', players_updated: 2 });
+    // players_updated counts the runner's own pages: alice, caught up by a read, isn't counted (scale: every
+    // catch-up adding to this one shared row made a burst of reads queue on its lock).
+    expect(await eventOf('TASE', 'close', MON)).toMatchObject({ status: 'done', players_updated: 1 });
     expect(await portfolio('bob')).toMatchObject({ holdings_value: '1200.00' });
     expect((await portfolio('carol')).last_event_at).toBeNull();
+  });
+
+  // A burst of reads right after a close: each catch-up held a pool connection while it waited for a lock (the
+  // runner's batch holding the player's row, or another catch-up holding the event's row), the pool ran dry and
+  // reads failed with "timeout exceeded when trying to connect". A read never waits for a lock now.
+  describe('never waits for a lock', () => {
+    async function aliceBehindTheClose(c: pg.PoolClient) {
+      await world(israel(MON, '12:00'));
+      await player('alice');
+      await holding('alice', 'TEVA', '10', '1000.00', { price: '100.0000', value: '1000.00', at: ev('TASE', 'close', '2026-11-06').at });
+      await price('TEVA', MON, '100.0000', '120.0000');
+      const row = await startEvent(c, ev('TASE', 'close', MON));
+      await runOrderBatch(c, await loadEventPrices(c, row), 10);   // → orders_done; step 2 hasn't reached alice
+      return row;
+    }
+
+    // Statements that wait longer than this fail, so a read that would wait shows up as an error.
+    async function withImpatientPool<T>(fn: (pool: pg.Pool) => Promise<T>): Promise<T> {
+      const pool = new pg.Pool({ connectionString: DATABASE_URL, statement_timeout: 2000 });
+      try {
+        return await fn(pool);
+      } finally {
+        await pool.end();
+      }
+    }
+
+    it('while someone holds the player\'s row (the runner\'s batch, or their own send), it does nothing at once', async () => {
+      await withClient(async (c) => {
+        const row = await aliceBehindTheClose(c);
+        const holder = await db.connect();
+        try {
+          await holder.query('BEGIN');
+          await holder.query(`SELECT 1 FROM portfolios WHERE uid = 'alice' FOR UPDATE`);
+          const started = Date.now();
+          expect(await withImpatientPool((pool) => catchUpPlayer(pool, 'alice'))).toBe(false);
+          expect(Date.now() - started).toBeLessThan(1500);
+          expect(await portfolio('alice')).toMatchObject({ holdings_value: '1000.00', last_event_at: null });
+        } finally {
+          await holder.query('ROLLBACK');
+          holder.release();
+        }
+        // The next read catches up; the runner's page would have done it anyway.
+        expect(await catchUpPlayer(db, 'alice')).toBe(true);
+        expect(await portfolio('alice')).toMatchObject({ holdings_value: '1200.00', last_event_at: row.at.toISOString() });
+      });
+    });
+
+    it('it never writes the event\'s row, so it doesn\'t wait while a runner page (or another catch-up) holds it', async () => {
+      await withClient(async (c) => {
+        const row = await aliceBehindTheClose(c);
+        const holder = await db.connect();
+        try {
+          await holder.query('BEGIN');
+          await holder.query('SELECT 1 FROM market_events WHERE id = $1 FOR UPDATE', [row.id]);
+          expect(await withImpatientPool((pool) => catchUpPlayer(pool, 'alice'))).toBe(true);
+        } finally {
+          await holder.query('ROLLBACK');
+          holder.release();
+        }
+        expect(await portfolio('alice')).toMatchObject({ holdings_value: '1200.00' });
+        expect(await eventOf('TASE', 'close', MON)).toMatchObject({ players_updated: 0 });
+      });
+    });
+
+    it('a player who is not behind costs one statement', async () => {
+      await withClient(async (c) => {
+        await aliceBehindTheClose(c);
+        await catchUpPlayer(db, 'alice');
+      });
+      let statements = 0;
+      const counting = {
+        query: (...args: unknown[]) => {
+          statements++;
+          return (db.query as (...a: unknown[]) => Promise<unknown>)(...args);
+        },
+        connect: () => db.connect(),
+      } as unknown as pg.Pool;
+      expect(await catchUpPlayer(counting, 'alice')).toBe(false);
+      expect(statements).toBe(1);
+    });
+  });
+
+  // Two events of the same market back to back (every Friday: the TASE open then its 13:50 close). The open is
+  // done; bob holds only cash and buys TEVA at the close (open 110, close 100). alice's order is the close's
+  // second batch, so the close stays 'pending' after bob's fill.
+  async function fridayTaseClose() {
+    await world(israel(FRI, '09:00'));
+    await price('TEVA', FRI, '110.0000', '100.0000');
+    await price('LUMI', FRI, '50.0000', '50.0000');
+    for (const uid of ['bob', 'alice']) await player(uid);
+    await run(ev('TASE', 'open', FRI).at);   // nobody held TASE stock: nobody affected
+    await sendBuy('bob', 'TEVA', '100000.00', ev('TASE', 'close', FRI));   // the lower id: the first batch
+    await sendBuy('alice', 'LUMI', '1000.00', ev('TASE', 'close', FRI));
+  }
+
+  // Bob bought ₪100,000 at 100 and nothing else happened to him: his week never moved.
+  const bobUntouchedWeek = {
+    equity: '1000000.0000', week_start: MON, week_start_value: '1000000.00', peak_value: '1000000.00',
+    max_drawdown_pct: '0.0000',
+  };
+
+  it('does nothing while a later event is still running its orders: a fill from an earlier batch keeps its price', async () => {
+    await fridayTaseClose();
+    await withClient(async (c) => {
+      const close = await startEvent(c, ev('TASE', 'close', FRI));
+      expect(await runOrderBatch(c, await loadEventPrices(c, close), 1)).toEqual({ executed: 1, rejected: 0, done: false });
+      const filled = { portfolio: await portfolio('bob'), positions: await positionsOf('bob') };
+      expect(filled.positions[0]).toMatchObject({ last_price: '100.0000', marked_at: close.at.toISOString() });
+      expect(filled.portfolio).toMatchObject(bobUntouchedWeek);
+
+      // Bob opens the dashboard between two batches. The 10:00 open came before his buy, so it has nothing to
+      // say about him, and the close's step 2 will update him.
+      expect(await catchUpPlayer(db, 'bob')).toBe(false);
+      expect({ portfolio: await portfolio('bob'), positions: await positionsOf('bob') }).toEqual(filled);
+
+      await runEvent(c, close, { orderBatch: 1 });
+    });
+    expect(await portfolio('bob')).toMatchObject({ ...bobUntouchedWeek, last_event_at: ev('TASE', 'close', FRI).at.toISOString() });
+    expect(await eventOf('TASE', 'open', FRI)).toMatchObject({ players_updated: 0 });
+  });
+
+  it('a US open on a TASE holiday: a first buy filled in its first batch keeps the open\'s price and FX', async () => {
+    // TASE is closed Wednesday, so Tuesday's US close (NVDA $110) and Wednesday's US open (NVDA $100) are back to
+    // back, as on every Friday before 2026. p, cash only, buys ₪100,000 at the open in the first of two batches.
+    // Re-marked at Tuesday's close it would be worth ₪110,000.00: a peak of 1,010,000.00 that never existed, and
+    // a 0.9901% drawdown for the rest of the week.
+    await db.query(`INSERT INTO market_closures VALUES ('TASE', $1, 'חג', 'Holiday')`, [WED]);
+    await world(israel(TUE, '22:00'));
+    await price('NVDA', TUE, '100.0000', '110.0000');
+    await price('NVDA', WED, '100.0000', '100.0000');
+    await fx(TUE, '3.7000', '3.7000');
+    await fx(WED, '3.7000', '3.7000');
+    for (const uid of ['h', 'p', 'q']) await player(uid);
+    await sendBuy('h', 'NVDA', '1000.00', ev('US', 'close', TUE));
+    await run(ev('US', 'close', TUE).at);
+    await sendBuy('p', 'NVDA', '100000.00', ev('US', 'open', WED));   // the lower id: the first batch
+    await sendBuy('q', 'NVDA', '1000.00', ev('US', 'open', WED));
+
+    await withClient(async (c) => {
+      const open = await startEvent(c, ev('US', 'open', WED));
+      expect(await runOrderBatch(c, await loadEventPrices(c, open), 1)).toEqual({ executed: 1, rejected: 0, done: false });
+      expect(await catchUpPlayer(db, 'p')).toBe(false);   // GET /me/dashboard between the two batches
+      expect((await positionsOf('p'))[0]).toMatchObject({ last_price: '100.0000', last_fx: '3.7000', marked_at: open.at.toISOString() });
+      await runEvent(c, open, { orderBatch: 1 });
+    });
+    expect(await portfolio('p')).toMatchObject({ equity: '1000000.0000', peak_value: '1000000.00', max_drawdown_pct: '0.0000' });
+  });
+
+  it('across a week boundary: the new week starts from the value before the trade, not from last Friday\'s prices', async () => {
+    // Monday 16.11 is a TASE holiday, so Friday's US close and Monday's US open are back to back. NVDA closed
+    // Friday at $150 and opens Monday at $157.50.
+    await db.query(`INSERT INTO market_closures VALUES ('TASE', $1, 'חג', 'Holiday')`, [NEXT_MON]);
+    await world(israel(FRI, '22:00'));
+    await price('NVDA', FRI, '150.0000', '150.0000');
+    await price('NVDA', NEXT_MON, '157.5000', '157.5000');
+    await price('AAPL', NEXT_MON, '200.0000', '200.0000');
+    await fx(FRI, '3.7000', '3.7000');
+    await fx(NEXT_MON, '3.7000', '3.7000');
+    for (const uid of ['bob', 'alice']) await player(uid);
+    await run(ev('US', 'close', FRI).at);
+    await sendBuy('bob', 'NVDA', '100000.00', ev('US', 'open', NEXT_MON));
+    await sendBuy('alice', 'AAPL', '1000.00', ev('US', 'open', NEXT_MON));
+
+    await withClient(async (c) => {
+      const open = await startEvent(c, ev('US', 'open', NEXT_MON));
+      expect(await runOrderBatch(c, await loadEventPrices(c, open), 1)).toMatchObject({ executed: 1, done: false });
+      expect(await catchUpPlayer(db, 'bob')).toBe(false);
+      expect(await portfolio('bob')).toMatchObject({ week_start: NEXT_MON, week_start_value: '1000000.00' });
+      await runEvent(c, open, { orderBatch: 1 });
+    });
+    const p = await portfolio('bob');
+    expect(p).toMatchObject({ week_start: NEXT_MON, week_start_value: '1000000.00', peak_value: '1000000.00', max_drawdown_pct: '0.0000' });
+    const week = { weekStart: p.week_start, weekStartValue: parse(p.week_start_value, SCALE.ILS), peakValue: null, maxDrawdownPct: 0n, lastEventAt: null };
+    expect(format(weekReturnPct(week, parse(p.equity, SCALE.ILS), NEXT_MON), SCALE.PCT)).toBe('0.0000');
+  });
+
+  it('the next event starting between its first read and its update changes nothing (updatePlayers re-checks under the row lock)', async () => {
+    await fridayTaseClose();
+    // Bob also holds LUMI marked before the open, so catch-up's one query finds him due for the 10:00 open
+    // (only a fixture makes this state). Without that, the query says "not due" and the guard is never reached.
+    const old = ev('TASE', 'close', '2026-11-05').at;
+    await holding('bob', 'LUMI', '20', '900.00', { price: '45.0000', value: '900.00', at: old });
+    await withClient(async (c) => {
+      let closeAt: Date | null = null;
+      // GET /me/dashboard on the pool while the runner moves on with its own client: catch-up's first query
+      // reads the latest event (the 10:00 open, done) and finds bob due, and right after it the runner starts
+      // the 13:50 close and fills bob in its only batch. Everything else is the real code.
+      const racing = {
+        query: async (...args: unknown[]) => {
+          const r = await (db.query as (...a: unknown[]) => Promise<unknown>)(...args);
+          if (closeAt === null) {
+            const close = await startEvent(c, ev('TASE', 'close', FRI));
+            closeAt = close.at;
+            expect(await runOrderBatch(c, await loadEventPrices(c, close), 500)).toEqual({ executed: 2, rejected: 0, done: true });
+          }
+          return r;
+        },
+        connect: () => db.connect(),
+      } as unknown as pg.Pool;
+
+      expect(await catchUpPlayer(racing, 'bob')).toBe(false);
+      const bobs = await positionsOf('bob');
+      // The open must not re-mark anything: TEVA keeps its fill at the close, LUMI its old mark (not the open's 50).
+      expect(bobs.find((p) => p.symbol === 'TEVA')).toMatchObject({ last_price: '100.0000', marked_at: closeAt!.toISOString() });
+      expect(bobs.find((p) => p.symbol === 'LUMI')).toMatchObject({ last_price: '45.0000', marked_at: old.toISOString() });
+      expect(await portfolio('bob')).toMatchObject({ last_event_at: null });
+
+      await runEvent(c, await startEvent(c, ev('TASE', 'close', FRI)));
+    });
+    // The close's own step 2 marks LUMI at its close and starts bob's week from his value before it.
+    expect((await positionsOf('bob')).find((p) => p.symbol === 'LUMI')).toMatchObject({ last_price: '50.0000' });
+    expect(await portfolio('bob')).toMatchObject({
+      last_event_at: ev('TASE', 'close', FRI).at.toISOString(), week_start: MON, max_drawdown_pct: '0.0000',
+    });
+  });
+
+  it('updatePlayers never folds an earlier event into a player a later event already traded', async () => {
+    await world(israel(FRI, '09:00'));
+    await price('TEVA', FRI, '110.0000', '100.0000');
+    await price('LUMI', FRI, '52.0000', '55.0000');
+    for (const uid of ['bob', 'carol']) await player(uid);
+    await run(ev('TASE', 'open', FRI).at);   // nobody held TASE stock yet
+    // carol's holdings appear after the open ran, so she is behind it (only a fixture makes this state).
+    const old = ev('TASE', 'close', '2026-11-06').at;
+    await holding('carol', 'TEVA', '10', '1000.00', { price: '100.0000', value: '1000.00', at: old });
+    await holding('carol', 'LUMI', '20', '1000.00', { price: '50.0000', value: '1000.00', at: old });
+    await sendBuy('bob', 'TEVA', '100000.00', ev('TASE', 'close', FRI));   // a new position, marked at the close
+    await sendSell('carol', 'TEVA', '10', ev('TASE', 'close', FRI));      // sells all: only her old LUMI is left
+
+    await withClient(async (c) => {
+      const close = await startEvent(c, ev('TASE', 'close', FRI));
+      expect(await runOrderBatch(c, await loadEventPrices(c, close), 500)).toMatchObject({ executed: 2, done: true });
+      const open = await loadEventPrices(c, await startEventRow(c, 'TASE', 'open', FRI));
+      const before = await everything();
+
+      // bob: an open position marked after the open. carol: an order executed after it.
+      expect(await updatePlayers(c, open, ['bob', 'carol'])).toBe(0);
+      expect(await everything()).toEqual(before);
+
+      // The close's own step 2 is not affected: it updates both.
+      expect(await runEvent(c, close)).toMatchObject({ playersUpdated: 2 });
+    });
+    expect((await positionsOf('carol')).find((p) => p.symbol === 'LUMI')).toMatchObject({ last_price: '55.0000' });
   });
 });
 
@@ -1011,6 +1413,91 @@ describe('withRunnerLock', () => {
     await expect(withRunnerLock(db, async () => { throw new Error('boom'); })).rejects.toThrow('boom');
     expect(await withRunnerLock(db, async () => 'again')).toBe('again');
   });
+
+  it('gives the run its own long statement timeout, and hands the connection back with the pool\'s', async () => {
+    // The API's pool cancels any statement after 10 s (server.ts). A runner step that grows past that at scale
+    // would fail on every tick for good; the run gets minutes instead, and players' requests keep their 10 s.
+    const pool = new pg.Pool({ connectionString: DATABASE_URL, max: 1, statement_timeout: 10_000 });
+    const timeout = async (c: pg.Pool | pg.PoolClient) => (await c.query('SHOW statement_timeout')).rows[0].statement_timeout;
+    try {
+      expect(await timeout(pool)).toBe('10s');
+      expect(await withRunnerLock(pool, (c) => timeout(c))).toBe('5min');
+      expect(await timeout(pool)).toBe('10s');   // the same connection (max 1), back to the pool's own timeout
+      await expect(withRunnerLock(pool, async () => { throw new Error('boom'); })).rejects.toThrow('boom');
+      expect(await timeout(pool)).toBe('10s');
+    } finally {
+      await pool.end();
+    }
+  });
+
+  // The database ends the run's session (a restart, a failover, a dropped proxy connection): node-postgres emits
+  // 'error' on the checked-out client, which the pool doesn't listen to. Unheard, Node throws it and the whole
+  // API process exits. It must fail the run like any other error: the ticker logs it and the next tick resumes.
+  // A plain pool here (not createPool), so this is withRunnerLock's own listener at work.
+  describe('when the database ends the run\'s connection', () => {
+    const killer = new pg.Pool({ connectionString: DATABASE_URL, max: 1 });
+    const pidOf = async (c: pg.PoolClient) => (await c.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+    const terminate = (pid: number) => killer.query('SELECT pg_terminate_backend($1)', [pid]);
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    let uncaught: unknown[] = [];
+    const onUncaught = (err: unknown) => { uncaught.push(err); };
+
+    beforeEach(() => {
+      uncaught = [];
+      process.on('uncaughtException', onUncaught);
+    });
+    afterEach(() => {
+      process.off('uncaughtException', onUncaught);
+    });
+    afterAll(async () => {
+      await killer.end();
+    });
+
+    async function lockIsFree(): Promise<boolean> {
+      const { rows } = await killer.query<{ ok: boolean }>('SELECT pg_try_advisory_lock($1) AS ok', [RUNNER_LOCK_KEY]);
+      if (rows[0].ok) await killer.query('SELECT pg_advisory_unlock($1)', [RUNNER_LOCK_KEY]);
+      return rows[0].ok;
+    }
+
+    it('between two statements: the run fails with an error, the lock is free, the pool works', async () => {
+      const pool = new pg.Pool({ connectionString: DATABASE_URL });
+      pool.on('error', () => {});
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        await expect(withRunnerLock(pool, async (c) => {
+          await terminate(await pidOf(c));
+          await sleep(200);   // the engine computing between two statements; the session ends meanwhile
+          await c.query('SELECT 1');
+        })).rejects.toThrow();
+        expect(uncaught).toEqual([]);
+        expect(await lockIsFree()).toBe(true);   // the server dropped the session lock with the session
+        expect(await withRunnerLock(pool, async () => 'next tick')).toBe('next tick');
+      } finally {
+        errors.mockRestore();
+        await pool.end();
+      }
+    });
+
+    it('in the middle of a statement: the same', async () => {
+      const pool = new pg.Pool({ connectionString: DATABASE_URL });
+      pool.on('error', () => {});
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        await expect(withRunnerLock(pool, async (c) => {
+          const pid = await pidOf(c);
+          setTimeout(() => { void terminate(pid); }, 100);
+          await c.query('SELECT pg_sleep(5)');
+        })).rejects.toThrow();
+        await sleep(200);
+        expect(uncaught).toEqual([]);
+        expect(await lockIsFree()).toBe(true);
+        expect(await withRunnerLock(pool, async () => 'next tick')).toBe('next tick');
+      } finally {
+        errors.mockRestore();
+        await pool.end();
+      }
+    });
+  });
 });
 
 // ---------- runUntil ----------
@@ -1031,5 +1518,29 @@ describe('runUntil', () => {
     expect(e.started_at).toBeInstanceOf(Date);
     expect(e.finished_at.getTime()).toBeGreaterThanOrEqual(e.started_at.getTime());
     expect(e.duration_ms).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ---------- sharing the API's event loop ----------
+
+describe('eachSlice', () => {
+  // The runner runs inside the API process (D-030). A page of 5,000 players was hundreds of milliseconds of
+  // JavaScript with no await, and every player's request on the instance waited behind it.
+  it('gives the event loop back between slices of a long loop, and visits every item once, in order', async () => {
+    const log: (number | string)[] = [];
+    setImmediate(() => log.push('a request'));
+    await eachSlice(Array.from({ length: 1200 }, (_, i) => i), (item, i) => {
+      expect(item).toBe(i);
+      log.push(i);
+    }, 500);
+    expect(log.filter((x) => typeof x === 'number')).toEqual(Array.from({ length: 1200 }, (_, i) => i));
+    expect(log.indexOf('a request')).toBe(500);   // right after the first slice, not after the whole loop
+  });
+
+  it('a short loop runs without a pause', async () => {
+    const log: (number | string)[] = [];
+    setImmediate(() => log.push('a request'));
+    await eachSlice([1, 2, 3], (item) => log.push(item), 500);
+    expect(log).toEqual([1, 2, 3]);
   });
 });

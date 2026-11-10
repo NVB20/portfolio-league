@@ -1,15 +1,16 @@
 // The runner (D-021, D-029): runs every market open and close in time order. At each one it executes the
-// orders due then, re-values only the players that event affects, and closes the event with the median
-// player line, the ledger check and the daily chart rows.
+// orders due then (checking the ledger of the players it trades), re-values only the players that event
+// affects, and closes the event with the median player line and the daily chart rows.
 //
 // Postgres is the queue. One runner at a time (a session advisory lock). Every step is a short transaction
 // that can be re-run after a crash at any point and changes nothing twice:
 //   start   the market_events row exists; world_clock.events_through moves up to the event
 //   step 1  orders, while the event is 'pending': due orders in batches through the pure engine; their money,
-//           positions and status change in one transaction, so a re-run never finds them pending again
+//           positions and status change in one transaction, so a re-run never finds them pending again; each
+//           batch checks its own players' ledger in that transaction
 //   step 2  affected players, while 'orders_done': re-mark and fold into the week, online players first;
 //           portfolios.last_event_at is the guard that makes a re-run skip players already done
-//   step 3  finish → 'done': the median, the ledger check, the daily chart rows
+//   step 3  finish: the daily chart rows in pages, then → 'done' with the median
 // The game rules live in game/ (engine.ts, week.ts, clock.ts); this file loads, calls and writes.
 
 import type { Pool, PoolClient } from 'pg';
@@ -38,6 +39,10 @@ const DEFAULT_PLAYER_BATCH = 5_000;
 const LIST_SLICE_MS = 60 * 86_400_000;
 // market_events.duration_ms is an INTEGER; a run resumed weeks after a crash must not overflow it.
 const MAX_DURATION_MS = 2_147_483_647;
+// The statement timeout of a run (withRunnerLock). The API's pool cancels any statement after 10 s, which is
+// right for a player's request. A runner step that grows past that at scale would fail on every tick, and every
+// later event waits behind an unfinished one: the game would stop for good. Minutes still end a stuck statement.
+const RUNNER_STATEMENT_TIMEOUT = '5min';
 
 export type RunOptions = { orderBatch?: number; playerBatch?: number };
 export type RunSummary = { events: number; ordersExecuted: number; ordersRejected: number; playersUpdated: number };
@@ -52,22 +57,39 @@ type Db = Pool | PoolClient;
 // ---------- the lock ----------
 
 // Holds a session advisory lock on ONE dedicated client for the whole run; null when another runner holds it.
+// The run gets its own statement timeout (RUNNER_STATEMENT_TIMEOUT) on that client.
 export async function withRunnerLock<T>(db: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T | null> {
   const client = await db.connect();
   let broken = false;
+  // The run holds this connection for minutes. If the database ends the session (a restart, a failover),
+  // node-postgres emits 'error' on the client, and the pool doesn't listen while a client is checked out:
+  // unheard, Node would throw it and end the whole API process. Heard, the run's query simply fails, the
+  // ticker logs it and the next tick resumes the event (D-021, D-030). The server drops the lock with the
+  // session. The API's own pool listens to every client too (db.ts); this one doesn't depend on that.
+  const onError = (err: Error) => {
+    broken = true;
+    console.error('runner: the database connection was lost', err.message);
+  };
+  client.on('error', onError);
   try {
     const { rows } = await client.query<{ ok: boolean }>('SELECT pg_try_advisory_lock($1) AS ok', [RUNNER_LOCK_KEY]);
     if (!rows[0].ok) return null;
     try {
+      await client.query(`SET statement_timeout = '${RUNNER_STATEMENT_TIMEOUT}'`);
       return await fn(client);
     } finally {
-      // A session lock outlives transactions, so it is let go by hand. If that fails, the connection is thrown
-      // away instead of going back to the pool: closing the session drops the lock.
+      // The pool's own timeout comes back (RESET = the value the connection started with), and the session lock,
+      // which outlives transactions, is let go by hand. If either fails, the connection is thrown away instead of
+      // going back to the pool: closing the session drops the lock and the setting.
+      await client.query('RESET statement_timeout').catch(() => {
+        broken = true;
+      });
       await client.query('SELECT pg_advisory_unlock($1)', [RUNNER_LOCK_KEY]).catch(() => {
         broken = true;
       });
     }
   } finally {
+    client.removeListener('error', onError);
     client.release(broken);
   }
 }
@@ -106,12 +128,24 @@ export async function runUntil(client: PoolClient, target: Date, opts: RunOption
   return total;
 }
 
-// Start (one short transaction): the event's row exists and events_through covers it. The clock row is taken
-// FOR UPDATE, and order sending takes it FOR SHARE (D-021): an order being sent right now either commits
-// before this (and runs at this event) or sees the new events_through (and runs after it).
+// The exclusive side of the clock lock (D-021), for every writer of the clock row: the event start, the admin's
+// clock moves and the ticker's heartbeat. Order sending holds the row FOR SHARE. A row lock alone isn't queued
+// fairly: Postgres grants a new FOR SHARE on a row that only share lockers hold even while a FOR UPDATE waits,
+// so overlapping sends could keep a writer waiting for ever (until the statement timeout cancels it). A table
+// lock in EXCLUSIVE mode is queued in the regular lock manager: a send that arrives after it (FOR SHARE needs
+// ROW SHARE on the table) waits behind it, so a writer waits only for the sends already in flight. Plain
+// SELECTs of the clock (the screens) take ACCESS SHARE and never wait. Inside a transaction only.
+export async function lockClock(client: PoolClient): Promise<void> {
+  await client.query('LOCK TABLE world_clock IN EXCLUSIVE MODE');
+}
+
+// Start (one short transaction): the event's row exists and events_through covers it. The clock is locked
+// exclusively (lockClock), and order sending holds it FOR SHARE (D-021): an order being sent right now either
+// commits before this (and runs at this event) or sees the new events_through (and runs after it).
 export async function startEvent(client: PoolClient, e: MarketEvent): Promise<EventRow> {
   return inTransaction(client, async () => {
-    const clock = await client.query('SELECT 1 FROM world_clock FOR UPDATE');
+    await lockClock(client);
+    const clock = await client.query('SELECT 1 FROM world_clock');
     if (clock.rowCount === 0) throw new Error('no world_clock row: the world has not started');
     const { rows } = await client.query<EventSqlRow>(
       `INSERT INTO market_events (market, kind, day, at, started_at) VALUES ($1, $2, $3, $4, now())
@@ -151,7 +185,7 @@ export async function runEvent(
     }
   }
   summary.playersUpdated += await updateAffectedPlayers(client, event, playerBatch);
-  await finishEvent(client, event, calendar ?? (await loadCalendarWith(client)));
+  await finishEvent(client, event, calendar ?? (await loadCalendarWith(client)), playerBatch);
   return summary;
 }
 
@@ -234,12 +268,22 @@ export async function runOrderBatch(
     const positionIds = await writePositions(client, out, held);
     await writeOrders(client, event, out.results, positionIds);
     await writeTradedPortfolios(client, out, weeks);
+
+    // The ledger check (D-019, D-029) for this batch's players, in its transaction: their rows are locked, so
+    // nothing else can change them in between, and the check costs at most `batch` players' history however
+    // big the event is (one statement over every player of a big event passed the statement timeout). A
+    // mismatch is logged and stored, and the game carries on. It stays false; a clean batch never resets it.
+    const bad = await ledgerMismatches(client, uids);
+    if (bad.length > 0) {
+      console.error(`ledger check failed at the ${event.market} ${event.kind} of ${event.day} for: ${bad.join(', ')}`);
+    }
     await client.query(
       `UPDATE market_events
        SET orders_executed = orders_executed + $2, orders_rejected = orders_rejected + $3,
-           status = CASE WHEN $4 AND status = 'pending' THEN 'orders_done' ELSE status END
+           status = CASE WHEN $4 AND status = 'pending' THEN 'orders_done' ELSE status END,
+           ledger_balanced = CASE WHEN $5 THEN FALSE ELSE ledger_balanced END
        WHERE id = $1`,
-      [event.id, executed, rejected, done],
+      [event.id, executed, rejected, done, bad.length > 0],
     );
     return { executed, rejected, done };
   });
@@ -324,7 +368,7 @@ async function writePositions(
   }
   for (const p of out.closed) if (p.id !== null) changed.push(p);
   if (changed.length > 0) {
-    const c = positionArrays(changed);
+    const c = await positionArrays(changed);
     await client.query(
       `UPDATE positions p SET
          status = t.status, units = t.units, reserved_units = t.reserved_units, avg_cost_ils = t.avg_cost,
@@ -358,7 +402,7 @@ async function writePositions(
       [fresh.length],
     );
     fresh.forEach((f, i) => ids.set(f.life, seq.rows[i].id));
-    const c = positionArrays(fresh.map((f) => f.p));
+    const c = await positionArrays(fresh.map((f) => f.p));
     await client.query(
       `INSERT INTO positions (id, uid, symbol, status, units, reserved_units, avg_cost_ils, cost_basis_ils,
                               realized_pnl_ils, last_price, last_fx, market_value_ils, unrealized_pnl_ils, marked_at,
@@ -516,33 +560,60 @@ export async function affectedPage(
 
 // One page of players in one transaction: re-mark this market's positions at the event's prices, work out the
 // totals, fold the new value into the week (D-024) and set last_event_at. Players already at or past this event
-// are skipped (the retry guard, D-021), in the lock query and again in the UPDATE. Returns how many changed.
-export async function updatePlayers(client: PoolClient, event: PricedEvent, uids: string[]): Promise<number> {
+// are skipped (the retry guard, D-021), in the lock query and again in the UPDATE. So is a player a LATER event
+// has already traded (see playersAhead). Returns how many changed.
+//
+// `catchUp` is a player's read bringing themselves up to date (D-025, catchUpPlayer). It must never make a
+// request wait for a lock: a burst of reads right after a close each held a pool connection while waiting, the
+// pool ran dry and reads failed. So it skips a row someone else holds (the runner's batch, which updates the
+// player anyway, or the player's own send), and it doesn't add to market_events.players_updated: that one row
+// is shared by every catch-up of the event, and each would wait for the one before to commit. The count is the
+// runner's own pages.
+export async function updatePlayers(
+  client: PoolClient,
+  event: PricedEvent,
+  uids: string[],
+  opts: { catchUp?: boolean } = {},
+): Promise<number> {
   if (uids.length === 0) return 0;
   return inTransaction(client, async () => {
     const locked = await client.query<PortfolioSqlRow>(
       `SELECT ${PORTFOLIO_COLUMNS} FROM portfolios
        WHERE uid = ANY($1) AND (last_event_at IS NULL OR last_event_at < $2)
-       ORDER BY uid FOR UPDATE`,
+       ORDER BY uid FOR UPDATE${opts.catchUp ? ' SKIP LOCKED' : ''}`,
       [uids, event.at],
     );
     if (locked.rows.length === 0) return 0;
-    const held = await loadOpenPositions(client, locked.rows.map((r) => r.uid));
+    // Statements after the lock see everything committed while we waited for it (READ COMMITTED takes a new
+    // snapshot per statement), including a runner batch that held these rows.
+    const lockedUids = locked.rows.map((r) => r.uid);
+    const held = await loadOpenPositions(client, lockedUids);
+    const ahead = await playersAhead(client, event.at, lockedUids, held);
 
     const marks: PositionState[] = [];
-    const players: { uid: string; holdings: bigint; unrealized: bigint; week: WeekState }[] = [];
-    for (const r of locked.rows) {
+    const p = {
+      uid: [] as string[], holdings: [] as string[], unrealized: [] as string[], weekStart: [] as (string | null)[],
+      weekStartValue: [] as (string | null)[], peak: [] as (string | null)[], drawdown: [] as string[],
+    };
+    await eachSlice(locked.rows, (r) => {
+      if (ahead.has(r.uid)) return;
       const own = held.get(r.uid) ?? [];
       const marked = markPositions(own, event.market, event.prices, event.rate, event.at);
       const t = totals(parse(r.cash, SCALE.ILS), marked);
       const week = applyEvent(toWeek(r), event.at, parse(r.equity, SCALE.ILS), t.equity);
-      if (week === null) continue;   // can't happen after the WHERE above; kept so a bad row is never applied twice
-      for (const p of marked) if (p.market === event.market && event.prices.has(p.symbol)) marks.push(p);
-      players.push({ uid: r.uid, holdings: t.holdingsValue, unrealized: t.unrealizedPnl, week });
-    }
+      if (week === null) return;   // can't happen after the WHERE above; kept so a bad row is never applied twice
+      for (const m of marked) if (m.market === event.market && event.prices.has(m.symbol)) marks.push(m);
+      p.uid.push(r.uid);
+      p.holdings.push(format(t.holdingsValue, SCALE.ILS));
+      p.unrealized.push(format(t.unrealizedPnl, SCALE.ILS));
+      p.weekStart.push(week.weekStart);
+      p.weekStartValue.push(fmt(week.weekStartValue, SCALE.ILS));
+      p.peak.push(fmt(week.peakValue, SCALE.ILS));
+      p.drawdown.push(format(week.maxDrawdownPct, SCALE.PCT));
+    });
 
     if (marks.length > 0) {
-      const c = positionArrays(marks);
+      const c = await positionArrays(marks);
       await client.query(
         `UPDATE positions p SET last_price = t.last_price, last_fx = t.last_fx, market_value_ils = t.market_value,
            unrealized_pnl_ils = t.unrealized, marked_at = t.marked_at
@@ -552,7 +623,7 @@ export async function updatePlayers(client: PoolClient, event: PricedEvent, uids
         [c.id, c.lastPrice, c.lastFx, c.marketValue, c.unrealized, c.markedAt],
       );
     }
-    if (players.length === 0) return 0;
+    if (p.uid.length === 0) return 0;
     const res = await client.query(
       `UPDATE portfolios p SET holdings_value = t.holdings_value, unrealized_pnl = t.unrealized, marked_at = $8,
          week_start = t.week_start, week_start_value = t.week_start_value, peak_value = t.peak_value,
@@ -560,46 +631,74 @@ export async function updatePlayers(client: PoolClient, event: PricedEvent, uids
        FROM unnest($1::text[], $2::numeric[], $3::numeric[], $4::date[], $5::numeric[], $6::numeric[], $7::numeric[])
          AS t (uid, holdings_value, unrealized, week_start, week_start_value, peak_value, max_drawdown_pct)
        WHERE p.uid = t.uid AND (p.last_event_at IS NULL OR p.last_event_at < $8)`,
-      [
-        players.map((x) => x.uid),
-        players.map((x) => format(x.holdings, SCALE.ILS)),
-        players.map((x) => format(x.unrealized, SCALE.ILS)),
-        players.map((x) => x.week.weekStart),
-        players.map((x) => fmt(x.week.weekStartValue, SCALE.ILS)),
-        players.map((x) => fmt(x.week.peakValue, SCALE.ILS)),
-        players.map((x) => format(x.week.maxDrawdownPct, SCALE.PCT)),
-        event.at,
-      ],
+      [p.uid, p.holdings, p.unrealized, p.weekStart, p.weekStartValue, p.peak, p.drawdown, event.at],
     );
     const n = res.rowCount ?? 0;
-    if (n > 0) await client.query('UPDATE market_events SET players_updated = players_updated + $2 WHERE id = $1', [event.id, n]);
+    if (n > 0 && !opts.catchUp) {
+      await client.query('UPDATE market_events SET players_updated = players_updated + $2 WHERE id = $1', [event.id, n]);
+    }
     return n;
   });
 }
 
-// D-025: brings one player up to the latest event whose prices are in effect ('orders_done' or 'done'), when
-// they are behind it and it affects them. Same function and same guard as the batch, so the batch skips them
-// later. Called before the dashboard and the trading screen read. Returns true when the player changed.
+// Players a later event has already traded: an open position marked or opened after `at`, or an order executed
+// at a later event (a sale of everything leaves no position behind). Their row already holds that later
+// event's prices, so folding this older event in would re-mark a position at a price from before it was bought
+// and put a value that never existed into the week's peak, drawdown or start (D-024). The runner's own step 2
+// never meets one (events run in time order, and a fill is marked at exactly its event); the catch-up can,
+// when the next event starts while it runs (D-025).
+async function playersAhead(
+  client: PoolClient,
+  at: Date,
+  uids: string[],
+  held: Map<string, PositionState[]>,
+): Promise<Set<string>> {
+  const ahead = new Set<string>();
+  const after = (d: Date | null) => d !== null && d.getTime() > at.getTime();
+  for (const [uid, list] of held) if (list.some((p) => after(p.markedAt) || after(p.openedAt))) ahead.add(uid);
+  // The orders are only looked at when a later event exists at all, so the runner's own step 2 pays one index
+  // probe (market_events_at_idx) per page and never scans players' order history.
+  const later = await client.query<{ id: string }>('SELECT id::text AS id FROM market_events WHERE at > $1', [at]);
+  if (later.rows.length === 0) return ahead;
+  const traded = await client.query<{ uid: string }>(
+    `SELECT DISTINCT uid FROM orders WHERE event_id = ANY($1::bigint[]) AND status = 'executed' AND uid = ANY($2)`,
+    [later.rows.map((r) => r.id), uids],
+  );
+  for (const r of traded.rows) ahead.add(r.uid);
+  return ahead;
+}
+
+// D-025: brings one player up to the latest event whose prices are in effect, when they are behind it and it
+// affects them. Same function and same guard as the batch, so the batch skips them later. Called before the
+// dashboard and the trading screen read. Returns true when the player changed.
+//
+// "The latest event" is the latest one the runner has STARTED, whatever its status (a row exists only once
+// started). While it is still running its orders ('pending'), its prices aren't in effect yet, and every event
+// before it is done, so nobody is behind one of those. The event before is no longer "the latest in effect": a
+// player filled in an earlier batch of this one already holds this event's prices, and step 2 will update them.
+// A race with the next event starting after this read is caught under the row lock (updatePlayers,
+// playersAhead). One statement decides it all, because every read pays for it: a burst of thousands of
+// players opening the app shares a 10-connection pool.
 export async function catchUpPlayer(db: Pool, uid: string): Promise<boolean> {
-  const latest = await db.query<EventSqlRow>(
-    `SELECT ${EVENT_COLUMNS} FROM market_events WHERE status IN ('orders_done', 'done')
-     ORDER BY at DESC, kind = 'open' DESC, market_events.id DESC LIMIT 1`,
-  );
-  if (latest.rows.length === 0) return false;
-  const event = toEventRow(latest.rows[0]);
-  const behind = await db.query<{ due: boolean }>(
-    `SELECT (p.last_event_at IS NULL OR p.last_event_at < $2)
+  const { rows } = await db.query<EventSqlRow & { due: boolean }>(
+    `WITH e AS (
+       SELECT id, market, kind, day, at, status FROM market_events
+       ORDER BY at DESC, kind = 'open' DESC, id DESC LIMIT 1
+     )
+     SELECT e.id::text AS id, e.market, e.kind, e.day::text AS day, e.at, e.status,
+            e.status <> 'pending'
+            AND (p.last_event_at IS NULL OR p.last_event_at < e.at)
             AND (EXISTS (SELECT 1 FROM positions x JOIN securities s ON s.symbol = x.symbol
-                         WHERE x.uid = p.uid AND x.status = 'open' AND s.market = $3)
-                 OR EXISTS (SELECT 1 FROM orders o WHERE o.uid = p.uid AND o.event_id = $4 AND o.status = 'executed')) AS due
-     FROM portfolios p WHERE p.uid = $1`,
-    [uid, event.at, event.market, event.id],
+                         WHERE x.uid = p.uid AND x.status = 'open' AND s.market = e.market)
+                 OR EXISTS (SELECT 1 FROM orders o WHERE o.uid = p.uid AND o.event_id = e.id AND o.status = 'executed')) AS due
+     FROM e JOIN portfolios p ON p.uid = $1`,
+    [uid],
   );
-  if (!behind.rows[0]?.due) return false;
-  const priced = await loadEventPrices(db, event);
+  if (!rows[0]?.due) return false;
+  const priced = await loadEventPrices(db, toEventRow(rows[0]));
   const client = await db.connect();
   try {
-    return (await updatePlayers(client, priced, [uid])) > 0;
+    return (await updatePlayers(client, priced, [uid], { catchUp: true })) > 0;
   } finally {
     client.release();
   }
@@ -607,34 +706,55 @@ export async function catchUpPlayer(db: Pool, uid: string): Promise<boolean> {
 
 // ---------- step 3: finish ----------
 
-// One transaction: the median player line, the ledger check, the daily chart rows, then 'done'.
-export async function finishEvent(client: PoolClient, event: EventRow, calendar: Calendar): Promise<void> {
+// The daily chart rows first (at the last event of the day, in pages), then one transaction: the median player
+// line and 'done'. The ledger check already ran in each order batch: ledger_balanced is false if any batch
+// found a mismatch, and true otherwise (also for an event with no orders: nothing to check).
+export async function finishEvent(
+  client: PoolClient,
+  event: EventRow,
+  calendar: Calendar,
+  playerBatch = DEFAULT_PLAYER_BATCH,
+): Promise<void> {
+  if (isLastEventOfDay(event, calendar)) await writeDailyRows(client, event, batchSize(playerBatch, DEFAULT_PLAYER_BATCH));
   await inTransaction(client, async () => {
     const m = await medians(client, event.at);
-    const bad = await ledgerMismatches(client, event.id);
-    // D-029: a mismatch is logged and stored, and the game carries on: it must not stop while nobody is around.
-    // The admin page shows ledger_balanced in red.
-    if (bad.length > 0) {
-      console.error(`ledger check failed after the ${event.market} ${event.kind} of ${event.day} for: ${bad.join(', ')}`);
-    }
-    if (isLastEventOfDay(event, calendar)) {
-      const dayStart = zonedToInstant(event.day, 0, ISRAEL);
-      const nextDay = zonedToInstant(addDays(event.day, 1), 0, ISRAEL);
-      await client.query(
-        `INSERT INTO portfolio_snapshots (uid, at, value_ils)
-         SELECT uid, $1, equity FROM portfolios WHERE last_event_at >= $2 AND last_event_at < $3
-         ON CONFLICT DO NOTHING`,
-        [event.at, dayStart, nextDay],
-      );
-    }
     await client.query(
       `UPDATE market_events SET status = 'done', finished_at = now(),
-         duration_ms = LEAST(round(extract(epoch FROM now() - COALESCE(started_at, now())) * 1000), $5)::int,
-         median_value = $2, median_return_pct = $3, ledger_balanced = $4
+         duration_ms = LEAST(round(extract(epoch FROM now() - COALESCE(started_at, now())) * 1000), $4)::int,
+         median_value = $2, median_return_pct = $3, ledger_balanced = COALESCE(ledger_balanced, TRUE)
        WHERE id = $1 AND status = 'orders_done'`,
-      [event.id, m.value, m.returnPct, bad.length === 0, MAX_DURATION_MS],
+      [event.id, m.value, m.returnPct, MAX_DURATION_MS],
     );
   });
+}
+
+// D-024 / D-029: the daily chart rows, for every player whose last_event_at falls on this event's Israel day. In
+// pages of players by uid (portfolios_pkey), each one statement on its own: a single statement over everyone
+// touched that day passes the statement timeout at scale (its per-row foreign key check alone is seconds at a
+// million), and the event would never finish. Safe to re-run: ON CONFLICT DO NOTHING, and no value changes
+// before the next event (step 2 is over). The cursor is the page's last uid, not RETURNING: a re-run inserts
+// nothing and must still move on.
+async function writeDailyRows(client: PoolClient, event: EventRow, batch: number): Promise<void> {
+  const dayStart = zonedToInstant(event.day, 0, ISRAEL);
+  const nextDay = zonedToInstant(addDays(event.day, 1), 0, ISRAEL);
+  let after = '';
+  for (;;) {
+    const { rows } = await client.query<{ n: number; last: string | null }>(
+      `WITH page AS (
+         SELECT uid, equity FROM portfolios
+         WHERE uid > $4 AND last_event_at >= $2 AND last_event_at < $3
+         ORDER BY uid LIMIT $5
+       ), written AS (
+         INSERT INTO portfolio_snapshots (uid, at, value_ils) SELECT uid, $1, equity FROM page
+         ON CONFLICT DO NOTHING
+       )
+       SELECT count(*)::int AS n, max(uid) AS last FROM page`,
+      [event.at, dayStart, nextDay, after, batch],
+    );
+    const { n, last } = rows[0];
+    if (n < batch || last === null) return;
+    after = last;
+  }
 }
 
 // D-024: the exact median over ALL portfolios of the value, and of the week return in % to 4 decimals (0 for a
@@ -642,42 +762,46 @@ export async function finishEvent(client: PoolClient, event: EventRow, calendar:
 // taken by week.ts's median(), half up, in the value's own scale. No floats, no percentile_cont.
 // The return of one row is round_half_away(10^6 × (equity − week_start_value) / week_start_value), in 0.0001 %
 // units: the same number as weekReturnPct() in week.ts, computed with the exact numeric div().
+// ONE statement, so the count and both middles come from one snapshot. finishEvent runs at READ COMMITTED,
+// where each statement sees what committed before it started: a player signing up (POST /me) between a count
+// and an OFFSET read would shift the rows under the offset and give the median of neither set of players.
+// Every subquery of one statement shares its snapshot. The middle ranks of n rows are (n + 1) / 2 and n / 2 + 1
+// in integer division: one rank when n is odd, two when it is even, none when there are no portfolios.
 export async function medians(db: Db, eventAt: Date): Promise<{ value: string | null; returnPct: string | null }> {
-  const { rows } = await db.query<{ n: number }>('SELECT count(*)::int AS n FROM portfolios');
-  const n = rows[0].n;
-  if (n === 0) return { value: null, returnPct: null };
-  const offset = Math.floor((n - 1) / 2);
-  const take = n % 2 === 1 ? 1 : 2;
-
-  const values = await db.query<{ v: string }>(
-    'SELECT equity::text AS v FROM portfolios ORDER BY equity OFFSET $1 LIMIT $2',
-    [offset, take],
+  // The return column is cast to text only at the end: `ORDER BY` on the TEXT would sort it with a collation
+  // that may ignore the minus sign and put −10 between 0 and 1.
+  const { rows } = await db.query<{ k: 'value' | 'return'; x: string }>(
+    `WITH n AS (SELECT count(*) AS c FROM portfolios),
+     v AS (SELECT equity, row_number() OVER (ORDER BY equity) AS rn FROM portfolios),
+     w AS (
+       SELECT r, row_number() OVER (ORDER BY r) AS rn FROM (
+         SELECT CASE WHEN week_start = $1::date AND week_start_value > 0
+                     THEN sign(equity - week_start_value)
+                          * div(2000000 * abs(equity - week_start_value) + week_start_value, 2 * week_start_value)
+                     ELSE 0 END AS r
+         FROM portfolios
+       ) t
+     )
+     SELECT 'value' AS k, v.equity::text AS x FROM v, n WHERE v.rn IN ((n.c + 1) / 2, n.c / 2 + 1)
+     UNION ALL
+     SELECT 'return' AS k, w.r::text AS x FROM w, n WHERE w.rn IN ((n.c + 1) / 2, n.c / 2 + 1)`,
+    [weekOf(eventAt)],
   );
-  // The text column needs its own name: `ORDER BY r` would otherwise sort the TEXT, and a collation that
-  // ignores the minus sign puts −10 between 0 and 1.
-  const returns = await db.query<{ pct: string }>(
-    `SELECT r::text AS pct FROM (
-       SELECT CASE WHEN week_start = $1::date AND week_start_value > 0
-                   THEN sign(equity - week_start_value)
-                        * div(2000000 * abs(equity - week_start_value) + week_start_value, 2 * week_start_value)
-                   ELSE 0 END AS r
-       FROM portfolios
-     ) t
-     ORDER BY r OFFSET $2 LIMIT $3`,
-    [weekOf(eventAt), offset, take],
-  );
-  const value = median(values.rows.map((x) => parse(x.v, SCALE.ILS)));
-  const ret = median(returns.rows.map((x) => parse(x.pct, 0)));
-  return { value: fmt(value, SCALE.ILS), returnPct: fmt(ret, SCALE.PCT) };
+  const pick = (k: 'value' | 'return', scale: number) => rows.filter((r) => r.k === k).map((r) => parse(r.x, scale));
+  if (rows.length === 0) return { value: null, returnPct: null };
+  return {
+    value: fmt(median(pick('value', SCALE.ILS)), SCALE.ILS),
+    returnPct: fmt(median(pick('return', 0)), SCALE.PCT),
+  };
 }
 
-// D-019 / D-029: for the players whose orders this event executed or rejected, every stored balance must equal
-// its ledger account: cash = cash_free + cash_locked, reserved_cash = cash_locked, realized_pnl = −realized_pnl,
-// and per stock the open position's cost basis = stock_cost (0 when there is no open position). Returns the
-// uids that don't match.
-export async function ledgerMismatches(db: Db, eventId: string): Promise<string[]> {
+// D-019 / D-029: for these players (an order batch's), every stored balance must equal its ledger account:
+// cash = cash_free + cash_locked, reserved_cash = cash_locked, realized_pnl = −realized_pnl, and per stock the
+// open position's cost basis = stock_cost (0 when there is no open position). Returns the uids that don't match.
+export async function ledgerMismatches(db: Db, uids: readonly string[]): Promise<string[]> {
+  if (uids.length === 0) return [];
   const { rows } = await db.query<{ uid: string }>(
-    `WITH u AS (SELECT DISTINCT uid FROM orders WHERE event_id = $1),
+    `WITH u AS (SELECT DISTINCT uid FROM unnest($1::text[]) AS t (uid)),
      led AS (
        SELECT e.uid,
               sum(e.amount) FILTER (WHERE e.account IN ('cash_free', 'cash_locked')) AS cash,
@@ -705,7 +829,7 @@ export async function ledgerMismatches(db: Db, eventId: string): Promise<string[
      SELECT COALESCE(s.uid, x.uid) FROM stock s FULL JOIN pos x ON x.uid = s.uid AND x.symbol = s.symbol
      WHERE COALESCE(s.cost, 0) <> COALESCE(x.cost, 0)
      ORDER BY 1`,
-    [eventId],
+    [uids],
   );
   return rows.map((r) => r.uid);
 }
@@ -804,7 +928,8 @@ type PositionSqlRow = {
   opened_at: Date | null;
 };
 
-// Open positions of these players, grouped by uid.
+// Open positions of these players, grouped by uid. A page of 5,000 players is about 27,000 rows to parse, so
+// the loop gives the event loop back now and then (eachSlice).
 async function loadOpenPositions(db: Db, uids: string[]): Promise<Map<string, PositionState[]>> {
   const { rows } = await db.query<PositionSqlRow>(
     `SELECT p.id::text AS id, p.uid, p.symbol, s.market, p.units::text AS units,
@@ -818,7 +943,7 @@ async function loadOpenPositions(db: Db, uids: string[]): Promise<Map<string, Po
     [uids],
   );
   const out = new Map<string, PositionState[]>();
-  for (const r of rows) {
+  await eachSlice(rows, (r) => {
     const list = out.get(r.uid) ?? [];
     list.push({
       id: r.id,
@@ -838,7 +963,7 @@ async function loadOpenPositions(db: Db, uids: string[]): Promise<Map<string, Po
       closedAt: null,
     });
     out.set(r.uid, list);
-  }
+  });
   return out;
 }
 
@@ -872,25 +997,33 @@ function toEventInput(e: PricedEvent): EventInput {
 
 // ---------- writing ----------
 
-// The columns of many positions as parallel string arrays, for one UPDATE/INSERT … FROM unnest.
-function positionArrays(list: readonly PositionState[]) {
-  return {
-    id: list.map((p) => p.id),
-    status: list.map((p) => p.status),
-    units: list.map((p) => format(p.units, SCALE.UNITS)),
-    reserved: list.map((p) => format(p.reservedUnits, SCALE.UNITS)),
-    avgCost: list.map((p) => format(p.avgCost, SCALE.AVG_COST)),
-    costBasis: list.map((p) => format(p.costBasis, SCALE.ILS)),
-    realized: list.map((p) => format(p.realizedPnl, SCALE.ILS)),
-    lastPrice: list.map((p) => fmt(p.lastPrice, SCALE.PRICE)),
-    lastFx: list.map((p) => fmt(p.lastRate, SCALE.RATE)),
-    marketValue: list.map((p) => fmt(p.marketValue, SCALE.ILS)),
-    // Market value − cost basis (D-019): not a ledger entry, nothing was paid or received.
-    unrealized: list.map((p) => (p.marketValue === null ? null : format(p.marketValue - p.costBasis, SCALE.ILS))),
-    markedAt: list.map((p) => p.markedAt?.toISOString() ?? null),
-    openedAt: list.map((p) => p.openedAt?.toISOString() ?? null),
-    closedAt: list.map((p) => p.closedAt?.toISOString() ?? null),
+// The columns of many positions as parallel string arrays, for one UPDATE/INSERT … FROM unnest. One pass, giving
+// the event loop back now and then (eachSlice): a page of players can be tens of thousands of positions.
+async function positionArrays(list: readonly PositionState[]) {
+  const c = {
+    id: [] as (string | null)[], status: [] as string[], units: [] as string[], reserved: [] as string[],
+    avgCost: [] as string[], costBasis: [] as string[], realized: [] as string[], lastPrice: [] as (string | null)[],
+    lastFx: [] as (string | null)[], marketValue: [] as (string | null)[], unrealized: [] as (string | null)[],
+    markedAt: [] as (string | null)[], openedAt: [] as (string | null)[], closedAt: [] as (string | null)[],
   };
+  await eachSlice(list, (p) => {
+    c.id.push(p.id);
+    c.status.push(p.status);
+    c.units.push(format(p.units, SCALE.UNITS));
+    c.reserved.push(format(p.reservedUnits, SCALE.UNITS));
+    c.avgCost.push(format(p.avgCost, SCALE.AVG_COST));
+    c.costBasis.push(format(p.costBasis, SCALE.ILS));
+    c.realized.push(format(p.realizedPnl, SCALE.ILS));
+    c.lastPrice.push(fmt(p.lastPrice, SCALE.PRICE));
+    c.lastFx.push(fmt(p.lastRate, SCALE.RATE));
+    c.marketValue.push(fmt(p.marketValue, SCALE.ILS));
+    // Market value − cost basis (D-019): not a ledger entry, nothing was paid or received.
+    c.unrealized.push(p.marketValue === null ? null : format(p.marketValue - p.costBasis, SCALE.ILS));
+    c.markedAt.push(p.markedAt?.toISOString() ?? null);
+    c.openedAt.push(p.openedAt?.toISOString() ?? null);
+    c.closedAt.push(p.closedAt?.toISOString() ?? null);
+  });
+  return c;
 }
 
 function samePosition(a: PositionState | undefined, b: PositionState): boolean {
@@ -906,6 +1039,20 @@ function fmt(v: bigint | null, scale: number): string | null {
 }
 
 // ---------- helpers ----------
+
+// The runner runs inside the API's process (D-030), so its JavaScript shares the event loop with players'
+// requests. A page of 5,000 players is a few hundred milliseconds of parsing, marking and formatting with no
+// await in between, and every request on the instance waited behind it. Long loops go through eachSlice: it
+// gives the loop back (setImmediate, after any I/O that is waiting) every `size` items, so a request waits
+// behind a few milliseconds of the runner at most.
+const SLICE = 500;
+
+export async function eachSlice<T>(items: readonly T[], fn: (item: T, i: number) => void, size = SLICE): Promise<void> {
+  for (let i = 0; i < items.length; i++) {
+    if (i > 0 && i % size === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+    fn(items[i], i);
+  }
+}
 
 // BEGIN … COMMIT on the given client; any error rolls back and is thrown again, so the client is always clean.
 async function inTransaction<T>(client: PoolClient, fn: () => Promise<T>): Promise<T> {
