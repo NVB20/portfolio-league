@@ -229,6 +229,8 @@ The API loads the data, calls this function, and saves the result.
 - **Profit is measured at average cost.** A sale's gain = units sold × (execution price × rate − average cost per unit). A sale never changes the average; only a buy does.
 - **Unrealized gain** = market value − cost basis. It is not a ledger entry, because nothing was paid or received. The runner updates and stores it at every open and close (prices only change then), for the players that event affects (D-024).
 - All money and units are `NUMERIC`: ₪ to agorot, units to 8 decimals.
+- **Rounding (decided 09.11.2026):** on a buy, units = amount ÷ (price × rate), rounded **down** to 8 decimals, and the ₪ paid is exactly the amount. Every ₪ value (proceeds, market value, cost released) is rounded to the agora, half away from zero, like Postgres `round()`. A partial sale releases units × average cost, but never more than the cost left; selling everything releases all the remaining cost, so a closed position keeps no rounding agora.
+- **In code:** the pure engine (`api/src/game/fixed.ts`, `ledger.ts`, `engine.ts`, `week.ts`) uses bigint fixed-point, never floats. Every journal it builds balances, or it throws.
 
 **Example (buy 10 units at ₪100, sell them at ₪110):**
 
@@ -255,6 +257,7 @@ The balances afterwards: cash_free 1,100, stock_cost 0, realized_pnl −100 (sho
 - **When sent:** checked with the last known price. A breach is refused, and the preview shows it.
 - **When executed:** checked again with the real execution price: (current holding value + buy amount) ÷ portfolio value, both at that moment's prices, must be ≤ 20%. Portfolio value counts all cash, including reserved cash. A breach rejects the order, releases its cash and gives the reason ("would be 21.3% of the portfolio").
 - Several buys of the same stock at one event are checked one by one, in the order they were sent.
+- The reason shows the share it would have reached with one decimal, rounded once from the exact ratio. A breach is never shown as "20.0%": anything just over the limit shows at least 20.1%, so the message can't read as allowed.
 - We **never** sell on the player's behalf. A holding that grows past 20% because its price rose is allowed. The rule applies only at the moment of purchase.
 
 **Why:** An order sent while the market is open fills at that day's close. A stock at 19% when the order is sent can be at 21% by the close. Only a check at the real execution price closes that gap.
