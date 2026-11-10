@@ -276,7 +276,7 @@ function ClockSection({ d, reload }: { d: AdminOverview; reload: () => void }) {
             onPress={() => clock.run(c?.running ? 'stop' : 'start')}
             disabled={!idle || (!c?.running && atEnd)}
           />
-          {ticker ? <Chip variant={ticker.variant}>{ticker.label}</Chip> : null}
+          {ticker ? <Chip variant={ticker.variant} large>{ticker.label}</Chip> : null}
         </>
       }
       after={

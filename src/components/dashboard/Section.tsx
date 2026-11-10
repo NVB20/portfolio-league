@@ -126,5 +126,6 @@ const styles = StyleSheet.create({
   eyebrow: { fontSize: 12, fontWeight: '600', letterSpacing: 1, marginBottom: 14 },
   title: { fontWeight: '300', letterSpacing: -0.5 },
   body: { fontSize: 16, lineHeight: 24, marginTop: 18, maxWidth: 420 },
-  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 24 },
+  // alignItems center: a Chip next to the buttons stays its own height instead of stretching to theirs.
+  actions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginTop: 24 },
 });
