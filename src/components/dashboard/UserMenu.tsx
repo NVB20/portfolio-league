@@ -1,20 +1,25 @@
-// The avatar menu (DD-12): name and rank, the dark/light switch (D-007), "how to play", and log out.
+// The avatar menu (DD-12): name and rank, the dark/light switch (D-007), the switch between the player and
+// admin sides (admins only), "how to play", and log out.
 // A Modal on every platform: it closes on a tap outside and on Escape/back (onRequestClose).
 
 import { useEffect, useRef } from 'react';
 import { Animated, Easing, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import { signOut } from 'firebase/auth';
 import { auth } from '../../firebase';
+import { useAuth } from '../../auth/AuthProvider';
 import { useTheme } from '../../useTheme';
 import { Theme } from '../../types/user';
 import { rtl } from './layout';
 import { useReduce } from './motion';
+import type { Side } from './TopBar';
 
-type Props = { open: boolean; onClose: () => void; name: string; rankLine: string | null; top: number };
+type Props = { open: boolean; onClose: () => void; name: string; rankLine: string | null; top: number; side?: Side };
 
-export function UserMenu({ open, onClose, name, rankLine, top }: Props) {
+export function UserMenu({ open, onClose, name, rankLine, top, side = 'player' }: Props) {
   const { colors, theme, setTheme } = useTheme();
+  const isAdmin = useAuth().roles.includes('admin');
   const reduce = useReduce();
   // Pops in over 0.18s with a slight overshoot (DD-06).
   const pop = useRef(new Animated.Value(0)).current;
@@ -50,6 +55,26 @@ export function UserMenu({ open, onClose, name, rankLine, top }: Props) {
             </View>
           </View>
 
+          {/* Admins only. This only hides the button; the route guard and the API still check the role. */}
+          {side === 'admin' ? (
+            <MenuItem
+              icon="person-outline"
+              label="מעבר לצד השחקן"
+              onPress={() => {
+                onClose();
+                router.navigate('/dashboard');
+              }}
+            />
+          ) : isAdmin ? (
+            <MenuItem
+              icon="shield-checkmark-outline"
+              label="מעבר לצד הניהול"
+              onPress={() => {
+                onClose();
+                router.navigate('/admin-dashboard');
+              }}
+            />
+          ) : null}
           <MenuItem icon="help-circle-outline" label="איך משחקים" disabled />
           <View style={[styles.hr, { backgroundColor: colors.line }]} />
           <MenuItem icon="log-out-outline" label="התנתקות" danger onPress={() => signOut(auth)} />

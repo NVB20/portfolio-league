@@ -22,12 +22,13 @@ type Props = {
   title: ReactNode;      // the headline; nest <Accent> / <Strong> inside for the highlighted words
   body?: ReactNode;      // a sentence, or any content (the trading screen puts the price row here)
   actions?: ReactNode;
+  after?: ReactNode;     // under the actions, still in the headline column (the dashboard's world time panel)
   alt?: boolean;
   first?: boolean;       // the first section: no divider above, and it plays the load sequence
   children: ReactNode;   // the cards, one CardRow per child
 };
 
-export function Section({ eyebrow, title, body, actions, alt = false, first = false, children }: Props) {
+export function Section({ eyebrow, title, body, actions, after, alt = false, first = false, children }: Props) {
   const { colors } = useTheme();
   const { isWide, gap, headlineSize } = useLayout();
   const stage = useMeasure();
@@ -43,6 +44,7 @@ export function Section({ eyebrow, title, body, actions, alt = false, first = fa
       <Text style={[styles.title, { color: colors.fg, fontSize: headlineSize, lineHeight: headlineSize * 1.12 }]}>{title}</Text>
       {typeof body === 'string' ? <Text style={[styles.body, { color: colors.muted }]}>{body}</Text> : body ?? null}
       {actions ? <View style={styles.actions}>{actions}</View> : null}
+      {after ?? null}
     </>
   );
 

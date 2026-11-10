@@ -26,6 +26,7 @@ import { Accent, Faint, Section, Strong } from '../components/dashboard/Section'
 import { BAR_HEIGHT, TopBar } from '../components/dashboard/TopBar';
 import { UsdRateCard } from '../components/dashboard/UsdRateCard';
 import { WorldClockCard } from '../components/dashboard/WorldClockCard';
+import { WorldTimePanel } from '../components/dashboard/WorldTimePanel';
 
 const toTrade = () => router.navigate('/trade');
 const STARTING_CASH = 1_000_000;
@@ -124,6 +125,7 @@ function Content({ d, isAdmin }: { d: Dashboard; isAdmin: boolean }) {
             <Button label="לטבלת השבוע" disabled hint="יחובר כשמסך הטבלה ייבנה" />
           </>
         }
+        after={<WorldTimePanel clock={d.clock} />}
       >
         <CardRow>
           <PortfolioChartCard portfolio={d.portfolio} weekStartAt={d.clock?.weekStartAt ?? null} nowAt={d.clock?.at ?? null} />

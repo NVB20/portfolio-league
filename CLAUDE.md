@@ -36,7 +36,7 @@ See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript, 
 | `src/screens/` | The actual screen components the routes render |
 | `src/auth/` | `AuthProvider` (current user + roles), sign-in errors, `POST /me` after login |
 | `src/components/` | Shared UI (`dashboard/`, `trade/`). `BigChart.web.tsx` is the web-only full chart |
-| `src/dashboard/`, `src/trade/` | Data hooks, copy and pure helpers per screen (`trade/orderCheck.ts`: the order rules for the preview) |
+| `src/dashboard/`, `src/trade/`, `src/admin/` | Data hooks, copy and pure helpers per screen (`trade/orderCheck.ts`: the order rules for the preview) |
 | `src/types/` | Shared TypeScript types |
 | `src/firebase.ts` | Firebase app and Auth setup (no database) |
 | `src/api.ts` | `apiFetch`: calls the API with the user's Firebase token |

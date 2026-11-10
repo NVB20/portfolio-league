@@ -1,4 +1,5 @@
 // The floating top bar: logo, page tabs, the world clock, and the avatar that opens the user menu (DD-09, DD-12).
+// On the admin page (side="admin") a "ניהול" badge replaces the tabs and a button leads back to the player side.
 // It lies OVER the scrolling page (absolute), so the cards slide underneath it like in the mock-up.
 // Web: see-through page color + blur, no border. Phones: solid page color (no blur on native).
 // "סקירה" (/dashboard) and "מסחר" (/trade) exist; the other tabs are shown disabled until their screens are built.
@@ -13,6 +14,7 @@ import { dayLabel } from '../../dashboard/format';
 import { MAX_WIDTH, useLayout } from './layout';
 import { useLoop } from './motion';
 import { UserMenu } from './UserMenu';
+import { Button } from './Button';
 
 export type Page = 'dashboard' | 'trade';
 const TABS: { label: string; page: Page | null }[] = [
@@ -26,9 +28,12 @@ export const BAR_HEIGHT = 68;
 const LOGO_HEIGHT = 40;
 const LOGO_RATIO = 577 / 624;   // assets/logo.png
 
-type Props = { clock: ClockView | null; name: string; rankLine: string | null; active?: Page };
+// side 'admin': the admin page. A "ניהול" badge replaces the player tabs, and a button leads back.
+export type Side = 'player' | 'admin';
 
-export function TopBar({ clock, name, rankLine, active = 'dashboard' }: Props) {
+type Props = { clock: ClockView | null; name: string; rankLine: string | null; active?: Page; side?: Side };
+
+export function TopBar({ clock, name, rankLine, active = 'dashboard', side = 'player' }: Props) {
   const { colors } = useTheme();
   const { isPhone } = useLayout();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -42,6 +47,11 @@ export function TopBar({ clock, name, rankLine, active = 'dashboard' }: Props) {
 
         {/* The rounded pill IS the scroll area, so on a narrow screen the tabs scroll inside its rounded edge. */}
         <View style={styles.tabsSlot}>
+        {side === 'admin' ? (
+          <View style={[styles.badge, { backgroundColor: colors.accentTint }]}>
+            <Text style={[styles.badgeText, { color: colors.accent }]}>ניהול</Text>
+          </View>
+        ) : (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -69,6 +79,7 @@ export function TopBar({ clock, name, rankLine, active = 'dashboard' }: Props) {
             })}
           </View>
         </ScrollView>
+        )}
         </View>
 
         {clock && !isPhone ? (
@@ -83,6 +94,11 @@ export function TopBar({ clock, name, rankLine, active = 'dashboard' }: Props) {
             <Text style={[styles.clockText, { color: colors.fg }]}>{`${dayLabel(clock.weekday)} · ${clock.time}`}</Text>
             <Text style={[styles.clockText, { color: colors.muted }]}>{taseOpen ? '· תל אביב פתוח' : '· תל אביב סגור'}</Text>
           </View>
+        ) : null}
+
+        {/* Phones: the way back is in the avatar menu instead, to keep the bar from overflowing. */}
+        {side === 'admin' && !isPhone ? (
+          <Button label="חזרה לצד השחקן" small onPress={() => router.navigate('/dashboard')} />
         ) : null}
 
         <Pressable
@@ -105,7 +121,7 @@ export function TopBar({ clock, name, rankLine, active = 'dashboard' }: Props) {
         </Pressable>
       </View>
 
-      <UserMenu open={menuOpen} onClose={() => setMenuOpen(false)} name={name} rankLine={rankLine} top={BAR_HEIGHT} />
+      <UserMenu open={menuOpen} onClose={() => setMenuOpen(false)} name={name} rankLine={rankLine} top={BAR_HEIGHT} side={side} />
     </View>
   );
 }
@@ -123,6 +139,8 @@ const styles = StyleSheet.create({
   tabs: { flexDirection: 'row', gap: 4 },
   tab: { paddingVertical: 9, paddingHorizontal: 18, borderRadius: 999 },
   tabText: { fontSize: 13.5, fontWeight: '500' },
+  badge: { borderRadius: 999, paddingVertical: 7, paddingHorizontal: 16 },
+  badgeText: { fontSize: 13, fontWeight: '600' },
   clock: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: 999, paddingVertical: 8, paddingHorizontal: 14 },
   dot: { width: 7, height: 7, borderRadius: 4 },
   clockText: { fontSize: 13 },
