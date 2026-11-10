@@ -1,5 +1,5 @@
 // All 40 securities in the world (D-011), filterable: all / Tel Aviv / US / mine.
-// A dot = you hold it. Pressing one selects it for the whole screen.
+// A dot = you hold it. Pressing one selects it for the whole screen (not while an order is on its way).
 
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -14,11 +14,12 @@ import { useLayout } from '../dashboard/layout';
 type Filter = 'all' | 'tase' | 'us' | 'held';
 const FILTERS: [Filter, string][] = [['all', 'הכל'], ['tase', 'תל אביב'], ['us', 'ארה״ב'], ['held', 'שלי']];
 
-export function PickerCard({ securities, selected, onPick, taseOpen }: {
+export function PickerCard({ securities, selected, onPick, taseOpen, disabled = false }: {
   securities: SecurityView[];
   selected: string | null;
   onPick: (symbol: string) => void;
   taseOpen: boolean;
+  disabled?: boolean;
 }) {
   const { colors } = useTheme();
   const { width } = useLayout();
@@ -55,7 +56,7 @@ export function PickerCard({ securities, selected, onPick, taseOpen }: {
       ) : (
         <View style={styles.grid}>
           {rows.map((s) => (
-            <Ticker key={s.symbol} s={s} on={s.symbol === selected} basis={`${100 / columns - 1.6}%`} onPress={() => onPick(s.symbol)} />
+            <Ticker key={s.symbol} s={s} on={s.symbol === selected} basis={`${100 / columns - 1.6}%`} disabled={disabled} onPress={() => onPick(s.symbol)} />
           ))}
         </View>
       )}
@@ -63,19 +64,21 @@ export function PickerCard({ securities, selected, onPick, taseOpen }: {
   );
 }
 
-function Ticker({ s, on, basis, onPress }: { s: SecurityView; on: boolean; basis: `${number}%`; onPress: () => void }) {
+function Ticker({ s, on, basis, disabled, onPress }: { s: SecurityView; on: boolean; basis: `${number}%`; disabled: boolean; onPress: () => void }) {
   const { colors } = useTheme();
   const us = s.currency === 'USD';
   const change = s.dayChangePct;
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
       accessibilityRole="button"
-      accessibilityState={{ selected: on }}
+      accessibilityState={{ selected: on, disabled }}
       accessibilityLabel={`${s.nameHe} ${s.symbol}`}
       style={({ hovered }: { hovered?: boolean }) => [
         styles.tkb,
-        { flexBasis: basis, maxWidth: basis, borderColor: on ? colors.accent : hovered ? colors.faint : colors.line, backgroundColor: on ? colors.accentTint : colors.surface2 },
+        { flexBasis: basis, maxWidth: basis, borderColor: on ? colors.accent : hovered && !disabled ? colors.faint : colors.line, backgroundColor: on ? colors.accentTint : colors.surface2 },
+        disabled && !on && { opacity: 0.6 },
       ]}
     >
       <View style={styles.r1}>

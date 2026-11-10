@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Not a package. Marks src/trade as ES modules for the API's NodeNext type check, which loads the pure helpers (orderCheck, orderBody, sendError) through api/test/app-trade.test.ts. Metro and the app's tsconfig ignore it."
+}

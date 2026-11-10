@@ -5,17 +5,25 @@
 //   3. After sending: pending orders and how an order executes
 //
 // Data: GET /me/trade (one request) + GET /me/chart/:symbol for the full chart.
-// UI ONLY for now: "send" shows its confirm step and a toast, and sends nothing (POST /me/orders comes
-// with the game engine). The rules are checked live in the app for the preview; the API checks them again.
+// Sending: the second press of the confirm step calls POST /me/orders (useSendOrder). After any answer but a
+// rate limit the trade data is loaded again: a success or a lost answer changes pending orders, available cash
+// and free units, and a refusal means the preview was out of date. The preview checks the same rules as the
+// server when sending (D-028); the server checks them again, and the runner at the execution price.
+// World time runs at real speed (D-017): when a market opens or closes, a new day begins or the clock reaches its
+// end, the data is loaded again, and until it arrives nothing can be sent and no execution time is promised.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { SecurityView, TradeView } from '../../api/src/contract';
 import { useAuth } from '../auth/AuthProvider';
 import { useTheme } from '../useTheme';
-import { pct } from '../dashboard/format';
-import { EXCHANGE, executionShort, marketLine, money } from '../trade/copy';
-import { checkOrder, clampLevel, defaultLevels, maxAllowed, type Levels, type Side } from '../trade/orderCheck';
+import { ilsExact, pct } from '../dashboard/format';
+import { marketsChanged } from '../dashboard/markets';
+import { useElapsed } from '../dashboard/useElapsed';
+import { EXCHANGE, executionShort, GAME_OVER_LINE, marketLine, money, sentToast } from '../trade/copy';
+import { orderBody } from '../trade/orderBody';
+import { checkOrder, clampLevel, defaultLevels, pendingBuysIls, pendingListCut, type Levels, type Side } from '../trade/orderCheck';
+import { useSendOrder } from '../trade/useSendOrder';
 import { useChart, useChartSettings, useTrade } from '../trade/useTrade';
 import { Button } from '../components/dashboard/Button';
 import { Card, Empty } from '../components/dashboard/Card';
@@ -38,6 +46,10 @@ import { fixed } from '../theme';
 const DEFAULT_SYMBOL = 'NVDA';
 const DEFAULT_AMOUNT = '10000';
 const TOAST_MS = 3600;
+const ERROR_TOAST_MS = 6500;   // a failure has more to read
+const ARM_MS = 450;            // a confirm press this soon after the step opened is a double-click's second click
+const FRESH_MS = 60_000;       // opening the confirm step reloads data older than this (an admin clock move, ...)
+const UPDATING_LINE = 'מעדכן את מועד הביצוע…';
 
 export default function TradeScreen() {
   const { colors } = useTheme();
@@ -45,7 +57,8 @@ export default function TradeScreen() {
   const { data, error, isLoading, reload } = useTrade();
   const name = user?.displayName || user?.email?.split('@')[0] || 'שחקן';
 
-  if (data) return <TradeView data={data} name={name} />;
+  // A reload keeps the screen (and what the player typed): `data` stays while it loads.
+  if (data) return <TradeView data={data} name={name} uid={user?.uid ?? ''} loading={isLoading} reload={reload} />;
 
   return (
     <View style={[styles.page, { direction: 'rtl', backgroundColor: colors.page }]}>
@@ -66,7 +79,13 @@ export default function TradeScreen() {
   );
 }
 
-function TradeView({ data, name }: { data: TradeView; name: string }) {
+function TradeView({ data, name, uid, loading, reload }: {
+  data: TradeView;
+  name: string;
+  uid: string;
+  loading: boolean;
+  reload: () => Promise<void>;
+}) {
   const { colors } = useTheme();
   const { motion, onScroll } = useScrollMotion();
   const wrap = useMeasure(0);
@@ -88,9 +107,20 @@ function TradeView({ data, name }: { data: TradeView; name: string }) {
   const priceIls = sec?.price != null && toIls > 0 ? sec.price * toIls : null;
   const heldIls = sec?.holding?.valueIls ?? 0;
   const amount = Number(amountText) || 0;
-  const check = checkOrder({ side, amount, cash: data.cash, totalValue: data.totalValue, heldIls, priceIls });
-  const max = maxAllowed(side, data.cash, data.totalValue, heldIls);
+  const pending = sec ? pendingBuysIls(data.pendingOrders, sec.symbol) : 0;
+  const check = checkOrder({
+    side,
+    amount,
+    availableCash: data.availableCash,
+    totalValue: data.totalValue,
+    holding: sec?.holding ?? null,
+    pendingBuysIls: pending,
+    pendingCut: pendingListCut(data.pendingOrders),
+    priceIls,
+    gameOver: sec?.execution?.gameOver ?? false,
+  });
   const today = data.clock?.date ?? null;
+  const session = sec && data.clock ? data.clock.markets[sec.market === 'TASE' ? 'tase' : 'us'] : null;
 
   // The position tool starts at the latest price, +8% target and −4% stop.
   const [levels, setLevels] = useState<Levels>(() => defaultLevels(sec?.price ?? 1));
@@ -121,10 +151,10 @@ function TradeView({ data, name }: { data: TradeView; name: string }) {
   );
 
   // ---------- actions ----------
-  const showToast = useCallback((msg: string) => {
+  const showToast = useCallback((msg: string, ms = TOAST_MS) => {
     setToast(msg);
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), TOAST_MS);
+    toastTimer.current = setTimeout(() => setToast(null), ms);
   }, []);
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -135,11 +165,77 @@ function TradeView({ data, name }: { data: TradeView; name: string }) {
     setMeasurement(null);
     scroll.current?.scrollTo({ y: 0, animated: true });
   };
-  const confirm = () => showToast('תצוגה בלבד: הפקודה לא נשלחה. שליחת פקודות תחובר עם מנוע המשחק.');
   const toTicket = () => scroll.current?.scrollTo({ y: 0, animated: true });
 
+  // ---------- the live clock ----------
+  // The loaded data describes one moment. Once a market opens or closes (or a new day, or the end), load again;
+  // a failed load is tried again on the next tick. Until it arrives, `moved` blocks sending.
+  const elapsed = useElapsed(data.clock);
+  const moved = data.clock ? marketsChanged(data.clock, elapsed) : false;
+  const loadingNow = useRef(loading);
+  loadingNow.current = loading;
+  useEffect(() => {
+    if (moved && !loadingNow.current) void reload();
+  }, [moved, elapsed, reload]);
+  const loadedAt = useMemo(() => Date.now(), [data]);
+
+  // ---------- sending ----------
+  const { busy, prepare, send } = useSendOrder(uid);
+  const updating = loading || moved;   // the preview may be out of date: nothing is sent against it
+  const body = sec && check.ok ? orderBody({ symbol: sec.symbol, side, amount, sell: check.sell }) : null;
   const orderKey = `${symbol}:${side}:${amountText}`;
-  const execLine = sec?.execution ? `${executionShort(sec.execution, today)} · ${EXCHANGE[sec.exchange]}` : '';
+
+  // One confirm step for both send boxes (the ticket and the order center), so a send from either closes both.
+  // Any change to the order (side, amount, security) closes it.
+  const [confirming, setConfirming] = useState(false);
+  const openedAt = useRef(0);
+  useEffect(() => setConfirming(false), [orderKey]);
+
+  const openConfirm = () => {
+    openedAt.current = Date.now();
+    setConfirming(true);
+    prepare(orderKey, body);
+    if (Date.now() - loadedAt > FRESH_MS && !loading) void reload();
+  };
+  const confirm = async () => {
+    // The confirm button sits where the send button was: a double-click must not send.
+    if (Date.now() - openedAt.current < ARM_MS) return;
+    const out = await send(orderKey, body);
+    if (!out) return;   // a send is already on its way, or nothing to send
+    if (out.ok) {
+      setConfirming(false);
+      showToast(sentToast(out.result, today));
+      void reload();    // pending orders, available cash and free units
+      return;
+    }
+    showToast(out.message, ERROR_TOAST_MS);
+    // After a refusal the preview was out of date; after no answer the order may be pending. The reload keeps
+    // orderKey, so after no answer the confirm step stays open, and pressing again resends the same body and id.
+    if (out.reload) void reload();
+    if (!out.retry) setConfirming(false);
+  };
+
+  const execLine = moved
+    ? UPDATING_LINE
+    : !sec?.execution
+      ? ''
+      : sec.execution.gameOver
+        ? GAME_OVER_LINE
+        : `${executionShort(sec.execution, today)} · ${EXCHANGE[sec.exchange]}`;
+  const sendBox = sec ? (
+    <SendBox
+      side={side}
+      amount={amount}
+      ok={check.ok}
+      execLine={execLine}
+      confirming={confirming}
+      sending={busy}
+      updating={updating}
+      onOpen={openConfirm}
+      onBack={() => setConfirming(false)}
+      onConfirm={confirm}
+    />
+  ) : null;
 
   if (!sec) {
     return (
@@ -157,12 +253,12 @@ function TradeView({ data, name }: { data: TradeView; name: string }) {
   const us = sec.currency === 'USD';
   const ticket = (
     <View style={styles.ticket}>
-      <SideToggle side={side} onChange={setSide} />
+      <SideToggle side={side} onChange={setSide} disabled={busy} />
       <View>
-        <AmountField value={amountText} onChange={setAmountText} />
-        <QuickAmounts side={side} max={max} onPick={(v) => setAmountText(String(v))} />
+        <AmountField value={amountText} onChange={setAmountText} disabled={busy} />
+        <QuickAmounts side={side} max={check.maxIls} onPick={(v) => setAmountText(String(v))} disabled={busy} />
       </View>
-      <SendBox side={side} amount={amount} ok={check.ok} execLine={execLine} orderKey={orderKey} onConfirm={confirm} />
+      {sendBox}
     </View>
   );
 
@@ -175,7 +271,7 @@ function TradeView({ data, name }: { data: TradeView; name: string }) {
               {/* 1. The order */}
               <Section
                 first
-                eyebrow={`מסחר · מזומן זמין ₪${Math.round(data.cash).toLocaleString('en-US')}`}
+                eyebrow={`מסחר · מזומן זמין ${ilsExact(data.availableCash)}`}
                 title={
                   <>
                     <Text style={[styles.pill, { color: us ? colors.muted : colors.accent, backgroundColor: us ? colors.surface2 : colors.accentTint }]}>{` ${sec.symbol} `}</Text>
@@ -193,7 +289,7 @@ function TradeView({ data, name }: { data: TradeView; name: string }) {
                     </View>
                     <View style={styles.mkt}>
                       <View style={[styles.dot, { backgroundColor: sec.isOpen ? colors.accent : colors.faint }]} />
-                      <Text style={[styles.mktText, { color: colors.faint }]}>{marketLine(sec, today)}</Text>
+                      <Text style={[styles.mktText, { color: colors.faint }]}>{moved ? UPDATING_LINE : marketLine(sec, today, session)}</Text>
                     </View>
                   </View>
                 }
@@ -203,11 +299,23 @@ function TradeView({ data, name }: { data: TradeView; name: string }) {
                   <TenDayChartCard security={sec} today={today} />
                 </CardRow>
                 <CardRow>
-                  <PreviewCard security={sec} side={side} amount={amount} check={check} cash={data.cash} usdRate={usdRate} onSend={toTicket} />
-                  <CardStack top={<PositionCard security={sec} />} bottom={<CashCard cash={data.cash} totalValue={data.totalValue} usd={data.usdIls} />} />
+                  <PreviewCard
+                    security={sec}
+                    side={side}
+                    amount={amount}
+                    check={check}
+                    availableCash={data.availableCash}
+                    pendingBuysIls={pending}
+                    usdRate={usdRate}
+                    onSend={toTicket}
+                  />
+                  <CardStack
+                    top={<PositionCard security={sec} />}
+                    bottom={<CashCard cash={data.cash} availableCash={data.availableCash} totalValue={data.totalValue} usd={data.usdIls} />}
+                  />
                 </CardRow>
                 <CardRow>
-                  <PickerCard securities={data.securities} selected={sec.symbol} onPick={pick} taseOpen={data.clock?.markets.tase.isOpen ?? false} />
+                  <PickerCard securities={data.securities} selected={sec.symbol} onPick={pick} taseOpen={data.clock?.markets.tase.isOpen ?? false} disabled={busy} />
                 </CardRow>
               </Section>
 
@@ -224,15 +332,15 @@ function TradeView({ data, name }: { data: TradeView; name: string }) {
                 body="כלי הפוזיציה מצייר כניסה, יעד וסטופ לסכום הפקודה. גרור את התוויות על הגרף או הקלד מחירים כאן."
                 actions={
                   <View style={styles.center2}>
-                    <SideToggle side={side} onChange={setSide} />
-                    <AmountField value={amountText} onChange={setAmountText} compact />
+                    <SideToggle side={side} onChange={setSide} disabled={busy} />
+                    <AmountField value={amountText} onChange={setAmountText} compact disabled={busy} />
                     <PositionToggle on={posOn} onToggle={() => setPosOn((o) => !o)} />
                     <LevelInputs levels={levels} currency={sec.currency} onChange={onLevel} />
                     <RiskReward amount={amount} levels={levels} currency={sec.currency} entryIls={levels.entry * toIls} />
                     <Text style={[styles.note, { color: colors.faint }]}>
                       {side === 'sell' ? 'כלי הפוזיציה מתכנן קנייה (לונג). במשחק אין שורט.' : 'במשחק אין פקודות סטופ ויעד. הכלי עוזר לתכנן; הפקודה מתבצעת בשער הבא.'}
                     </Text>
-                    <SendBox side={side} amount={amount} ok={check.ok} execLine={execLine} orderKey={orderKey} onConfirm={confirm} />
+                    {sendBox}
                   </View>
                 }
               >

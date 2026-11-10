@@ -6,7 +6,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { SecurityView, UsdIlsView } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
-import { ils, pct } from '../../dashboard/format';
+import { ils, ilsExact, pct } from '../../dashboard/format';
 import { checkChip, checkNote } from '../../trade/copy';
 import { CAP, type Check, type Side } from '../../trade/orderCheck';
 import { Button } from '../dashboard/Button';
@@ -32,28 +32,34 @@ export function WeightBar({ weightPct, tone }: { weightPct: number; tone: 'ok' |
 }
 
 // "Before you send": what the order would do, by the latest price. The send button scrolls up to the ticket.
-export function PreviewCard({ security, side, amount, check, cash, usdRate, onSend }: {
+// A buy's weight counts this player's pending buys of the same security too, like the server's 20% check (D-028).
+// A sell shows the exact units it sends (D-018). When the API's pending list was cut, the pending buys shown are
+// only those it sent, so the row says 'at least'.
+export function PreviewCard({ security, side, amount, check, availableCash, pendingBuysIls, usdRate, onSend }: {
   security: SecurityView;
   side: Side;
   amount: number;
   check: Check;
-  cash: number;
+  availableCash: number;
+  pendingBuysIls: number;
   usdRate: number | null;
   onSend: () => void;
 }) {
   const chip = checkChip(check);
   const bad = !check.ok && check.status !== 'empty';
   const usd = security.currency === 'USD' && usdRate ? ` · $${(amount / usdRate).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '';
+  const units = check.units.toLocaleString('en-US', { maximumFractionDigits: side === 'sell' ? 8 : 3 });
   return (
     <Card inverse title="לפני שאתה שולח" sub="הערכה לפי המחיר האחרון. המחיר הסופי ייקבע בביצוע." end={<Chip variant={chip.variant}>{chip.label}</Chip>}>
       <View style={styles.rows}>
         <PRow label={`${side === 'buy' ? 'קנייה' : 'מכירה'} ${security.symbol}${usd}`} value={ils(amount)} big />
-        <PRow label="יחידות משוערות" value={check.units.toLocaleString('en-US', { maximumFractionDigits: 3 })} />
-        <PRow label="מזומן אחרי" value={ils(check.cashAfter)} bad={check.status === 'noCash'} />
+        <PRow label={side === 'sell' ? 'יחידות למכירה' : 'יחידות משוערות'} value={units} />
+        {side === 'buy' && pendingBuysIls > 0 ? <PRow label={check.capExact ? 'קניות ממתינות בנייר' : 'קניות ממתינות בנייר (לפחות)'} value={ilsExact(pendingBuysIls)} /> : null}
+        <PRow label="מזומן זמין אחרי" value={ils(check.cashAfter)} bad={check.status === 'noCash'} />
         <PRow label="משקל בתיק אחרי" value={pct(check.weightAfterPct, { digits: 1, signed: false })} bad={check.status === 'overCap'} />
       </View>
       <WeightBar weightPct={check.weightAfterPct} tone={bad ? 'bad' : check.weightAfterPct >= NEAR_CAP_PCT ? 'warn' : 'ok'} />
-      <Note left={side === 'buy' ? 'תקרה 20% ברגע הקנייה' : 'אין מכירה בחסר'} right={checkNote(check, side, amount, cash, security.symbol)} hot={bad} />
+      <Note left={side === 'buy' ? 'תקרה 20% ברגע הקנייה' : 'אין מכירה בחסר'} right={checkNote(check, side, amount, availableCash, security.symbol)} hot={bad} />
       <View style={styles.cardBtn}>
         <Button label={side === 'buy' ? 'שלח פקודת קנייה' : 'שלח פקודת מכירה'} variant="ink" disabled={!check.ok} onPress={onSend} />
       </View>
@@ -83,17 +89,20 @@ function Note({ left, right, hot = false }: { left: string; right: string; hot?:
   );
 }
 
-// Your holding in the selected security: value and weight against the cap.
+// Your holding in the selected security: value and weight against the cap. Units already in a pending sell
+// are locked, so the line says how many are free.
 export function PositionCard({ security }: { security: SecurityView }) {
   const p = usePalette();
   const h = security.holding;
   const value = h?.valueIls ?? 0;
   const weight = h?.weightPct ?? 0;
   const near = weight >= NEAR_CAP_PCT;
+  const n = (u: number) => u.toLocaleString('en-US', { maximumFractionDigits: 3 });
+  const free = h && h.freeUnits < h.units ? ` · ${n(h.freeUnits)} פנויות` : '';
   return (
     <Card
       title="האחזקה שלך"
-      sub={h ? `${h.units.toLocaleString('en-US', { maximumFractionDigits: 3 })} יחידות · ${security.nameHe}` : `עדיין לא מחזיק ${security.nameHe}`}
+      sub={h ? `${n(h.units)} יחידות${free} · ${security.nameHe}` : `עדיין לא מחזיק ${security.nameHe}`}
       end={<Chip variant={near ? 'warn' : 'ghost'}>{near ? `קרוב לתקרה · ${pct(weight, { digits: 1, signed: false })}` : pct(weight, { digits: 1, signed: false })}</Chip>}
     >
       <Text style={[styles.kv, { color: p.fg }]}>{ils(value)}</Text>
@@ -103,10 +112,13 @@ export function PositionCard({ security }: { security: SecurityView }) {
   );
 }
 
-// Cash and the dollar rate (US securities convert at the rate at execution, not at sending).
-export function CashCard({ cash, totalValue, usd }: { cash: number; totalValue: number; usd: UsdIlsView | null }) {
+// Available cash and the dollar rate (US securities convert at the rate at execution, not at sending).
+// Cash set aside for pending buys isn't available; the note says how much (D-019). Figures are exact to the agora,
+// so the card never shows more than can be spent.
+export function CashCard({ cash, availableCash, totalValue, usd }: { cash: number; availableCash: number; totalValue: number; usd: UsdIlsView | null }) {
   const { colors } = useTheme();
-  const cashPct = totalValue > 0 ? (cash / totalValue) * 100 : 100;
+  const cashPct = totalValue > 0 ? (availableCash / totalValue) * 100 : 100;
+  const reserved = Math.max(0, cash - availableCash);
   return (
     <Card
       title="מזומן זמין"
@@ -114,9 +126,10 @@ export function CashCard({ cash, totalValue, usd }: { cash: number; totalValue: 
       end={usd?.weekChangePct != null ? <Chip variant={usd.weekChangePct >= 0 ? 'up' : 'down'}>{`${usd.weekChangePct >= 0 ? '▲' : '▼'} ${pct(Math.abs(usd.weekChangePct), { digits: 1, signed: false })} השבוע`}</Chip> : null}
     >
       <View style={styles.tiles}>
-        <Tile solid value={ils(cash)} label={`מזומן · ${pct(cashPct, { digits: 1, signed: false })} מהתיק`} />
+        <Tile solid value={ilsExact(availableCash)} label={`זמין · ${pct(cashPct, { digits: 1, signed: false })} מהתיק`} />
         <Tile value={usd ? `₪${usd.rate.toFixed(3)}` : '–'} label="USD / ILS · סגירה אחרונה" color={colors.fg} />
       </View>
+      {reserved >= 0.005 ? <Note left={`${ilsExact(reserved)} שמורים לקניות ממתינות`} right={`סך המזומן ${ilsExact(cash)}`} /> : null}
     </Card>
   );
 }
