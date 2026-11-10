@@ -1,6 +1,6 @@
-# CI for the API: on every push to main (a merged PR is a push to main), type check and run the tests
-# against a throwaway Postgres, then build the API image and publish it to GHCR.
-# Pull requests into main run the tests only; nothing is published from a PR.
+# CI: on every push to main (a merged PR is a push to main), type check and test the API against a
+# throwaway Postgres, type check the app, then build the API image and publish it to GHCR.
+# Pull requests into main run the checks only; nothing is published from a PR.
 
 name: CI
 
@@ -59,9 +59,26 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
+  app:
+    name: Type check the app
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+
   image:
     name: Build and publish the API image
-    needs: test
+    needs: [test, app]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
