@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Not a package. Marks src/journal as ES modules for the API's NodeNext type check, which loads the pure helpers (journal.ts) through api/test/app-journal.test.ts. Metro and the app's tsconfig ignore it."
+}

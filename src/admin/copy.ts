@@ -64,17 +64,6 @@ export function actionLabel(a: AdminActionView): string {
   return executed !== null ? `${base} · ${count(executed)} פקודות בוצעו` : base;
 }
 
-// The ticker writes last_tick_at every minute (D-030). Older than this = it stopped.
-export const TICKER_STALE_MINUTES = 2;
-
-// The ticker light: up = beating, down = stopped (with how long ago), warn = never ticked.
-export function tickerState(lastTickAt: string | null, nowMs: number): { variant: 'up' | 'down' | 'warn'; label: string } {
-  if (!lastTickAt) return { variant: 'warn', label: 'הטיקר עוד לא רץ' };
-  const minutes = Math.floor((nowMs - new Date(lastTickAt).getTime()) / 60_000);
-  if (minutes < TICKER_STALE_MINUTES) return { variant: 'up', label: 'הטיקר פועל' };
-  return { variant: 'down', label: `הטיקר עצר · ${lastSeenLabel(lastTickAt, nowMs)}` };
-}
-
 // What the advance button will do: the API picks it the same way (a market open → its close, else the next open).
 export function advanceLabel(clock: ClockView | null): string {
   return clock && (clock.markets.tase.isOpen || clock.markets.us.isOpen) ? 'קדם לסגירה' : 'קדם לפתיחה הבאה';

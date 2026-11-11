@@ -235,6 +235,66 @@ export type LeaderboardView = {
   behind: boolean;
 };
 
+// ---------- GET /me/journal: the trade journal, every order the player sent (D-035) ----------
+// ?filter=all|pending|executed|rejected (default all), ?period=week|all (default week), ?before=<order id> (the next
+// page: rows sent before that order), ?limit=1..100 (default 20). Read-only. Named "trade journal" in code because
+// `journals` is the money ledger's table (D-019).
+
+export type TradeJournalFilter = 'all' | 'pending' | 'executed' | 'rejected';
+export type TradeJournalPeriod = 'week' | 'all';
+
+// What a filled order did, as the runner stored it (D-019).
+export type TradeFill = {
+  price: number;                   // the open or close it filled at, in the security's currency
+  fxRate: number | null;           // USD/ILS used (US only)
+  units: number;                   // units bought or sold
+  ils: number;                     // ₪ paid (buy) or received (sell)
+  realizedPnlIls: number | null;   // sells only: the gain at average cost, + = profit
+};
+
+export type TradeJournalRow = {
+  id: string;
+  symbol: string;
+  nameHe: string;
+  market: 'TASE' | 'US';
+  currency: 'ILS' | 'USD';
+  side: 'buy' | 'sell';
+  status: 'pending' | 'executed' | 'rejected';
+  amountIls: number | null;        // buys: the ₪ to spend (D-018)
+  units: number | null;            // sells: the units to sell (D-018)
+  priceType: 'open' | 'close';     // open = sent while closed, close = sent while open (rule 3)
+  placedAt: WorldTime;             // when it was sent
+  executesAt: WorldTime;           // pending: when it will run; otherwise the open or close that ran it
+  fill: TradeFill | null;          // executed only
+  reject: { code: RejectionCode | null; reason: string } | null;   // rejected only; reason is the Hebrew
+};
+
+// The period's filled sells (whatever the filter): a sell with a gain is a win, with a loss a loss, at exactly ₪0
+// neither (D-035). A buy has no result until it is sold.
+export type TradeJournalStats = {
+  wins: number;
+  losses: number;
+  even: number;                    // sells at exactly ₪0
+  winRatePct: number | null;       // wins ÷ (wins + losses) × 100, one decimal; null = no win or loss yet
+  realizedPnlIls: number;          // the stored gain of every filled sell in the period, added up exactly in SQL
+  avgWinIls: number | null;        // null = no win yet
+  avgLossIls: number | null;       // negative; null = no loss yet
+};
+
+export type TradeJournalView = {
+  clock: LiveClockView | null;     // for the top bar and the reload at each open and close; null = no world
+  filter: TradeJournalFilter;
+  period: TradeJournalPeriod;      // week = the orders that ran or will run in this world week (Monday 00:00 on)
+  stats: TradeJournalStats;
+  counts: Record<TradeJournalFilter, number>;   // the period's orders per status, for the filter labels
+  reservedCash: number;            // ₪ held by pending buys right now (portfolios.reserved_cash)
+  rows: TradeJournalRow[];         // newest sent first
+  hasMore: boolean;                // older rows exist: ask again with ?before=<the last row's id>
+  // A pending order's time has passed and the runner hasn't run it yet (it does within about a minute, D-030):
+  // ask again soon. False when no world exists.
+  due: boolean;
+};
+
 // POST /me/rejections/seen: the rejection toasts the app showed, by order id (1 to 5, the `rejections[].id`s).
 // Marks exactly those of this player's rejected orders as seen. `marked` = how many were newly marked.
 export type RejectionsSeenBody = { ids: string[] };
@@ -396,3 +456,62 @@ export type AdminPlayer = {
 };
 
 export type AdminPlayers = { players: AdminPlayer[]; limit: number };
+
+// ---------- Usage monitoring (D-036): POST /me/seen's body, GET /admin/monitoring, GET /admin/db ----------
+// Real time and real Israel dates, like presence (D-026): it measures people, not the game.
+
+// The player pages the app tracks. Admin pages and the login page are never tracked.
+export type UsagePage = 'dashboard' | 'trade' | 'journal' | 'leaderboard';
+
+// Optional body of POST /me/seen: what happened since the app's last check-in. No body = a plain check-in.
+// The server caps it (time at most 120 s per request in total, each count at most 50) and adds it to daily totals.
+export type UsageReport = {
+  pages?: Partial<Record<UsagePage, { views: number; ms: number }>>;
+  confirms?: { opened: number; backed: number };   // the trade screen's confirm popup: opened, closed without sending
+};
+
+export type MonitoringRange = 'today' | 'd7' | 'd30';   // today, the last 7 days, the last 30 days (each includes today)
+
+export type MonitoringPageRow = {
+  page: UsagePage;
+  views: number;
+  ms: number;                      // time on the page, visible and not idle
+  players: number;                 // distinct players who used it in the range
+};
+
+export type MonitoringTotals = {
+  // Orders sent in the range (real created_at), by their status now. Comes from the orders table, not the app.
+  orders: { sent: number; executed: number; rejected: number; pending: number };
+  confirms: { opened: number; backed: number };
+  pages: MonitoringPageRow[];      // most time first; a page nobody used in the range is left out
+  ms: number;                      // all time in the app in the range
+  players: number;                 // distinct players with any page usage in the range
+};
+
+// One bar of a usage chart. start = the day, or the Monday of the week (YYYY-MM-DD, Israel).
+export type UsageBucket = { start: string; players: number; ms: Record<UsagePage, number> };
+
+export type AdminMonitoring = {
+  today: string;                   // the real Israel date the ranges end on (YYYY-MM-DD)
+  since: string | null;            // the first day with any usage row; null = nothing measured yet
+  totals: Record<MonitoringRange, MonitoringTotals>;
+  daily: UsageBucket[];            // 30 days, oldest first, includes today, days with no usage filled with zeros
+  weekly: UsageBucket[];           // 12 weeks starting Monday, oldest first, includes this week, zero-filled
+};
+
+// GET /admin/db: the database's health, read live. Nothing here changes anything.
+export type AdminDbHealth = {
+  checkedAt: string;               // real time, ISO
+  latencyMs: number;               // round trip of SELECT 1 from the API
+  pool: { max: number; total: number; idle: number; waiting: number };   // the API's own pg pool
+  server: {
+    version: string;               // e.g. "16.4"
+    startedAt: string;             // real time, ISO
+    sizeBytes: number;             // this database
+    connections: { active: number; idle: number; idleInTransaction: number; total: number; max: number };   // client connections, whole server
+    longestQuerySec: number | null;   // the longest-running active query other than this request's; null = none
+    cacheHitPct: number | null;    // share of block reads served from memory, this database; null = no reads yet
+  };
+  // The 5 largest by total size. rows = Postgres's estimate; -1 = the table was never analyzed, so no estimate yet.
+  tables: { name: string; bytes: number; rows: number }[];
+};

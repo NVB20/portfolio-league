@@ -54,6 +54,42 @@ export function scoreEquation(returnRank: number, stabilityRank: number, score: 
   return `0.85 × ${r} + 0.15 × ${s} ${sign} ${points(score)}`;
 }
 
+// What a tap on a score or rank tile opens beside it: a title, a few short lines, and an optional sum that is shown
+// left to right on its own line (numbers and × inside a Hebrew line would be reordered).
+export type Tip = { title: string; lines: string[]; sum?: string };
+
+// A rank is the share of the OTHER ranked players you did at least as well as (D-034), so "your 25" reads as
+// "25% of the others did the same as you or worse".
+export function rankTip(kind: 'return' | 'stability', rank: number): Tip {
+  const v = rankText(rank);
+  return kind === 'return'
+    ? {
+        title: 'דירוג תשואה · 85% מהציון',
+        lines: [
+          'התשואה של התיק שלך השבוע, באחוזים, לעומת שאר השחקנים.',
+          'החישוב: כמה אחוז מהשחקנים האחרים הרווחו כמוך או פחות. 100 = התשואה הכי גבוהה.',
+          `אצלך ${v}: ${v}% מהשחקנים הרווחו כמוך או פחות.`,
+        ],
+      }
+    : {
+        title: 'דירוג יציבות · 15% מהציון',
+        lines: [
+          'הירידה הכי גדולה של התיק שלך מהשיא שלו השבוע, לעומת שאר השחקנים.',
+          'החישוב: כמה אחוז מהשחקנים האחרים ירדו כמוך או יותר. 100 = הירידה הכי קטנה.',
+          `אצלך ${v}: ${v}% מהשחקנים ירדו כמוך או יותר.`,
+        ],
+      };
+}
+
+// The weekly score's tile: the weights in words, then the player's own numbers in the sum.
+export function scoreTip(returnRank: number, stabilityRank: number, score: number): Tip {
+  return {
+    title: 'הציון השבועי · 0 עד 100',
+    lines: ['85% מדירוג התשואה ועוד 15% מדירוג היציבות. כך זה יוצא אצלך:'],
+    sum: scoreEquation(returnRank, stabilityRank, score),
+  };
+}
+
 // ---------- the week ----------
 
 // ISO week number of a 'YYYY-MM-DD' day: "שבוע 46", the same number the clock shows (ClockView.week).

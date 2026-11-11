@@ -5,6 +5,7 @@ import { Stack } from 'expo-router';
 import { View, ActivityIndicator } from 'react-native';
 import { AuthProvider, useAuth } from '../auth/AuthProvider';
 import { usePresence } from '../auth/usePresence';
+import { useUsageTracking } from '../usage/useUsageTracking';
 import { light } from '../theme';
 import { useTheme } from '../useTheme';
 import { useWebTheme } from '../useWebTheme';
@@ -25,6 +26,8 @@ function GuardedStack() {
   useWebTheme(user ? theme : 'light');
   // Logged in with a row in our API: check in now and once a minute, for "online now" on the admin page.
   usePresence(user !== null && me !== null);
+  // The same players: which page they use and for how long, sent with those check-ins (D-036).
+  useUsageTracking(user !== null && me !== null);
 
   // Firebase hasn't answered yet: show a spinner and NO screen at all.
   if (isLoading) {
@@ -49,12 +52,14 @@ function GuardedStack() {
         <Stack.Screen name="index" />
         <Stack.Screen name="dashboard" />
         <Stack.Screen name="trade" />
+        <Stack.Screen name="journal" />
         <Stack.Screen name="leaderboard" />
 
         {/* Admins only. Everyone else goes back to their dashboard.
             This is a convenience: the API checks the admin role on every admin endpoint anyway. */}
         <Stack.Protected guard={roles.includes('admin')} redirectTo="/dashboard">
           <Stack.Screen name="admin-dashboard" />
+          <Stack.Screen name="admin-monitoring" />
         </Stack.Protected>
       </Stack.Protected>
     </Stack>

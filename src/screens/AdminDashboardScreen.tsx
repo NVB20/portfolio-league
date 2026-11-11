@@ -5,14 +5,14 @@
 // cards, one inverse card per section (DD-04). Design: the "Admin Dashboard Vision" artifact.
 //   1. Overview: who is online now, who came today, who came back several times (D-026), sign-ups,
 //      30-day trend with next-day / 7-day return
-//   2. World clock: advance / start / stop (POST /admin/clock/*), the ticker light, both markets, the
+//   2. World clock: advance / start / stop (POST /admin/clock/*), both markets, the
 //      engine's last run, the order queue. "קדם שעון" on the player dashboard opens the page here (?to=clock)
 //   3. Players: the top 5, searchable; more than that is the leaderboard's job
 //   4. System: how far the data goes, the admin action log
 // Numbers we don't have yet say what will fill them, never a made-up value.
 
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, LayoutChangeEvent, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Animated, LayoutChangeEvent, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import type { AdminActionView, AdminOverview, AdminPlayer, AdminRunView } from '../../api/src/contract';
 import { useAuth } from '../auth/AuthProvider';
@@ -33,14 +33,14 @@ import {
   realTimeLabel,
   RUN_STATUS,
   runLabel,
-  tickerState,
 } from '../admin/copy';
 import { dayLabel, ils } from '../dashboard/format';
+import { AdminFallback, AdminFooter, BigNumber, Line, Lines, SubText, Tiles } from '../components/admin/AdminBits';
 import { Button } from '../components/dashboard/Button';
 import { Card, Empty, usePalette } from '../components/dashboard/Card';
 import { CardRow } from '../components/dashboard/CardRow';
 import { Chip } from '../components/dashboard/Chip';
-import { MAX_WIDTH, ltr, useLayout } from '../components/dashboard/layout';
+import { MAX_WIDTH, ltr } from '../components/dashboard/layout';
 import { MotionProvider, OffsetProvider, useMeasure, useScrollMotion } from '../components/dashboard/motion';
 import { Accent, Faint, Section, Strong } from '../components/dashboard/Section';
 import { BAR_HEIGHT, TopBar } from '../components/dashboard/TopBar';
@@ -52,7 +52,6 @@ const CONFIRM_MS = 4_000;
 const JUMP_SETTLE_MS = 300;
 
 export default function AdminDashboardScreen() {
-  const { colors } = useTheme();
   const { user } = useAuth();
   const { data, error, isLoading, reload } = useAdminOverview();
   const name = user?.displayName || user?.email?.split('@')[0] || 'מנהל';
@@ -60,21 +59,9 @@ export default function AdminDashboardScreen() {
   if (data) return <AdminView data={data} name={name} reload={reload} />;
 
   return (
-    <View style={[styles.page, { direction: 'rtl', backgroundColor: colors.page }]}>
-      {isLoading ? (
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color={colors.accent} />
-        </View>
-      ) : (
-        <View style={styles.center}>
-          <Text style={[styles.error, { color: colors.fg }]}>{error ?? 'משהו השתבש'}</Text>
-          <Pressable onPress={reload} style={[styles.retry, { borderColor: colors.accent }]} accessibilityRole="button">
-            <Text style={{ color: colors.accent, fontWeight: '700' }}>נסו שוב</Text>
-          </Pressable>
-        </View>
-      )}
-      <TopBar clock={null} name={name} rankLine="מנהל" side="admin" />
-    </View>
+    <AdminFallback isLoading={isLoading} error={error} onRetry={reload}>
+      <TopBar clock={null} name={name} rankLine="מנהל" side="admin" adminTab="admin-dashboard" />
+    </AdminFallback>
   );
 }
 
@@ -116,13 +103,11 @@ function AdminView({ data, name, reload }: { data: AdminOverview; name: string; 
               <PlayersSection total={data.players.total} />
               <SystemSection d={data} />
             </OffsetProvider>
-            <Text style={[styles.footer, { color: colors.faint, borderTopColor: colors.line }]}>
-              צד הניהול · רק מנהלים רואים את העמוד הזה, וכל בקשה נבדקת שוב בשרת. תפקידים משתנים רק ב־SQL.
-            </Text>
+            <AdminFooter>צד הניהול · רק מנהלים רואים את העמוד הזה, וכל בקשה נבדקת שוב בשרת. תפקידים משתנים רק ב־SQL.</AdminFooter>
           </View>
         </Animated.ScrollView>
 
-        <TopBar clock={data.clock} name={name} rankLine="מנהל" side="admin" />
+        <TopBar clock={data.clock} name={name} rankLine="מנהל" side="admin" adminTab="admin-dashboard" />
       </View>
     </MotionProvider>
   );
@@ -258,7 +243,6 @@ function ClockSection({ d, reload }: { d: AdminOverview; reload: () => void }) {
 
   const atEnd = c?.endsAt != null && c.at >= c.endsAt.at;
   const idle = clock.busy === null && c !== null;
-  const ticker = c ? tickerState(c.lastTickAt, Date.now()) : null;
 
   const onAdvance = () => {
     if (disarm.current) clearTimeout(disarm.current);
@@ -304,7 +288,6 @@ function ClockSection({ d, reload }: { d: AdminOverview; reload: () => void }) {
             onPress={() => clock.run(c?.running ? 'stop' : 'start')}
             disabled={!idle || (!c?.running && atEnd)}
           />
-          {ticker ? <Chip variant={ticker.variant} large>{ticker.label}</Chip> : null}
         </>
       }
       after={
@@ -325,10 +308,10 @@ function ClockSection({ d, reload }: { d: AdminOverview; reload: () => void }) {
           sub="ממתינות לביצוע, לפי שוק"
           end={o.rejectedThisWeek > 0 ? <Chip variant="warn">{`${count(o.rejectedThisWeek)} נדחו השבוע`}</Chip> : null}
         >
-          <View style={styles.lines}>
+          <Lines>
             <Line label="תל אביב" value={count(o.pending.tase)} strong />
             <Line label="ניו יורק" value={count(o.pending.us)} strong />
-          </View>
+          </Lines>
           {o.rejectReasons.length > 0 ? (
             <SubText>{`דחייה נפוצה השבוע: ${o.rejectReasons.map((r) => `${r.reason} (${r.count})`).join(' · ')}`}</SubText>
           ) : (
@@ -512,13 +495,13 @@ function SystemSection({ d }: { d: AdminOverview }) {
     >
       <CardRow>
         <Card inverse title="מצב הנתונים" sub="השרת והמסד ענו, אחרת העמוד לא היה נטען" end={<Chip variant={loaded ? 'up' : 'warn'}>{loaded ? 'תקין' : 'חסר'}</Chip>}>
-          <View style={styles.lines}>
+          <Lines>
             <Line label="ניירות בעולם" value={loaded ? String(w.securities) : 'לא נטענו'} warn={!loaded} />
             <Line label="מחירי תל אביב עד" value={w.pricesUntil.tase ? dateHe(w.pricesUntil.tase) : '—'} warn={!w.pricesUntil.tase} />
             <Line label="מחירי ניו יורק עד" value={w.pricesUntil.us ? dateHe(w.pricesUntil.us) : '—'} warn={!w.pricesUntil.us} />
             <Line label="שער הדולר עד" value={w.usdIlsUntil ? dateHe(w.usdIlsUntil) : '—'} warn={!w.usdIlsUntil} />
             <Line label="השעון נעצר ב־" value={d.clock?.endsAt ? dateHe(d.clock.endsAt.date) : '—'} />
-          </View>
+          </Lines>
           {!loaded ? <SubText>להרצה: npm run seed:world בתיקיית api.</SubText> : null}
         </Card>
         <ActionLogCard actions={d.recentActions} />
@@ -536,86 +519,31 @@ function ActionLogCard({ actions }: { actions: AdminActionView[] }) {
       {actions.length === 0 ? (
         <Empty>עוד אין פעולות. כל קידום, עצירה או הפעלה של השעון יירשמו כאן: מי, מתי, וכמה פקודות רצו.</Empty>
       ) : (
-        <View style={styles.lines}>
+        <Lines>
           {actions.map((a, i) => (
             <View key={`${a.at}-${i}`} style={[styles.line, { borderTopColor: p.line }]}>
               <Text style={[styles.logTime, styles.num, { color: p.sub }]}>{realTimeLabel(a.at, now)}</Text>
               <Text style={[styles.lineLabel, { color: p.fg }]} numberOfLines={2}>{`${a.admin} ${actionLabel(a)}`}</Text>
             </View>
           ))}
-        </View>
+        </Lines>
       )}
     </Card>
   );
 }
 
-// ---------- small pieces ----------
-
-function BigNumber({ value, unit }: { value: string; unit: string }) {
-  const p = usePalette();
-  return (
-    <View style={styles.big}>
-      <Text style={[styles.bigValue, styles.num, { color: p.fg }]}>{value}</Text>
-      <Text style={[styles.bigUnit, { color: p.sub }]}>{unit}</Text>
-    </View>
-  );
-}
-
-function Tiles({ items }: { items: { value: string; label: string; solid?: boolean }[] }) {
-  const { colors } = useTheme();
-  const p = usePalette();
-  return (
-    <View style={styles.tiles}>
-      {items.map((t) => (
-        <View key={t.label} style={[styles.tile, { backgroundColor: t.solid ? colors.accent : p.tile }]}>
-          <Text style={[styles.tileValue, styles.num, { color: t.solid ? colors.accentInk : p.fg }]}>{t.value}</Text>
-          <Text style={[styles.tileLabel, { color: t.solid ? colors.accentInk : p.sub }, t.solid && { opacity: 0.75 }]}>{t.label}</Text>
-        </View>
-      ))}
-    </View>
-  );
-}
-
-// One line of a list: a status dot (optional), the label, and the value at the far end.
-function Line({ label, value, strong = false, warn = false }: { label: string; value: string; strong?: boolean; warn?: boolean }) {
-  const p = usePalette();
-  return (
-    <View style={[styles.line, { borderTopColor: p.line }]}>
-      <View style={[styles.dot, { backgroundColor: warn ? p.warn : p.accentFill }]} />
-      <Text style={[styles.lineLabel, { color: p.fg }]}>{label}</Text>
-      <Text style={[strong ? styles.lineStrong : styles.lineValue, styles.num, { color: strong ? p.fg : p.sub }]}>{value}</Text>
-    </View>
-  );
-}
-
-function SubText({ children }: { children: string }) {
-  const p = usePalette();
-  return <Text style={[styles.subText, { color: p.sub }]}>{children}</Text>;
-}
+// BigNumber, Tiles, Line and SubText live in components/admin/AdminBits.tsx, shared with /admin-monitoring.
 
 const styles = StyleSheet.create({
   page: { flex: 1 },
   scroll: { paddingTop: BAR_HEIGHT, paddingBottom: 64 },
   wrap: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', paddingHorizontal: 16 },
-  footer: { paddingTop: 32, borderTopWidth: 1, fontSize: 13 },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 },
-  error: { fontSize: 16 },
-  retry: { borderWidth: 1.5, borderRadius: 8, paddingVertical: 10, paddingHorizontal: 24 },
   num: { fontVariant: ['tabular-nums'] },
-  big: { flexDirection: 'row', alignItems: 'baseline', gap: 10, marginTop: 12 },
-  bigValue: { fontSize: 30, fontWeight: '500', letterSpacing: -0.5 },
-  bigUnit: { fontSize: 13 },
-  tiles: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 14 },
-  tile: { flexGrow: 1, flexBasis: 120, borderRadius: 16, padding: 14 },
-  tileValue: { fontSize: 24, fontWeight: '600' },
-  tileLabel: { fontSize: 12, marginTop: 4 },
-  lines: { marginTop: 8 },
+  // The action log's rows look like AdminBits' Line, with a time in place of the dot. The dot is the
+  // players table's "online" mark.
   line: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, borderTopWidth: 1 },
   dot: { width: 9, height: 9, borderRadius: 5 },
   lineLabel: { fontSize: 13.5, flex: 1 },
-  lineValue: { fontSize: 12.5 },
-  lineStrong: { fontSize: 16, fontWeight: '600' },
-  subText: { fontSize: 12.5, lineHeight: 19, marginTop: 10 },
   search: { marginTop: 14, borderWidth: 1, borderRadius: 999, paddingVertical: 10, paddingHorizontal: 14, fontSize: 13, textAlign: 'right', minHeight: 44 },
   spinner: { marginTop: 20 },
   tableScroll: { marginTop: 12 },

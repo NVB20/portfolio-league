@@ -5,11 +5,12 @@ import { router } from 'expo-router';
 import type { Dashboard, StandingView } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
 import { pct, score } from '../../dashboard/format';
-import { rankDelta, rankText, scoreEquation } from '../../leaderboard/board';
+import { rankDelta, rankText, rankTip, scoreEquation, scoreTip, type Tip } from '../../leaderboard/board';
 import { Card, Empty, usePalette } from './Card';
 import { Button } from './Button';
 import { Chip } from './Chip';
 import { IconButton } from './IconButton';
+import { InfoTip } from './InfoTip';
 import { useLoop } from './motion';
 
 export function LeaderboardCard({ leaderboard, standing }: { leaderboard: Dashboard['leaderboard']; standing: StandingView | null }) {
@@ -69,14 +70,20 @@ export function ScoreBreakdownCard({ standing }: { standing: StandingView | null
       {standing && delta ? (
         <View style={styles.tiles}>
           <View style={styles.tileRow}>
-            <Tile value={score(standing.score)} label="הציון השבועי" solid />
-            <Tile value={rankText(standing.returnRank)} label="דירוג תשואה · × 0.85" />
+            <Tile
+              value={score(standing.score)}
+              label="הציון השבועי"
+              solid
+              tip={scoreTip(standing.returnRank, standing.stabilityRank, standing.score)}
+            />
+            <Tile value={rankText(standing.returnRank)} label="דירוג תשואה · × 0.85" tip={rankTip('return', standing.returnRank)} />
           </View>
           <View style={styles.tileRow}>
             <Tile
               value={rankText(standing.stabilityRank)}
               label="דירוג יציבות · × 0.15"
               color={standing.stabilityRank < standing.returnRank ? colors.warn : undefined}
+              tip={rankTip('stability', standing.stabilityRank)}
             />
             <Tile
               value={delta.text}
@@ -95,13 +102,22 @@ export function ScoreBreakdownCard({ standing }: { standing: StandingView | null
   );
 }
 
-function Tile({ value, label, solid = false, color }: { value: string; label: string; solid?: boolean; color?: string }) {
+// With a `tip`, a tap explains the tile right beside it (InfoTip).
+function Tile({ value, label, solid = false, color, tip }: { value: string; label: string; solid?: boolean; color?: string; tip?: Tip }) {
   const { colors } = useTheme();
-  return (
-    <View style={[styles.tile, { backgroundColor: solid ? colors.accent : colors.surface2 }]}>
+  const style = [styles.tile, { backgroundColor: solid ? colors.accent : colors.surface2 }];
+  const body = (
+    <>
       <Text style={[styles.tileValue, { color: color ?? (solid ? colors.accentInk : colors.fg) }]}>{value}</Text>
       <Text style={[styles.tileLabel, { color: solid ? colors.accentInk : colors.faint }]}>{label}</Text>
-    </View>
+    </>
+  );
+  return tip ? (
+    <InfoTip tip={tip} label={`${label}: ${value}`} style={style} markColor={solid ? colors.accentInk : undefined}>
+      {body}
+    </InfoTip>
+  ) : (
+    <View style={style}>{body}</View>
   );
 }
 

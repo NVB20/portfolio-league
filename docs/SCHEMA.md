@@ -4,7 +4,7 @@ The current Postgres schema of the app's database: every table, its fields, its 
 
 - **Source of truth:** the migrations in [api/migrations/](../api/migrations/). This file describes the schema after all of them have run.
 - **Keep it in sync:** every new migration updates this file in the same commit.
-- **Last migration covered:** `20261110172700000_leaderboard.sql`
+- **Last migration covered:** `20261111190015612_usage.sql`
 
 ## Relationships
 
@@ -15,6 +15,8 @@ erDiagram
     users ||--o{ standings : "ranked in"
     users ||--o{ weekly_scores : "finished in"
     users ||--o{ app_opens : visits
+    users ||--o{ usage_pages_daily : "time per page"
+    users ||--o{ usage_confirms_daily : "confirm popup"
     users ||--o{ admin_actions : "acts as admin"
     portfolios ||--o{ positions : holds
     portfolios ||--o{ journals : "money events"
@@ -48,10 +50,12 @@ erDiagram
 | `standings.uid` | `users.uid` | many to 1 | CASCADE |
 | `weekly_scores.uid` | `users.uid` | many to 1 | CASCADE |
 | `app_opens.uid` | `users.uid` | many to 1 | CASCADE |
+| `usage_pages_daily.uid` | `users.uid` | many to 1 | CASCADE |
+| `usage_confirms_daily.uid` | `users.uid` | many to 1 | CASCADE |
 | `admin_actions.uid` | `users.uid` | many to 1 | CASCADE |
 | `prices.symbol` | `securities.symbol` | many to 1 | blocked |
 
-Deleting a user removes their portfolio, positions, ledger, orders, snapshots, standings, weekly scores and visits (the ledger allows a delete only as part of that cascade). A security can't be deleted while anything still refers to it, and neither can a market event that orders point to.
+Deleting a user removes their portfolio, positions, ledger, orders, snapshots, standings, weekly scores, visits and usage totals (the ledger allows a delete only as part of that cascade). A security can't be deleted while anything still refers to it, and neither can a market event that orders point to.
 
 ## Tables
 
@@ -77,6 +81,27 @@ One row per visit (D-026). A check-in after more than 30 minutes away, or the ve
 | `id` | BIGINT | no | identity | **PK** |
 | `uid` | TEXT | no | | FK → `users.uid` |
 | `at` | TIMESTAMPTZ | no | `now()` | When the visit started |
+
+### `usage_pages_daily`
+Time and views per player per page per real Israel day (D-036), for the admin monitoring page. Written only by `POST /me/seen`: the check-in's optional usage report is capped by the server and added to the day's row (`INSERT … ON CONFLICT … DO UPDATE SET views = views + …, ms = ms + …`). Daily totals, not an event log: it grows with players × pages per day, never with clicks. A row exists only when the player had a view or some time on that page that day.
+
+| Field | Type | Null | Default | Notes |
+|-------|------|------|---------|-------|
+| `day` | DATE | no | | **PK part.** Real Israel date, `(now() AT TIME ZONE 'Asia/Jerusalem')::date`, computed by Postgres on write |
+| `page` | TEXT | no | | **PK part.** `dashboard`, `trade`, `journal` or `leaderboard`. Checked in code (`USAGE_PAGES` in `api/src/usage.ts`), not by a CHECK, so a new page needs no migration; the reads skip any other name |
+| `uid` | TEXT | no | | **PK part.** FK → `users.uid` |
+| `views` | INT | no | `0` | ≥ 0. Times the page was opened. At most 50 per report |
+| `ms` | BIGINT | no | `0` | ≥ 0. Time on the page while the app was visible and someone used it in the last 5 minutes. At most 120,000 per report, all pages together |
+
+### `usage_confirms_daily`
+The trade screen's confirm popup per player per real Israel day (D-036): how often it opened, and how often it closed without sending (backed out). Written only by `POST /me/seen`, like `usage_pages_daily`. Orders actually sent are counted from `orders`, never from here.
+
+| Field | Type | Null | Default | Notes |
+|-------|------|------|---------|-------|
+| `day` | DATE | no | | **PK part.** Real Israel date, computed by Postgres on write |
+| `uid` | TEXT | no | | **PK part.** FK → `users.uid` |
+| `opened` | INT | no | `0` | ≥ 0. At most 50 per report |
+| `backed` | INT | no | `0` | ≥ 0. Closed without a send by the player's choice. At most 50 per report. Can be above `opened` on a day: a popup opened before midnight can be backed out of after it |
 
 ### `admin_actions`
 The admin action log (D-027). One row per admin clock action, written in the same transaction as the action, so a row exists exactly when the action happened. Append-only.
@@ -232,7 +257,7 @@ Every order ever sent, for all players (D-004).
 | `executes_at` | TIMESTAMPTZ | no | | World time it will run |
 | `price_type` | TEXT | no | | `open` or `close` |
 | `reject_reason` | TEXT | yes | | Set exactly when `status = 'rejected'`. In Hebrew, shown to the player |
-| `created_at` | TIMESTAMPTZ | no | `now()` | Real time. The rate limit counts a player's orders by it |
+| `created_at` | TIMESTAMPTZ | no | `now()` | Real time. The rate limit counts a player's orders by it, and the monitoring page counts orders sent per real Israel day by it (D-036) |
 | `client_order_id` | TEXT | yes | | From the app. Unique per player, so a retried request can't make a second order |
 | `fill_price` | NUMERIC(14,4) | yes | | The execution price, in the security's currency |
 | `fx_rate` | NUMERIC(10,4) | yes | | USD/ILS used (US only) |
@@ -344,6 +369,8 @@ Every primary key and UNIQUE column has its own index. The other indexes exist f
 | `users` | `users_last_seen_idx` | `last_seen_at` | | Players online now, players seen today |
 | `app_opens` | `app_opens_pkey` | `id` | PK | |
 | `app_opens` | `app_opens_at_uid_idx` | `at, uid` | | Today's visits per player, from the index alone |
+| `usage_pages_daily` | `usage_pages_daily_pkey` | `day, page, uid` | PK | One row per player per page per day: the check-in's upsert. The monitoring page's ranges, daily and weekly bars read a range of days; `min(day)` is its `since` |
+| `usage_confirms_daily` | `usage_confirms_daily_pkey` | `day, uid` | PK | One row per player per day: the upsert. The popup numbers per range read a range of days |
 | `admin_actions` | `admin_actions_pkey` | `id` | PK | |
 | `admin_actions` | `admin_actions_at_idx` | `at DESC` | | The newest admin actions first |
 | `securities` | `securities_pkey` | `symbol` | PK | |
@@ -369,6 +396,7 @@ Every primary key and UNIQUE column has its own index. The other indexes exist f
 | `orders` | `orders_uid_idx` | `uid, placed_at DESC` | | A player's order history, newest first |
 | `orders` | `orders_client_order_idx` | `uid, client_order_id` WHERE `client_order_id IS NOT NULL` | partial, unique | A retried request can't make a second order |
 | `orders` | `orders_uid_created_idx` | `uid, created_at DESC` | | The rate limit: a player's orders in the last real minute |
+| `orders` | `orders_created_idx` | `created_at` | | The monitoring page's orders sent in the last 30 real days (all players): a range of the index, not the whole table (D-036) |
 | `orders` | `orders_event_idx` | `event_id` WHERE `event_id IS NOT NULL` | partial | The orders an event executed or rejected (affected players, the ledger check) |
 | `orders` | `orders_unseen_rejections_idx` | `uid` WHERE `status = 'rejected' AND notified_at IS NULL` | partial | A player's rejection toasts not seen yet (D-023) |
 | `market_events` | `market_events_pkey` | `id` | PK | |

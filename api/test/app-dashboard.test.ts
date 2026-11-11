@@ -338,6 +338,7 @@ describe('buttons for built screens are connected', () => {
     expect(admin).not.toContain('יחובר כשמסך הטבלה ייבנה');
     expect(admin).toContain("router.navigate('/leaderboard')");
     expect(clockCard).not.toContain('יחובר כשקידום השעון ייבנה');
-    expect(clockCard).toContain("router.navigate('/admin-dashboard')");
+    // It opens the admin page at its world clock section (?to=clock), not at the top.
+    expect(clockCard).toContain("router.navigate({ pathname: '/admin-dashboard', params: { to: 'clock' } })");
   });
 });
