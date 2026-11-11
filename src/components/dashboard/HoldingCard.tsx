@@ -2,12 +2,15 @@
 // A holding close to the cap is the inverse card of section 2 (DD-04).
 // The bar's full width is 25% of the portfolio, so the 20% mark sits at 80% of the bar.
 // The bar springs to its width when the card scrolls into view; the second card in a row 90ms later (DD-06).
+// Its active stop losses (D-037) are listed under the bar.
 
 import { useContext } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import type { HoldingView } from '../../../api/src/contract';
 import { fixed } from '../../theme';
 import { ils, pct } from '../../dashboard/format';
+import { stopText } from '../../trade/copy';
 import { Card, usePalette } from './Card';
 import { Chip } from './Chip';
 import { ltr } from './layout';
@@ -86,6 +89,14 @@ function Body({ holding: h }: { holding: HoldingView }) {
         </Text>
         <Text style={[styles.weight, { color: p.sub }]}>תקרה 20% ברגע הקנייה</Text>
       </View>
+      {h.stops.map((s, i) => (
+        <View key={i} style={styles.stopRow}>
+          <Ionicons name="shield-checkmark" size={12} color={p.sub} />
+          <Text style={[styles.weight, { color: p.sub }]}>
+            {`${stopText(s.price, h.currency)} · ${s.units.toLocaleString('en-US', { maximumFractionDigits: 3 })} יחידות · נבדק בפתיחה ובסגירה`}
+          </Text>
+        </View>
+      ))}
     </>
   );
 }
@@ -104,4 +115,5 @@ const styles = StyleSheet.create({
   weightRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
   weight: { fontSize: 11.5 },
   bold: { fontWeight: '600' },
+  stopRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 },
 });

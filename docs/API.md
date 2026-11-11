@@ -17,7 +17,7 @@ Only these write to the database. Everything else is read-only.
 | `POST /me` | creates the user and the portfolio on first login, refreshes email and name after | `users` (uid, email, display_name), `portfolios` (₪1,000,000 cash) | Only their own row, only those fields. Never `roles`, never cash |
 | `PATCH /me/theme` | the dark/light choice | `users.theme` | Yes, only that column |
 | `PATCH /me/chart-settings` | the full chart's settings | `users.chart_settings` (JSONB, known keys only) | Yes, only that column |
-| `POST /me/orders` | a new `pending` order, and what it sets aside: a buy's cash, a sell's units | `orders` (one row). Buy: a `reserve` journal (`journals` + 2 `ledger_entries`) and `portfolios.reserved_cash`. Sell: `positions.reserved_units` | Only by sending an order the rules allow (D-028). Never cash, units, prices or the clock directly. An order can't be changed or cancelled |
+| `POST /me/orders` | a new `pending` order, and what it sets aside: a buy's cash, a sell's units. A buy may carry a stop loss (`orders.stop_price`, D-037) | `orders` (one row). Buy: a `reserve` journal (`journals` + 2 `ledger_entries`) and `portfolios.reserved_cash`. Sell: `positions.reserved_units` | Only by sending an order the rules allow (D-028). Never cash, units, prices or the clock directly. An order, and its stop loss, can't be changed or cancelled. A stop's sell is made by the runner, never by a request |
 | `POST /me/seen` | the check-in (D-026) and its optional usage report (D-036) | `users.last_seen_at`, one `app_opens` row when a visit starts; today's `usage_pages_daily` and `usage_confirms_daily` rows (added to) | Only their own rows. The server decides what is a visit; a usage report is capped per request (120 s of time, 50 per count) |
 | `POST /me/rejections/seen` | the rejection toasts the app showed (D-023) | `orders.notified_at` of the player's own rejected orders | Only that column, only on their own rejected orders |
 | `GET /me/dashboard`, `GET /me/trade` (the catch-up before reading, D-025) | the player's value at the latest open or close whose orders have run, when the runner's batch hasn't reached them yet | that player's `portfolios` totals and week columns, and the marks of their `positions` | No. The runner's own update, for this one player (D-031) |
@@ -47,8 +47,10 @@ Before reading, it brings the player up to the latest open or close whose orders
   - `weekReturnPct` and `maxDrawdownPct` from the weekly running totals; both 0 when nothing touched the player this week. null only before the world starts.
   - `vsMedianPct`: my week return minus the median player's after the latest **finished** open or close this week; null before the first one.
   - `series`: my value at Monday 00:00, one point per trading day (the daily rows), and now. `medianSeries`: the median player's value after each finished open or close this week.
-- `holdings[]` (`HoldingView`): open positions, biggest first: `units`, `freeUnits` (not locked by pending sells), `valueIls` (the last mark; at cost before the first one), `costBasisIls`, `unrealizedPnlIls`, `weightPct` (of `totalValue`, exact to 4 decimals), `nearCap`, and `dayChangePct` (a display % from the latest known closes).
+- `holdings[]` (`HoldingView`): open positions, biggest first: `units`, `freeUnits` (not locked by pending sells), `valueIls` (the last mark; at cost before the first one), `costBasisIls`, `unrealizedPnlIls`, `weightPct` (of `totalValue`, exact to 4 decimals), `nearCap`, `dayChangePct` (a display % from the latest known closes), and `stops` (`StopView[]`, D-037): the position's active stop losses, highest first, `{ price, units }` (`price` in the security's currency).
 - `rejections[]` (`RejectionView`, D-023): rejected orders the player hasn't seen yet, newest rejection first, at most 5: `{ id, symbol, side, amountIls, units, code, reason, at }`. `code` is one of `NO_PRICE`, `INSUFFICIENT_CASH`, `OVER_LIMIT`, `INSUFFICIENT_UNITS` (for English text); `reason` is the Hebrew; `at` is the open or close that rejected it.
+- `stopSales[]` (`StopSaleView`, D-037): sales a stop loss made that the player hasn't seen yet, newest first, at most 5: `{ id, symbol, currency, stopPrice, fillPrice, units, ils, realizedPnlIls, at }`. `id` is the sell order's id; `fillPrice` is the open or close it sold at (at or below `stopPrice`: a gap sells lower); `at` is that open or close.
+- `pendingOrders.next[]` (`OrderView`) carry `stopPrice`: a buy's stop loss, or null.
 - `leaderboard` (D-032): `{ players, week, top }`, the same board as `GET /me/leaderboard`. The board is the latest scored day (`standings.day`) up to the world's today, with no lower bound, so on the weekend and on Monday before the week's first open it is still the week that just closed.
   - `week` (`BoardWeek`): `{ start, day, final }`. `start` is the week's Monday, `day` the scored day shown. `final` is true when that week is before the current world week or its final board is in `weekly_scores`. null = nothing scored up to today (then `players` is 0 and `top` is empty).
   - `players`: the last place on that day, `max(rank)`. Places are unique, 1..N (no shared places), so this is one index lookup, not a count.
@@ -56,7 +58,7 @@ Before reading, it brings the player up to the latest open or close whose orders
 - `standing` (`StandingView`): my place on that board: `rank`, `players`, `score`, `returnRank`, `stabilityRank`, `rankChange` (places gained since the previous scored day of the same week; null on the week's first scored day, or when I wasn't on it), `days` (my daily scores, Monday up to the board's day) and `maxDrawdownPct` (the board row's drawdown: the board's week, so on Monday before the open it is last week's, while `portfolio.maxDrawdownPct` is already this week's 0). null = I'm not on the board shown (not ranked this week, or nothing scored yet).
 
 ### `POST /me/rejections/seen`
-The app showed the rejection toasts. Body `{ "ids": ["<order id>", ...] }`: exactly the `rejections[].id`s it showed, 1 to 5, as strings. Sets `notified_at` on those of this player's rejected orders that weren't seen yet, and returns `{ marked }` (how many). Only their own rows, only rejected orders; an id that is someone else's, pending or already seen marks nothing, so calling it again is harmless. A rejection that arrives after the read is not touched, whatever its id, and shows on the next read (D-031).
+The app showed the rejection toasts or the stop-sale toasts (D-037). Body `{ "ids": ["<order id>", ...] }`: exactly the `rejections[].id`s or `stopSales[].id`s it showed, 1 to 5, as strings. Sets `notified_at` on those of this player's rejected orders and executed stop sales that weren't seen yet, and returns `{ marked }` (how many). Only their own rows, only rejected orders or a stop's executed sells; an id that is someone else's, pending, a plain fill or already seen marks nothing, so calling it again is harmless. A rejection that arrives after the read is not touched, whatever its id, and shows on the next read (D-031).
 
 - 400 when `ids` isn't an array of 1 to 5 strings of digits that fit a BIGINT (a JSON number is refused too, like every order id). 404 before `POST /me`.
 
@@ -69,8 +71,8 @@ Everything the trading screen shows, in one request. Like the dashboard, it firs
 - `clock` (`LiveClockView`, as on the dashboard): world time, whether TASE / US are open, `running`, and `endsAt` (where the price history ends; null = no end). null before the world starts
 - `cash`, `availableCash` (cash − cash locked by pending buys: what a new buy can spend), `totalValue` (the stored equity)
 - `usdIls`: the latest known rate
-- `securities[]`: the 40 securities, each with the latest close **already known in world time** (a display price, as in D-009), the day change, the last 11 closes (the 10-day chart), your holding (`units`, `freeUnits`, `valueIls` at the last mark, `weightPct`: the same numbers as the dashboard's holdings), and `execution`: when an order sent now would run (today's close if its market is open, otherwise the next open), with `gameOver: true` when that moment is after `endsAt`: the open never comes, and `POST /me/orders` would refuse the order with `GAME_OVER` (D-022, D-028)
-- `pendingOrders[]`: all your pending orders, in the order they will run
+- `securities[]`: the 40 securities, each with the latest close **already known in world time** (a display price, as in D-009), the day change, the last 11 closes (the 10-day chart), your holding (`units`, `freeUnits`, `valueIls` at the last mark, `weightPct`, `stops`: the same numbers as the dashboard's holdings), and `execution`: when an order sent now would run (today's close if its market is open, otherwise the next open), with `gameOver: true` when that moment is after `endsAt`: the open never comes, and `POST /me/orders` would refuse the order with `GAME_OVER` (D-022, D-028)
+- `pendingOrders[]`: all your pending orders, in the order they will run, each with `stopPrice` (a buy's stop loss, or null)
 - `chartSettings`: your saved chart settings on top of the defaults
 
 ### `GET /me/chart/:symbol?tf=D|W`
@@ -95,11 +97,12 @@ Body: any of `type` (`candles|bars|line|area`), `tf` (`D|W`), `range` (`22|66|12
 ### `POST /me/orders`
 Sends an order ([api/src/orders.ts](../api/src/orders.ts), rules in [api/src/game/orderRules.ts](../api/src/game/orderRules.ts), D-028). Nothing executes now: the order waits as `pending` for its market's close (sent while open) or next open (sent while closed), and the runner checks cash, units and the 20% limit again at the execution price (D-020). Orders can't be changed or cancelled.
 
-Body (`SendOrderBody`): `{ symbol, side, amountIls?, units?, clientOrderId? }`
+Body (`SendOrderBody`): `{ symbol, side, amountIls?, units?, stopPrice?, clientOrderId? }`
 
 - `symbol`: `^[A-Z0-9-]{1,10}$` (400), and in the game (404 `UNKNOWN_SYMBOL`).
 - `side: "buy"` takes `amountIls` (₪, up to 2 decimals) and no `units`. `side: "sell"` takes `units` (up to 8 decimals) and no `amountIls` (D-018).
 - Sizes are a decimal string (`"100000.00"`) or a JSON number, read from the request's own text, digit for digit (never through a double). Positive, at most 20 characters, no exponent. Nothing is rounded: `0.1 + 0.2`, `"100.001"`, `100.0000000000000001` or `1e2` is a 400, not a rounded order.
+- `stopPrice` (optional, buys only, D-037): a stop loss, in the security's own currency (₪ for TASE, $ for US), up to 4 decimals, read like a size. On a sell it is a 400. When the buy fills, the stop covers the units it got; at every later open and close of its market, an open or close at or below the stop sells them at that price (a gap sells below the stop). It can't be changed or cancelled.
 - `clientOrderId` (optional, `^[A-Za-z0-9_-]{1,64}$`): send the same id again after a lost response and you get the same order back.
 
 What it checks, in this order:
@@ -109,9 +112,9 @@ What it checks, in this order:
 | The body | 400 `BAD_REQUEST` |
 | The player exists (`POST /me` was called) | 404 `NO_USER` |
 | The symbol is in the game | 404 `UNKNOWN_SYMBOL` |
-| `clientOrderId` already used by this player: the same symbol, side and size | **200** `{ order, replay: true }`: the stored order as it is now (its `status` may have changed). No new row, no second reserve, doesn't count toward the rate limit |
+| `clientOrderId` already used by this player: the same symbol, side, size and stop | **200** `{ order, replay: true }`: the stored order as it is now (its `status` may have changed). No new row, no second reserve, doesn't count toward the rate limit |
 | … the same id with a different order | 409 `CLIENT_ID_CONFLICT` |
-| More than 5 orders in the last real minute | 429 `RATE_LIMITED`, with `Retry-After` (seconds until one more is allowed, at least 1) |
+| More than 5 orders in the last real minute (orders the player sent: a stop's sell doesn't count) | 429 `RATE_LIMITED`, with `Retry-After` (seconds until one more is allowed, at least 1) |
 | The world has started (a `world_clock` row) | 409 `NO_WORLD` |
 | It would run after the world's end (`world_clock.ends_at`), or the clock is at the end | 409 `GAME_OVER` |
 | Buy: under ₪100 | 422 `BELOW_MIN` |
@@ -120,6 +123,8 @@ What it checks, in this order:
 | Sell: no open position | 422 `NO_POSITION` |
 | Sell: more units than are free (units − units locked by pending sells) | 422 `INSUFFICIENT_UNITS` |
 | Sell: worth under ₪100 at the last mark, and not every free unit | 422 `BELOW_MIN` |
+| Buy with a stop: no close known yet for the stock | 422 `STOP_NO_PRICE` |
+| Buy with a stop: the stop is at or above the latest close the trade screen shows (the latest close of the market's last closed day) | 422 `STOP_NOT_BELOW_PRICE` |
 
 **201** `{ order, replay: false }` (`SendOrderResult`). `order` is an `OrderView` plus `status` (`pending`), `placedAt` (the world time it was sent) and `clientOrderId`. In the same transaction:
 
@@ -197,7 +202,7 @@ The response:
 - `stats` (`TradeJournalStats`), from the period's filled sells: `wins` (stored gain > 0), `losses` (< 0), `even` (exactly 0), `winRatePct` = wins ÷ (wins + losses) × 100 to one decimal (null = no win or loss yet), `realizedPnlIls` (the stored `orders.realized_pnl_ils` of those sells, summed in NUMERIC), `avgWinIls` and `avgLossIls` (rounded to agorot; null = none). A buy has no result until it is sold.
 - `counts`: the period's orders per status (`all`, `pending`, `executed`, `rejected`), for the filter's labels.
 - `reservedCash`: ₪ held by pending buys right now (`portfolios.reserved_cash`).
-- `rows` (`TradeJournalRow[]`), newest sent first: `id`, `symbol`, `nameHe`, `market`, `currency`, `side`, `status`, `amountIls` (buys) or `units` (sells), `priceType`, `placedAt`, `executesAt` (pending: when it will run; otherwise the open or close that ran it), `fill` (executed only: `price` in the security's currency, `fxRate` for US, `units`, `ils`, `realizedPnlIls` for sells) and `reject` (rejected only: `code` and the Hebrew `reason`).
+- `rows` (`TradeJournalRow[]`), newest sent first: `id`, `symbol`, `nameHe`, `market`, `currency`, `side`, `status`, `amountIls` (buys) or `units` (sells), `priceType`, `placedAt`, `executesAt` (pending: when it will run; otherwise the open or close that ran it), `fill` (executed only: `price` in the security's currency, `fxRate` for US, `units`, `ils`, `realizedPnlIls` for sells), `reject` (rejected only: `code` and the Hebrew `reason`), `origin` (`player`, or `stop` for a sell a stop loss made, D-037) and `stopPrice` (a buy's stop loss, or the stop a stop's sell came from; null otherwise). A stop's sells are rows too: they move money like any sell.
 - `hasMore`: older rows exist.
 - `due`: a pending order's time has passed and the runner hasn't run it yet (the ticker does within about a minute). The screen asks again every 15 to 30 seconds while this is true, at most 20 times in a row.
 - **Cost:** 4 short queries: the clock, the portfolio row, one pass over the player's orders for the counts and results (`orders_uid_idx`), and one page of rows (the same index, sorted by id). A player has hundreds to a few thousand orders at most (5 a minute, D-028), so both stay small.
@@ -236,15 +241,17 @@ The monitoring page (D-036, [api/src/monitoring.ts](../api/src/monitoring.ts)): 
 - `today`: Postgres's real Israel date, the same one the check-ins write with. Every range ends on it.
 - `since`: the first day with any usage row; null = nothing measured yet, so the page can say so instead of showing zeros as data.
 - `totals.today`, `totals.d7` (today and the 6 days before) and `totals.d30` (today and the 29 days before), each a `MonitoringTotals`:
-  - `orders`: orders sent in the range (real `orders.created_at`, from midnight Israel time of the range's first day), by their status now: `sent` = `executed` + `rejected` + `pending`. From the orders table, never from the app.
+  - `orders`: orders players sent in the range (real `orders.created_at`, from midnight Israel time of the range's first day), by their status now: `sent` = `executed` + `rejected` + `pending`. From the orders table, never from the app. A stop's sell isn't one a player sent: it is in `stops.fired`.
+  - `stops` (D-037), from the same rows: `buys` (buys players sent), `withStop` (of them, with a stop loss), `buyers` and `players` (distinct players who sent a buy, and a buy with a stop loss), `fired` (sells the stops made, by when the runner fired them) and `firedPnlIls` (their stored gains added up; negative = losses taken).
   - `confirms`: `{ opened, backed }`, the trade screen's confirm popup.
   - `pages` (`MonitoringPageRow[]`): `{ page, views, ms, players }`, most time first (then most views, then by name). A page nobody used in the range is left out.
   - `ms`: all time in the app. `players`: distinct players with any page usage; a player on two pages counts once.
 - `daily`: 30 `UsageBucket`s `{ start, players, ms: { dashboard, trade, journal, leaderboard } }`, oldest first, ending today. A day with no usage is all zeros.
 - `weekly`: 12 buckets, each a Monday-to-Sunday week (`date_trunc('week')`, like the game's week), oldest first, ending with this week so far. Zero-filled the same way.
+- `stopsNow`: `{ active, players }`: the active stop losses right now and how many players hold them, whatever the range (`stop_orders_active_idx`).
 - A page that is no longer tracked keeps its old rows out of every number.
 - **One run at a time** per API process: a request that arrives while a run is going gets that run's answer, so retries and reloads never stack up runs that each hold a pool connection.
-- **Cost:** 7 short queries, one pool connection at a time: `today` and `since` (`min(day)` of each table's primary key), the orders (a range of `orders_created_idx`, the 3 ranges as `FILTER`s of one pass), the popup totals, the page totals (one row per page per player first, then `GROUPING SETS` give the page rows and the all-pages row), the time per day and page for the 12 weeks (in the primary key's order; the 30 daily and 12 weekly bars are added up from it), and the distinct players per day (30 days) and per week (12 weeks). Distinct players compare ids byte by byte (`COLLATE "C"`), not by the database's language collation. The usage tables grow with players × pages per day, never with clicks: about 1M rows for 12 weeks at 4,000 daily players on 3 pages. Measured on local Postgres 17, the request takes about 1 s there and about 3 s at 3.4M rows.
+- **Cost:** 9 short queries, one pool connection at a time: `today` and `since` (`min(day)` of each table's primary key), the orders and the stop-loss counts (each a range of `orders_created_idx`, the 3 ranges as `FILTER`s of one pass), the active stops, the popup totals, the page totals (one row per page per player first, then `GROUPING SETS` give the page rows and the all-pages row), the time per day and page for the 12 weeks (in the primary key's order; the 30 daily and 12 weekly bars are added up from it), and the distinct players per day (30 days) and per week (12 weeks). Distinct players compare ids byte by byte (`COLLATE "C"`), not by the database's language collation. The usage tables grow with players × pages per day, never with clicks: about 1M rows for 12 weeks at 4,000 daily players on 3 pages. Measured on local Postgres 17, the request takes about 1 s there and about 3 s at 3.4M rows.
 
 ### `GET /admin/db`
 The database's health, read live (D-036). Read-only, and there is no SQL console. Its own route, so the page can refresh it every 30 seconds without running the usage queries again. Returns `AdminDbHealth`:

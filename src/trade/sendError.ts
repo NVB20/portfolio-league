@@ -38,6 +38,8 @@ const FALLBACK: Record<SendOrderErrorCode, string> = {
   INSUFFICIENT_UNITS: 'אין מספיק יחידות פנויות.',
   OVER_LIMIT: 'הקנייה תעביר את הנייר מעל 20% מהתיק.',
   RATE_LIMITED: 'יותר מדי פקודות: עד 5 בדקה. נסו שוב בעוד רגע.',
+  STOP_NOT_BELOW_PRICE: 'הסטופ לוס חייב להיות נמוך מהמחיר האחרון.',
+  STOP_NO_PRICE: 'אין עדיין מחיר למניה, אי אפשר לקבוע סטופ לוס.',
 };
 
 // err = the API's answer (status + parsed JSON body), or null when there was none (network, timeout).

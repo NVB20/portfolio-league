@@ -168,6 +168,7 @@ describe('POST /me/orders: a buy', () => {
         priceType: 'open',                                    // New York hasn't opened yet
         market: 'US',
         executesAt: worldTime(US_OPEN, '2026-11-11', 3, '16:30'),
+        stopPrice: null,
         status: 'pending',
         placedAt: worldTime(WED_1240, '2026-11-11', 3, '12:40'),
         clientOrderId: null,

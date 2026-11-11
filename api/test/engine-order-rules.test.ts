@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { parse, SCALE } from '../src/game/fixed.js';
 import {
-  checkSend, checkTiming, type HeldPosition, MIN_ORDER_ILS, parseOrderJson, parseSendBody, RATE_LIMIT, retryAfterSeconds,
+  checkSend, checkStop, checkTiming, type HeldPosition, MIN_ORDER_ILS, parseOrderJson, parseSendBody, RATE_LIMIT, retryAfterSeconds,
   SEND_REASONS,
 } from '../src/game/orderRules.js';
 
@@ -29,7 +29,7 @@ describe('parseSendBody', () => {
 
   it('reads a buy in ₪, from a string or a JSON number, exactly', () => {
     expect(ok({ symbol: 'NVDA', side: 'buy', amountIls: '100000.00' })).toEqual({
-      symbol: 'NVDA', side: 'buy', amount: ils('100000.00'), units: null, clientOrderId: null,
+      symbol: 'NVDA', side: 'buy', amount: ils('100000.00'), units: null, stop: null, clientOrderId: null,
     });
     expect(ok({ symbol: 'NVDA', side: 'buy', amountIls: 100.5 }).amount).toBe(10_050n);
     expect(ok({ symbol: 'BRK-B', side: 'buy', amountIls: '250', clientOrderId: 'a_B-9' })).toMatchObject({
@@ -39,7 +39,7 @@ describe('parseSendBody', () => {
 
   it('reads a sell in units, up to 8 decimals', () => {
     expect(ok({ symbol: 'TEVA', side: 'sell', units: '90.09009009' })).toEqual({
-      symbol: 'TEVA', side: 'sell', amount: null, units: units('90.09009009'), clientOrderId: null,
+      symbol: 'TEVA', side: 'sell', amount: null, units: units('90.09009009'), stop: null, clientOrderId: null,
     });
     expect(ok({ symbol: 'TEVA', side: 'sell', units: 3 }).units).toBe(300_000_000n);
   });
@@ -330,5 +330,48 @@ describe('retryAfterSeconds', () => {
   it('never says 0: at least 1 second', () => {
     expect(retryAfterSeconds([ago(1), ago(1), ago(1), ago(1), ago(59_999)], NOW)).toBe(1);
     expect(retryAfterSeconds([ago(1), ago(1), ago(1), ago(1), ago(60_000)], NOW)).toBe(1);
+  });
+});
+
+// ---------- the stop loss (D-037) ----------
+
+describe('parseSendBody: stopPrice', () => {
+  const parsed = (body: unknown) => parseSendBody(body);
+
+  it('reads an optional stop on a buy, up to 4 decimals, from a string or a JSON number', () => {
+    const base = { symbol: 'TEVA', side: 'buy', amountIls: '1000' };
+    expect(parsed(base)).toMatchObject({ ok: true, order: { stop: null } });
+    expect(parsed({ ...base, stopPrice: null })).toMatchObject({ ok: true, order: { stop: null } });
+    expect(parsed({ ...base, stopPrice: '95.1234' })).toMatchObject({ ok: true, order: { stop: price('95.1234') } });
+    expect(parseSendBody(parseOrderJson('{"symbol":"TEVA","side":"buy","amountIls":"1000","stopPrice":95.5}')))
+      .toMatchObject({ ok: true, order: { stop: price('95.5') } });
+  });
+
+  it('refuses a stop that is not a positive price with at most 4 decimals', () => {
+    for (const stopPrice of ['0', '-1', '95.12345', '1e2', 'abc', '', true, {}]) {
+      expect(parsed({ symbol: 'TEVA', side: 'buy', amountIls: '1000', stopPrice }).ok).toBe(false);
+    }
+    // A JSON number keeps its own digits: 95.00001 is 5 decimals, not 95.
+    expect(parseSendBody(parseOrderJson('{"symbol":"TEVA","side":"buy","amountIls":"1000","stopPrice":95.00001}')).ok).toBe(false);
+  });
+
+  it('refuses a stop on a sell', () => {
+    expect(parsed({ symbol: 'TEVA', side: 'sell', units: '1', stopPrice: '95' })).toEqual({ ok: false, error: 'stopPrice is for buys only' });
+  });
+});
+
+describe('checkStop', () => {
+  it('allows a stop below the latest close', () => {
+    expect(checkStop(price('99.9999'), price('100'))).toBeNull();
+  });
+
+  it('refuses a stop at or above the latest close', () => {
+    for (const stop of ['100', '100.0001', '250']) {
+      expect(checkStop(price(stop), price('100'))).toEqual({ code: 'STOP_NOT_BELOW_PRICE', reason: SEND_REASONS.STOP_NOT_BELOW_PRICE });
+    }
+  });
+
+  it('refuses any stop while no close is known', () => {
+    expect(checkStop(price('1'), null)).toEqual({ code: 'STOP_NO_PRICE', reason: SEND_REASONS.STOP_NO_PRICE });
   });
 });

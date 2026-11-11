@@ -6,7 +6,7 @@
 // the next open or close). Cash, holdings and totals are the stored values, as on the dashboard (D-031).
 // The only write is the catch-up before reading (D-025); sending an order is POST /me/orders.
 
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { OrderView, SecurityView, TradeView } from './contract.js';
 import { withDefaults } from './chartSettings.js';
 import { catchUp, liveClockView, loadNow, loadPortfolio, loadUsdIls, worldTime } from './dashboard.js';
@@ -74,7 +74,7 @@ export async function getTrade(db: Pool, uid: string): Promise<TradeView | null>
       priceDay: last?.day ?? null,
       dayChangePct: last && prev ? (last.close / prev.close - 1) * 100 : null,
       closes,
-      holding: h ? { units: h.units, freeUnits: h.freeUnits, valueIls: h.valueIls, weightPct: h.weightPct } : null,
+      holding: h ? { units: h.units, freeUnits: h.freeUnits, valueIls: h.valueIls, weightPct: h.weightPct, stops: h.stops } : null,
       isOpen: now ? isMarketOpen(r.market, now.at, now.calendar) : false,
       execution: exec ? { priceType: exec.priceType, at: worldTime(exec.at), gameOver } : null,
       hasChart: r.has_chart,
@@ -103,8 +103,10 @@ async function loadAllPending(db: Pool, uid: string): Promise<OrderView[]> {
     price_type: OrderView['priceType'];
     executes_at: Date;
     market: OrderView['market'];
+    stop_price: number | null;
   }>(
-    `SELECT o.id::text AS id, o.symbol, o.side, o.amount_ils::float8 AS amount_ils, o.units::float8 AS units, o.price_type, o.executes_at, s.market
+    `SELECT o.id::text AS id, o.symbol, o.side, o.amount_ils::float8 AS amount_ils, o.units::float8 AS units, o.price_type, o.executes_at, s.market,
+            o.stop_price::float8 AS stop_price
      FROM orders o JOIN securities s ON s.symbol = o.symbol
      WHERE o.uid = $1 AND o.status = 'pending'
      ORDER BY o.executes_at, o.id
@@ -120,7 +122,18 @@ async function loadAllPending(db: Pool, uid: string): Promise<OrderView[]> {
     priceType: r.price_type,
     market: r.market,
     executesAt: worldTime(r.executes_at),
+    stopPrice: r.stop_price,
   }));
+}
+
+// The latest close known on `day` (a market's last closed day): the price the trade screen shows. Exact, as stored.
+// null = no close yet. Used by POST /me/orders to check a stop loss (D-037).
+export async function latestClose(db: Pool | PoolClient, symbol: string, day: string): Promise<string | null> {
+  const { rows } = await db.query<{ close: string }>(
+    'SELECT close::text AS close FROM prices WHERE symbol = $1 AND day <= $2::date ORDER BY day DESC LIMIT 1',
+    [symbol, day],
+  );
+  return rows[0]?.close ?? null;
 }
 
 // Saves only the known, valid keys on top of what is already saved. Returns the full settings,

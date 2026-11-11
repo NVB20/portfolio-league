@@ -11,7 +11,7 @@ const app = <T>(path: string): Promise<T> => import(new URL(`../../src/${path}.t
 type ChartUnit = 'day' | 'week';
 type Bar = { start: string; total: number; players: number; segments: { page: UsagePage; ms: number }[] };
 
-const { averageLabel, averageNote, barReadout, bucketSpoken, confirmNote, dbFailure, perPlayer, rowsText, stack } = await app<{
+const { averageLabel, averageNote, barReadout, bucketSpoken, confirmNote, dbFailure, perPlayer, rowsText, stack, stopNote } = await app<{
   averageLabel(unit: ChartUnit, only: UsagePage | null): string;
   averageNote(unit: ChartUnit, only: UsagePage | null): string;
   barReadout(bar: Bar, only: UsagePage | null): string;
@@ -21,6 +21,7 @@ const { averageLabel, averageNote, barReadout, bucketSpoken, confirmNote, dbFail
   perPlayer(ms: number, playerBuckets: number): number | null;
   rowsText(rows: number): string;
   stack(buckets: UsageBucket[], only: UsagePage | null): { bars: Bar[]; top: number; total: number; playerBuckets: number };
+  stopNote(s: MonitoringTotals['stops'], range: 'today' | 'd7' | 'd30'): string;
 }>('admin/monitoring');
 
 const MORE_ORDERS = 'יש יותר פקודות מפתיחות';
@@ -44,6 +45,23 @@ describe('confirmNote', () => {
     const plain = confirmNote({ opened: 5, backed: 2 }, 3, 'd30');
     expect(plain).not.toContain(MORE_ORDERS);
     expect(plain).not.toContain(NOBODY);
+  });
+});
+
+describe('stopNote (the stop-loss card, D-037)', () => {
+  const stops = (o: Partial<MonitoringTotals['stops']> = {}): MonitoringTotals['stops'] => ({
+    buys: 10, withStop: 4, buyers: 5, players: 2, fired: 0, firedPnlIls: 0, ...o,
+  });
+
+  it('says where the numbers come from, and nothing about results before a stop fired', () => {
+    const note = stopNote(stops(), 'today');
+    expect(note).toContain('מטבלת הפקודות');
+    expect(note).not.toContain('נסגרו');
+  });
+
+  it('adds what the fired stops did: a loss or a gain, in whole ₪', () => {
+    expect(stopNote(stops({ fired: 3, firedPnlIls: -1250.4 }), 'd7')).toContain('נסגרו בהפסד של ₪1,250 בסך הכול');
+    expect(stopNote(stops({ fired: 1, firedPnlIls: 80 }), 'd30')).toContain('נסגרו ברווח של ₪80 בסך הכול');
   });
 });
 

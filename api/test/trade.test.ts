@@ -125,7 +125,7 @@ describe('GET /me/trade', () => {
     });
     expect(teva.dayChangePct).toBeCloseTo(2, 6);
     // The stored mark (Wednesday's open, ₪133) and the stored equity, exact; 40 units are locked by the sell.
-    expect(teva.holding).toEqual({ units: 100, freeUnits: 60, valueIls: 13_300, weightPct: 1.4563 });
+    expect(teva.holding).toEqual({ units: 100, freeUnits: 60, valueIls: 13_300, weightPct: 1.4563, stops: [] });
 
     const nvda = t.securities[2];
     expect(nvda).toMatchObject({
@@ -181,7 +181,7 @@ describe('GET /me/trade', () => {
 
     const t = await (await call('GET', '/me/trade', 'alice')).json();
     expect(t.totalValue).toBe(913_300);
-    expect(t.securities[0].holding).toEqual({ units: 100, freeUnits: 60, valueIls: 13_300, weightPct: 1.4563 });
+    expect(t.securities[0].holding).toEqual({ units: 100, freeUnits: 60, valueIls: 13_300, weightPct: 1.4563, stops: [] });
 
     const stored = await db.query(
       `SELECT p.equity::text AS equity, p.last_event_at, x.last_price::text AS last_price, x.market_value_ils::text AS value

@@ -215,7 +215,40 @@ export function cleanPrice(text: string): string {
   return s.slice(0, 10);
 }
 
-// Position tool math (planning only: the game has no stop or target orders).
+// ---------- the stop loss (D-037) ----------
+// An optional stop on a buy: a price in the security's own currency, sent with 2 decimals. The server refuses
+// one at or above the latest close (the price the screen shows), so the preview does too. It is checked only at
+// the open and the close: the game trades at those two prices only.
+
+export type StopStatus = 'off' | 'ok' | 'empty' | 'noPrice' | 'notBelow';
+
+export type StopCheck = {
+  ok: boolean;             // off counts as ok: no stop, nothing to check
+  status: StopStatus;
+  stop: number | null;     // the stop as it will be sent (2 decimals); null = off
+  belowPct: number;        // how far under the price, %
+  lossIls: number;         // the order's loss if it sold exactly at the stop (a gap can sell lower)
+};
+
+// The stop as sent: 2 decimals.
+export function stopSent(stop: number): number {
+  return Math.round(stop * 100) / 100;
+}
+
+// stop null = the player didn't turn it on. price = the latest close in the security's currency.
+export function checkStop(stop: number | null, price: number | null, amountIls: number): StopCheck {
+  if (stop === null) return { ok: true, status: 'off', stop: null, belowPct: 0, lossIls: 0 };
+  const s = stopSent(stop);
+  const base = { stop: s, belowPct: 0, lossIls: 0 };
+  if (!(s > 0)) return { ...base, ok: false, status: 'empty' };
+  if (price === null || !(price > 0)) return { ...base, ok: false, status: 'noPrice' };
+  if (s >= price) return { ...base, ok: false, status: 'notBelow' };
+  const fall = 1 - s / price;
+  return { ok: true, status: 'ok', stop: s, belowPct: fall * 100, lossIls: Math.max(0, amountIls) * fall };
+}
+
+// Position tool math. Its stop is the order's stop loss when the player turns it on (D-037); its target is
+// for planning only.
 export type Levels = { entry: number; target: number; stop: number };
 
 export function positionMath(amountIls: number, levels: Levels) {

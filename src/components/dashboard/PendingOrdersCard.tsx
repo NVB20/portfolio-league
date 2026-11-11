@@ -1,11 +1,13 @@
 // Pending orders (rule 3): an order runs at today's close (sent while open) or the next open (sent
-// while closed), and can't be cancelled. Shows the 2 that run first, plus how many more (DD-07).
+// while closed), and can't be cancelled. Shows the 2 that run first, plus how many more (DD-07). A buy that
+// carries a stop loss says so (D-037).
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import type { Dashboard, OrderView } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
 import { dayLabel, orderSize } from '../../dashboard/format';
+import { stopText } from '../../trade/copy';
 import { Card, Empty } from './Card';
 import { Chip } from './Chip';
 
@@ -62,7 +64,7 @@ function OrderRow({ order, today }: { order: OrderView; today: string | null }) 
       </View>
       <View style={styles.what}>
         <Text style={[styles.title, { color: colors.fg }]}>
-          {`${buy ? 'קנייה' : 'מכירה'} ${order.symbol}${size ? ` · ${size}` : ''}`}
+          {`${buy ? 'קנייה' : 'מכירה'} ${order.symbol}${size ? ` · ${size}` : ''}${order.stopPrice !== null ? ` · ${stopText(order.stopPrice, order.market === 'US' ? 'USD' : 'ILS')}` : ''}`}
         </Text>
         <Text style={[styles.detail, { color: colors.faint }]}>{`${how} · ${city}`}</Text>
       </View>

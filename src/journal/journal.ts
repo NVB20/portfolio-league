@@ -169,11 +169,14 @@ export type RowView = {
 };
 
 // `clock` is the loaded world clock: a pending order whose time has passed is being run right now (the runner
-// gets to it within about a minute, D-030).
+// gets to it within about a minute, D-030). A sell a stop loss made (D-037) says so, with the stop that fired; a buy
+// that carries a stop names it after the rest.
 export function rowView(r: TradeJournalRow, clock: Pick<LiveClockView, 'at' | 'date'> | null): RowView {
   const today = clock?.date ?? null;
   const at = r.priceType === 'open' ? 'שער פתיחה' : 'שער סגירה';
-  const side = r.side === 'buy' ? 'קנייה' : 'מכירה';
+  const byStop = r.origin === 'stop';
+  const stop = r.stopPrice === null ? null : price(r.stopPrice, r.currency);
+  const side = byStop ? 'מכירה בסטופ' : r.side === 'buy' ? 'קנייה' : 'מכירה';
   const size = orderSize(r);
   let status: string;
   let tone: RowView['tone'];
@@ -186,12 +189,15 @@ export function rowView(r: TradeJournalRow, clock: Pick<LiveClockView, 'at' | 'd
   } else if (r.status === 'executed') {
     status = 'בוצעה';
     tone = 'ghost';
-    detail = `${when(r.executesAt, today)} · ${at}`;
+    detail = byStop
+      ? `נמכרה בסטופ לוס${stop ? ` ${stop}` : ''} · ${when(r.executesAt, today)} · ${at}`
+      : `${when(r.executesAt, today)} · ${at}`;
   } else {
     status = 'נדחתה';
     tone = 'down';
     detail = r.reject?.reason ?? 'הפקודה נדחתה';
   }
+  if (r.side === 'buy' && stop) detail = `${detail} · סטופ ${stop}`;
 
   const fill = r.fill;
   const pnlValue = fill?.realizedPnlIls ?? null;

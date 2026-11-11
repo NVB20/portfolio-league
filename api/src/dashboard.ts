@@ -18,6 +18,8 @@ import type {
   Point,
   PortfolioView,
   RejectionView,
+  StopSaleView,
+  StopView,
   StandingView,
   UsdIlsView,
   WorldTime,
@@ -72,6 +74,7 @@ export async function getDashboard(db: Pool, uid: string): Promise<Dashboard | n
     holdings: owned.holdings,
     pendingOrders: await loadPendingOrders(db, uid),
     rejections: await loadRejections(db, uid),
+    stopSales: await loadStopSales(db, uid),
     usdIls: await loadUsdIls(db, now),
     standing: competition.standing,
     leaderboard: competition.leaderboard,
@@ -250,6 +253,7 @@ export async function loadPortfolio(db: Pool, uid: string, now: Now | null): Pro
 
   const p = rows[0];
   const equity = parse(p.equity, SCALE.ILS);
+  const stops = rows.some((r) => r.symbol !== null) ? await loadStops(db, uid) : new Map<string, StopView[]>();
   const holdings: HoldingView[] = rows
     .filter((r) => r.symbol !== null)
     .map((r) => {
@@ -270,6 +274,7 @@ export async function loadPortfolio(db: Pool, uid: string, now: Now | null): Pro
         dayChangePct: r.day_change_pct,
         weightPct: weight,
         nearCap: isNearCap(weight),
+        stops: stops.get(r.symbol!) ?? [],
       };
     });
 
@@ -292,6 +297,21 @@ export async function loadPortfolio(db: Pool, uid: string, now: Now | null): Pro
     },
     holdings,
   };
+}
+
+// The active stop losses of the player's open positions, per stock, highest first (D-037). From the player's open
+// positions (positions_uid_idx) to their stops (stop_orders_position_idx): never a scan of every active stop.
+async function loadStops(db: Pool, uid: string): Promise<Map<string, StopView[]>> {
+  const { rows } = await db.query<{ symbol: string; price: number; units: number }>(
+    `SELECT so.symbol, so.stop_price::float8 AS price, so.units::float8 AS units
+     FROM positions x JOIN stop_orders so ON so.position_id = x.id AND so.status = 'active'
+     WHERE x.uid = $1 AND x.status = 'open'
+     ORDER BY so.symbol, so.stop_price DESC, so.id`,
+    [uid],
+  );
+  const out = new Map<string, StopView[]>();
+  for (const r of rows) out.set(r.symbol, [...(out.get(r.symbol) ?? []), { price: r.price, units: r.units }]);
+  return out;
 }
 
 // ---------- the week: you vs. the median player (D-024) ----------
@@ -363,10 +383,11 @@ async function loadPendingOrders(db: Pool, uid: string): Promise<Dashboard['pend
     price_type: OrderView['priceType'];
     executes_at: Date;
     market: OrderView['market'];
+    stop_price: number | null;
     total: number;
   }>(
     `SELECT o.id::text AS id, o.symbol, o.side, o.amount_ils::float8 AS amount_ils, o.units::float8 AS units, o.price_type,
-            o.executes_at, s.market, count(*) OVER ()::int AS total
+            o.executes_at, s.market, o.stop_price::float8 AS stop_price, count(*) OVER ()::int AS total
      FROM orders o JOIN securities s ON s.symbol = o.symbol
      WHERE o.uid = $1 AND o.status = 'pending'
      ORDER BY o.executes_at, o.id
@@ -384,6 +405,7 @@ async function loadPendingOrders(db: Pool, uid: string): Promise<Dashboard['pend
       priceType: r.price_type,
       market: r.market,
       executesAt: worldTime(r.executes_at),
+      stopPrice: r.stop_price,
     })),
   };
 }
@@ -423,6 +445,39 @@ async function loadRejections(db: Pool, uid: string): Promise<RejectionView[]> {
   }));
 }
 
+// ---------- stop-sale toasts (D-037) ----------
+
+// The sales a stop loss made that the player hasn't seen yet, newest first, at most 5. Uses
+// orders_unseen_stop_sales_idx: a row leaves it once seen.
+async function loadStopSales(db: Pool, uid: string): Promise<StopSaleView[]> {
+  const { rows } = await db.query<{
+    id: string; symbol: string; currency: StopSaleView['currency']; stop_price: number; fill_price: number;
+    units: number; ils: number; realized: number; at: Date;
+  }>(
+    `SELECT o.id::text AS id, o.symbol, s.currency, so.stop_price::float8 AS stop_price, o.fill_price::float8 AS fill_price,
+            o.filled_units::float8 AS units, o.filled_ils::float8 AS ils, o.realized_pnl_ils::float8 AS realized, e.at
+     FROM orders o
+     JOIN stop_orders so ON so.id = o.stop_id
+     JOIN securities s ON s.symbol = o.symbol
+     JOIN market_events e ON e.id = o.event_id
+     WHERE o.uid = $1 AND o.origin = 'stop' AND o.status = 'executed' AND o.notified_at IS NULL
+     ORDER BY e.at DESC, o.id DESC
+     LIMIT $2`,
+    [uid, REJECTIONS_SHOWN],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    symbol: r.symbol,
+    currency: r.currency,
+    stopPrice: r.stop_price,
+    fillPrice: r.fill_price,
+    units: r.units,
+    ils: r.ils,
+    realizedPnlIls: r.realized,
+    at: worldTime(r.at),
+  }));
+}
+
 // The body of POST /me/rejections/seen: { ids }, the rejections the app showed, 1 to 5 order ids as the API sends
 // them (strings of digits that fit a BIGINT). Exactly those, not "everything up to an id": order ids follow the
 // order orders were SENT, while rejections come at the events, so a rejection of a lower id can arrive between
@@ -437,15 +492,17 @@ export function parseSeenIds(body: unknown): string[] | null {
   return ids as string[];
 }
 
-// Marks these of the player's rejected orders as seen (real time). Only their own rows, only rejected ones
-// not seen yet; an id that is someone else's, pending, or already seen marks nothing, so a retry is harmless.
+// Marks these of the player's rejected orders and stop sales (D-037) as seen (real time). Only their own rows, only
+// rejected ones or executed stop sales not seen yet; an id that is someone else's, pending, a plain fill or already
+// seen marks nothing, so a retry is harmless.
 // Returns how many were marked, or null when the player has no portfolio (POST /me never called). One
 // statement; the primary key finds the rows.
 export async function markRejectionsSeen(db: Pool, uid: string, ids: string[]): Promise<number | null> {
   const { rows } = await db.query<{ known: boolean; marked: number }>(
     `WITH seen AS (
        UPDATE orders SET notified_at = now()
-       WHERE uid = $1 AND id = ANY($2::bigint[]) AND status = 'rejected' AND notified_at IS NULL
+       WHERE uid = $1 AND id = ANY($2::bigint[]) AND notified_at IS NULL
+         AND (status = 'rejected' OR (origin = 'stop' AND status = 'executed'))
        RETURNING 1
      )
      SELECT EXISTS (SELECT 1 FROM portfolios WHERE uid = $1) AS known, (SELECT count(*)::int FROM seen) AS marked`,

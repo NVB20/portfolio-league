@@ -82,6 +82,8 @@ type OrderRow = {
   realized_pnl_ils: number | null;
   reject_code: RejectionCode | null;
   reject_reason: string | null;
+  origin: TradeJournalRow['origin'];
+  stop_price: number | null;   // a buy's stop, or the stop a stop's sell came from (D-037)
 };
 
 // Returns null when the user has no portfolio row yet (POST /me was never called).
@@ -119,8 +121,10 @@ export async function getTradeJournal(db: Pool, uid: string, q: JournalQuery): P
             o.amount_ils::float8 AS amount_ils, o.units::float8 AS units, o.price_type, o.placed_at, o.executes_at,
             o.fill_price::float8 AS fill_price, o.fx_rate::float8 AS fx_rate, o.filled_units::float8 AS filled_units,
             o.filled_ils::float8 AS filled_ils, o.realized_pnl_ils::float8 AS realized_pnl_ils,
-            o.reject_code, o.reject_reason
+            o.reject_code, o.reject_reason, o.origin,
+            COALESCE(o.stop_price, so.stop_price)::float8 AS stop_price
      FROM orders o JOIN securities s ON s.symbol = o.symbol
+     LEFT JOIN stop_orders so ON so.id = o.stop_id
      WHERE o.uid = $1
        AND ($2::text IS NULL OR o.status = $2)
        AND ($3::timestamptz IS NULL OR o.executes_at >= $3)
@@ -177,5 +181,7 @@ function journalRow(r: OrderRow): TradeJournalRow {
         ? { price: r.fill_price!, fxRate: r.fx_rate, units: r.filled_units!, ils: r.filled_ils!, realizedPnlIls: r.realized_pnl_ils }
         : null,
     reject: r.status === 'rejected' ? { code: r.reject_code, reason: r.reject_reason! } : null,
+    origin: r.origin,
+    stopPrice: r.stop_price,
   };
 }

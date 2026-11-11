@@ -31,6 +31,8 @@ const row = (o: Partial<TradeJournalRow> = {}): TradeJournalRow => ({
   executesAt: TODAY_1630,
   fill: null,
   reject: null,
+  origin: 'player',
+  stopPrice: null,
   ...o,
 });
 
@@ -183,6 +185,26 @@ describe('rowView', () => {
   it('a rejected order shows the server’s reason', () => {
     const v = rowView(row({ status: 'rejected', reject: { code: 'OVER_LIMIT', reason: 'מעל 20% מהתיק' } }), CLOCK);
     expect(v).toMatchObject({ status: 'נדחתה', tone: 'down', detail: 'מעל 20% מהתיק', pnl: null });
+  });
+
+  it('a buy with a stop loss names the stop (D-037)', () => {
+    const v = rowView(row({ stopPrice: 95 }), CLOCK);
+    expect(v.detail).toBe('תבוצע היום 16:30 · שער פתיחה · סטופ ₪95.00');
+  });
+
+  it('a sell a stop loss made says so, with the stop that fired', () => {
+    const v = rowView(
+      row({
+        side: 'sell', status: 'executed', amountIls: null, units: 100, priceType: 'close', executesAt: MON_1730,
+        origin: 'stop', stopPrice: 95, fill: { price: 94, fxRate: null, units: 100, ils: 9400, realizedPnlIls: -600 },
+      }),
+      CLOCK,
+    );
+    expect(v).toMatchObject({
+      side: 'מכירה בסטופ', status: 'בוצעה', detail: 'נמכרה בסטופ לוס ₪95.00 · יום ב׳ 9.11, 17:30 · שער סגירה',
+      price: '₪94.00', pnl: '−₪600', pnlTone: 'down',
+    });
+    expect(v.a11y).toBe('מכירה בסטופ TEVA, 100 יח׳. בוצעה: נמכרה בסטופ לוס ₪95.00 · יום ב׳ 9.11, 17:30 · שער סגירה. הפסד ₪600.');
   });
 });
 

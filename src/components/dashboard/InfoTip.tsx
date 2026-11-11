@@ -1,5 +1,6 @@
 // A tile that explains itself: a tap opens a small bubble right beside it (the score and rank tiles: what the number
-// is and how it is worked out). The copy comes from src/leaderboard/board.ts (rankTip, scoreTip).
+// is and how it is worked out). The copy comes from src/leaderboard/board.ts (rankTip, scoreTip). InfoButton is the
+// same bubble from a small ⓘ beside a label (the stop-loss switch: src/trade/copy.ts STOP_TIP).
 //
 // The bubble is a transparent Modal, like the avatar menu: it sits above every card on every platform, and a tap
 // anywhere or Escape/back (onRequestClose) closes it. It is placed from the tile's position on the screen
@@ -52,6 +53,30 @@ export function InfoTip({ tip, label, style, markColor, children }: {
   );
 }
 
+// The same explanation from a small ⓘ beside a label, for a control that isn't a tile (the stop-loss switch,
+// D-037): the bubble opens from the mark itself.
+export function InfoButton({ tip, label, color }: { tip: Tip; label: string; color?: string }) {
+  const p = usePalette();
+  const ref = useRef<HostInstance>(null);
+  const [at, setAt] = useState<Rect | null>(null);
+  return (
+    <>
+      <Pressable
+        ref={ref}
+        onPress={() => ref.current?.measureInWindow((x, y, width, height) => setAt({ x, y, width, height }))}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        accessibilityHint="פותח הסבר קצר"
+        hitSlop={8}
+        style={({ pressed }) => [styles.inlineMark, pressed && { opacity: 0.6 }]}
+      >
+        <Ionicons name="information-circle-outline" size={16} color={color ?? p.sub} />
+      </Pressable>
+      {at ? <Bubble tip={tip} at={at} onClose={() => setAt(null)} /> : null}
+    </>
+  );
+}
+
 function Bubble({ tip, at, onClose }: { tip: Tip; at: Rect; onClose: () => void }) {
   const { colors } = useTheme();
   const screen = useWindowDimensions();
@@ -98,6 +123,7 @@ function Bubble({ tip, at, onClose }: { tip: Tip; at: Rect; onClose: () => void 
 
 const styles = StyleSheet.create({
   mark: { position: 'absolute', top: 8, left: 8 },
+  inlineMark: { padding: 2 },
   backdrop: { flex: 1 },
   bubble: { position: 'absolute', borderWidth: 1, borderRadius: 16, padding: 14, gap: 6,
     shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 20, shadowOffset: { width: 0, height: 12 }, elevation: 8 },

@@ -1,14 +1,20 @@
 // The order controls, shared by the ticket (stage 1) and the order center beside the chart (stage 2):
-// buy/sell switch, ₪ amount, the amount slider, the send button, and the confirm popup it opens.
+// buy/sell switch, ₪ amount, the amount slider, the optional stop loss (D-037), the send button, and the confirm
+// popup it opens.
 // The screen does the sending (useSendOrder) and holds the one confirm popup both send buttons open; these only
 // ask for it. While an order is on its way, everything that would change it is disabled.
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, PanResponder, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../useTheme';
 import { ils } from '../../dashboard/format';
-import { cleanAmount, groupAmount, MIN_ORDER_ILS, SLIDER_STEP, sliderAmount, sliderRange, sliderRatio, type Side } from '../../trade/orderCheck';
+import { STOP_HINT, STOP_TIP, stopLine } from '../../trade/copy';
+import {
+  cleanAmount, cleanPrice, groupAmount, MIN_ORDER_ILS, SLIDER_STEP, sliderAmount, sliderRange, sliderRatio, type Side, type StopCheck,
+} from '../../trade/orderCheck';
 import { Button } from '../dashboard/Button';
+import { InfoButton } from '../dashboard/InfoTip';
 import { ltr, rtl } from '../dashboard/layout';
 import { useReduce } from '../dashboard/motion';
 
@@ -159,6 +165,78 @@ export function AmountSlider({ side, value, max, onPick, disabled = false }: {
   );
 }
 
+// The optional stop loss on a buy (D-037). The ⓘ beside the switch says, BEFORE it is turned on, that the stop is
+// checked only at the open and the close (the game trades at those two prices only), and the line under it says it
+// again. On, a price in the security's own currency. That price IS the position tool's stop: the chart's stop line,
+// the order center's "סטופ" field and this one move together. Typing applies on blur or enter, like the levels.
+export function StopLossField({ on, onToggle, stop, currency, check, onStop, disabled = false }: {
+  on: boolean;
+  onToggle: () => void;
+  stop: number;                  // the position tool's stop level
+  currency: 'ILS' | 'USD';
+  check: StopCheck;
+  onStop: (v: number) => void;
+  disabled?: boolean;
+}) {
+  const { colors } = useTheme();
+  const [text, setText] = useState(stop.toFixed(2));
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setText(stop.toFixed(2));
+  }, [stop, focused]);
+  const apply = () => {
+    const v = Math.min(9_999_999, Number(text) || 0);
+    if (v >= 0.01) onStop(v);
+    else setText(stop.toFixed(2));
+  };
+  return (
+    <View style={styles.stop}>
+      <View style={styles.stopHead}>
+        <View style={styles.stopLabel}>
+          <Text style={[styles.stopTitle, { color: colors.fg }]}>סטופ לוס</Text>
+          <InfoButton tip={STOP_TIP} label="איך עובד סטופ לוס במשחק" />
+        </View>
+        <Pressable
+          onPress={onToggle}
+          disabled={disabled}
+          accessibilityRole="switch"
+          accessibilityLabel="סטופ לוס"
+          accessibilityState={{ checked: on, disabled }}
+          style={[styles.stopToggle, { borderColor: on ? colors.neg : colors.line2 }, disabled && styles.off]}
+        >
+          <Ionicons name={on ? 'shield-checkmark' : 'shield-outline'} size={13} color={on ? colors.neg : colors.muted} />
+          <Text style={[styles.stopToggleText, { color: on ? colors.neg : colors.muted }]}>{on ? 'מופעל' : 'הוסף'}</Text>
+        </Pressable>
+      </View>
+      <Text style={[styles.stopHint, { color: colors.faint }]}>{STOP_HINT}</Text>
+      {on ? (
+        <>
+          <View style={[styles.inp, styles.inpStop, { backgroundColor: colors.surface, borderColor: focused ? colors.accent : colors.line2 }, disabled && styles.off]}>
+            <Text style={[styles.curStop, { color: colors.faint }]}>{currency === 'USD' ? '$' : '₪'}</Text>
+            <TextInput
+              value={text}
+              onChangeText={(t) => setText(cleanPrice(t))}
+              onFocus={() => setFocused(true)}
+              onBlur={() => {
+                setFocused(false);
+                apply();
+              }}
+              onSubmitEditing={apply}
+              editable={!disabled}
+              keyboardType="decimal-pad"
+              inputMode="decimal"
+              maxLength={10}
+              accessibilityLabel="מחיר הסטופ לוס"
+              style={[styles.inputStop, ltr, { color: colors.fg }, webNoOutline]}
+            />
+          </View>
+          <Text style={[styles.stopHint, { color: check.ok ? colors.faint : colors.neg }]}>{stopLine(check)}</Text>
+        </>
+      ) : null}
+    </View>
+  );
+}
+
 // The send button. It opens the confirm popup (an order can't be cancelled); the popup's button sends.
 // sending: the order is on its way. updating: the trade data is loading again (after a send, or because the
 // clock moved on), so the preview may be out of date: nothing can be sent until it is current.
@@ -182,7 +260,7 @@ export function SendBox({ side, ok, sending, updating, onOpen }: {
 // The confirm step, as a popup over the screen: the order, when it executes, and that it can't be cancelled.
 // A tap outside, Escape or back closes it without sending (the screen ignores that while the order is on its
 // way). The screen keeps it open after a failure where pressing again is safe, with the reason in `error`.
-export function ConfirmOrder({ open, side, symbol, name, amount, units, execLine, ok, blocked, error, sending, updating, onBack, onConfirm }: {
+export function ConfirmOrder({ open, side, symbol, name, amount, units, execLine, stopLine: stopRow, ok, blocked, error, sending, updating, onBack, onConfirm }: {
   open: boolean;
   side: Side;
   symbol: string;
@@ -190,6 +268,7 @@ export function ConfirmOrder({ open, side, symbol, name, amount, units, execLine
   amount: number;
   units: number;           // estimated for a buy, exact for a sell (D-018)
   execLine: string;        // "שער הפתיחה · 16:30 · NASDAQ"; '' when not known
+  stopLine: string;        // "₪95.00 (−4.0%) · נבדק בפתיחה ובסגירה"; '' = no stop loss (D-037)
   ok: boolean;
   blocked: string | null;  // why it can't be sent any more (the data was loaded again), shown when !ok
   error: string | null;    // the last send failed but pressing again is safe
@@ -223,6 +302,7 @@ export function ConfirmOrder({ open, side, symbol, name, amount, units, execLine
           <View>
             <DRow label={side === 'sell' ? 'יחידות למכירה' : 'יחידות משוערות'} value={n} />
             {execLine ? <DRow label="מועד ביצוע" value={execLine} /> : null}
+            {stopRow ? <DRow label="סטופ לוס" value={stopRow} /> : null}
           </View>
           <Text style={[styles.warn, { color: colors.warn }]}>לא ניתן לבטל אחרי השליחה.</Text>
           {error ? <Text accessibilityRole="alert" style={[styles.warn, { color: colors.neg }]}>{error}</Text> : null}
@@ -289,6 +369,16 @@ const styles = StyleSheet.create({
   ends: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 2 },
   endText: { fontSize: 11.5, fontVariant: ['tabular-nums'] },
   off: { opacity: 0.45 },
+  stop: { gap: 6 },
+  stopHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  stopLabel: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  stopTitle: { fontSize: 13.5, fontWeight: '600' },
+  stopToggle: { flexDirection: 'row', alignItems: 'center', gap: 5, borderWidth: 1, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
+  stopToggleText: { fontSize: 11.5, fontWeight: '500' },
+  stopHint: { fontSize: 11.5 },
+  inpStop: { paddingVertical: 6, paddingHorizontal: 14, borderRadius: 14 },
+  curStop: { fontSize: 16, fontWeight: '500' },
+  inputStop: { flex: 1, minWidth: 0, fontSize: 18, fontWeight: '500', textAlign: 'left', paddingVertical: 2 },
   send: { gap: 8 },
   warn: { fontSize: 12, textAlign: 'center' },
   pair: { flexDirection: 'row', gap: 8 },

@@ -13,7 +13,9 @@ export const MIN_ORDER_ILS = 10_000n;
 // 5 orders per real minute per player (D-021).
 export const RATE_LIMIT = { orders: 5, windowSeconds: 60 } as const;
 
-export type SendRuleCode = 'BELOW_MIN' | 'INSUFFICIENT_CASH' | 'NO_POSITION' | 'INSUFFICIENT_UNITS' | 'OVER_LIMIT' | 'GAME_OVER';
+export type SendRuleCode =
+  | 'BELOW_MIN' | 'INSUFFICIENT_CASH' | 'NO_POSITION' | 'INSUFFICIENT_UNITS' | 'OVER_LIMIT' | 'GAME_OVER'
+  | 'STOP_NOT_BELOW_PRICE' | 'STOP_NO_PRICE';
 export type SendRefusal = { code: SendRuleCode; reason: string };
 
 // Shown to the player (Hebrew first). The app can show English from the code.
@@ -26,6 +28,8 @@ export const SEND_REASONS = {
   GAME_OVER: 'המשחק הגיע לסוף נתוני המחירים: אין עוד מועד שבו ההזמנה תוכל להתבצע',
   NO_WORLD: 'העולם עוד לא התחיל, אי אפשר לשלוח הזמנות',
   RATE_LIMITED: 'יותר מדי הזמנות: עד 5 בדקה. נסו שוב בעוד רגע',
+  STOP_NOT_BELOW_PRICE: 'הסטופ לוס חייב להיות נמוך מהמחיר האחרון',
+  STOP_NO_PRICE: 'אין עדיין מחיר למניה, אי אפשר לקבוע סטופ לוס',
 } as const;
 
 // ---------- the request body ----------
@@ -35,6 +39,7 @@ export type SendRequest = {
   side: 'buy' | 'sell';
   amount: bigint | null;        // ILS, buys only (D-018)
   units: bigint | null;         // UNITS, sells only
+  stop: bigint | null;          // PRICE in the security's currency, buys only; null = no stop loss (D-037)
   clientOrderId: string | null;
 };
 
@@ -51,7 +56,7 @@ const MAX_SIZE_CHARS = 20;
 export function parseOrderJson(text: string): unknown {
   try {
     return JSON.parse(text, (key: string, value: unknown, context?: { source?: string }) =>
-      (key === 'amountIls' || key === 'units') && typeof value === 'number' && typeof context?.source === 'string'
+      (key === 'amountIls' || key === 'units' || key === 'stopPrice') && typeof value === 'number' && typeof context?.source === 'string'
         ? context.source
         : value);
   } catch {
@@ -95,12 +100,19 @@ export function parseSendBody(body: unknown): { ok: true; order: SendRequest } |
     if (!absent(b.units)) return fail('a buy is sized by amountIls only; units are for sells');
     const amount = readSize(b.amountIls, SCALE.ILS);
     if (amount === null) return fail(`amountIls must be a positive decimal with at most ${SCALE.ILS} decimals (at most ${MAX_SIZE_CHARS} characters)`);
-    return { ok: true, order: { symbol: b.symbol, side: 'buy', amount, units: null, clientOrderId } };
+    // D-037: an optional stop loss, a price in the security's own currency.
+    let stop: bigint | null = null;
+    if (!absent(b.stopPrice)) {
+      stop = readSize(b.stopPrice, SCALE.PRICE);
+      if (stop === null) return fail(`stopPrice must be a positive decimal with at most ${SCALE.PRICE} decimals (at most ${MAX_SIZE_CHARS} characters)`);
+    }
+    return { ok: true, order: { symbol: b.symbol, side: 'buy', amount, units: null, stop, clientOrderId } };
   }
   if (!absent(b.amountIls)) return fail('a sell is sized by units only; amountIls is for buys');
+  if (!absent(b.stopPrice)) return fail('stopPrice is for buys only');
   const units = readSize(b.units, SCALE.UNITS);
   if (units === null) return fail(`units must be a positive decimal with at most ${SCALE.UNITS} decimals (at most ${MAX_SIZE_CHARS} characters)`);
-  return { ok: true, order: { symbol: b.symbol, side: 'sell', amount: null, units, clientOrderId } };
+  return { ok: true, order: { symbol: b.symbol, side: 'sell', amount: null, units, stop: null, clientOrderId } };
 }
 
 // ---------- the checks ----------
@@ -156,6 +168,14 @@ function checkSell(s: Extract<SendCheck, { side: 'sell' }>): SendRefusal | null 
     ? valueIls(s.units, p.lastPrice, p.lastRate ?? RATE_ONE)
     : costAtAvg(s.units, p.avgCost);
   if (value < MIN_ORDER_ILS && s.units !== free) return { code: 'BELOW_MIN', reason: SEND_REASONS.BELOW_MIN_SELL };
+  return null;
+}
+
+// D-037: a stop loss must be below the latest close the player sees (the trade screen's price), in the same
+// currency. latestClose null = no close is known yet. A stop at or above the price would fire at the first check.
+export function checkStop(stop: bigint, latestClose: bigint | null): SendRefusal | null {
+  if (latestClose === null) return { code: 'STOP_NO_PRICE', reason: SEND_REASONS.STOP_NO_PRICE };
+  if (stop >= latestClose) return { code: 'STOP_NOT_BELOW_PRICE', reason: SEND_REASONS.STOP_NOT_BELOW_PRICE };
   return null;
 }
 

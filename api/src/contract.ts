@@ -65,6 +65,27 @@ export type HoldingView = {
   dayChangePct: number | null;     // the latest known close vs. the one before (display only)
   weightPct: number | null;        // share of the whole portfolio (totalValue)
   nearCap: boolean;                // close to the 20% limit (rule 4)
+  stops: StopView[];               // the position's active stop losses, highest first (D-037)
+};
+
+// An active stop loss on a position (D-037): it sells `units` at the first open or close at or below `price`.
+export type StopView = {
+  price: number;                   // in the security's currency
+  units: number;                   // the units its buy got (it sells at most the free units)
+};
+
+// A sale a stop loss made that the player hasn't seen yet (D-037). The app shows it as a toast, then marks it
+// seen with POST /me/rejections/seen, like a rejection.
+export type StopSaleView = {
+  id: string;                      // the sell order's id
+  symbol: string;
+  currency: 'ILS' | 'USD';
+  stopPrice: number;               // the stop that fired
+  fillPrice: number;               // the open or close it sold at (at or below the stop)
+  units: number;
+  ils: number;                     // ₪ received
+  realizedPnlIls: number;          // + = gain, at average cost
+  at: WorldTime;                   // the open or close that sold it
 };
 
 // An order the runner rejected that the player hasn't seen yet (D-023). The app shows it as a toast, then
@@ -91,6 +112,7 @@ export type OrderView = {
   priceType: 'open' | 'close';     // open = sent while closed, close = sent while open (rule 3)
   market: 'TASE' | 'US';
   executesAt: WorldTime;
+  stopPrice: number | null;        // buys: the stop loss it carries, in the security's currency (D-037)
 };
 
 export type UsdIlsView = {
@@ -154,7 +176,7 @@ export type SecurityView = {
   priceDay: string | null;           // the trading day of that close
   dayChangePct: number | null;       // that close vs. the one before
   closes: { day: string; close: number }[];   // the last 11 known closes, oldest first (the 10-day chart)
-  holding: { units: number; freeUnits: number; valueIls: number; weightPct: number | null } | null;   // as in HoldingView
+  holding: { units: number; freeUnits: number; valueIls: number; weightPct: number | null; stops: StopView[] } | null;   // as in HoldingView
   isOpen: boolean;                   // its market is open right now (world time)
   execution: ExecutionView | null;   // null = the world hasn't started
   hasChart: boolean;                 // a Yahoo symbol exists, so GET /me/chart/:symbol works
@@ -189,6 +211,7 @@ export type Dashboard = {
   holdings: HoldingView[];
   pendingOrders: { total: number; next: OrderView[] };   // next = the 2 that run first (DD-07)
   rejections: RejectionView[];     // unseen rejected orders, newest first, at most 5 (D-023)
+  stopSales: StopSaleView[];       // unseen sales by a stop loss, newest first, at most 5 (D-037)
   usdIls: UsdIlsView | null;
   standing: StandingView | null;   // null = you're not on the board shown (not ranked this week, or nothing scored yet)
   leaderboard: { players: number; week: BoardWeek | null; top: LeaderRow[] };   // top = places 1..5
@@ -267,6 +290,8 @@ export type TradeJournalRow = {
   executesAt: WorldTime;           // pending: when it will run; otherwise the open or close that ran it
   fill: TradeFill | null;          // executed only
   reject: { code: RejectionCode | null; reason: string } | null;   // rejected only; reason is the Hebrew
+  origin: 'player' | 'stop';       // stop = a sell a stop loss made (D-037), not one the player sent
+  stopPrice: number | null;        // a buy: the stop loss it carries; a stop's sell: the stop that fired
 };
 
 // The period's filled sells (whatever the filter): a sell with a gain is a win, with a loss a loss, at exactly ₪0
@@ -295,8 +320,8 @@ export type TradeJournalView = {
   due: boolean;
 };
 
-// POST /me/rejections/seen: the rejection toasts the app showed, by order id (1 to 5, the `rejections[].id`s).
-// Marks exactly those of this player's rejected orders as seen. `marked` = how many were newly marked.
+// POST /me/rejections/seen: the toasts the app showed, by order id (1 to 5): `rejections[].id`s and `stopSales[].id`s.
+// Marks exactly those of this player's rejected orders and stop sales as seen. `marked` = how many were newly marked.
 export type RejectionsSeenBody = { ids: string[] };
 export type RejectionsSeenResult = { marked: number };
 
@@ -309,6 +334,7 @@ export type SendOrderBody = {
   side: 'buy' | 'sell';
   amountIls?: string | number;     // buys only, at least ₪100
   units?: string | number;         // sells only
+  stopPrice?: string | number;     // buys only, optional (D-037): in the security's currency, below the latest close
   clientOrderId?: string;          // ^[A-Za-z0-9_-]{1,64}$: the same id again returns the same order
 };
 
@@ -326,6 +352,7 @@ export type SendOrderErrorCode =
   | 'UNKNOWN_SYMBOL' | 'NO_USER'   // 404
   | 'NO_WORLD' | 'GAME_OVER' | 'CLIENT_ID_CONFLICT'   // 409
   | 'BELOW_MIN' | 'INSUFFICIENT_CASH' | 'NO_POSITION' | 'INSUFFICIENT_UNITS' | 'OVER_LIMIT'   // 422
+  | 'STOP_NOT_BELOW_PRICE' | 'STOP_NO_PRICE'                                                  // 422 (D-037)
   | 'RATE_LIMITED';                // 429, with a Retry-After header in seconds
 
 // `error` is English; `reason` is the Hebrew shown to the player, when there is one.
@@ -480,12 +507,22 @@ export type MonitoringPageRow = {
 };
 
 export type MonitoringTotals = {
-  // Orders sent in the range (real created_at), by their status now. Comes from the orders table, not the app.
+  // Orders players sent in the range (real created_at), by their status now. From the orders table, not the app.
+  // A sell a stop loss made isn't one a player sent: it is in `stops.fired`, not here.
   orders: { sent: number; executed: number; rejected: number; pending: number };
   confirms: { opened: number; backed: number };
   pages: MonitoringPageRow[];      // most time first; a page nobody used in the range is left out
   ms: number;                      // all time in the app in the range
   players: number;                 // distinct players with any page usage in the range
+  // The stop loss (D-037), from the orders table by real created_at, like `orders`.
+  stops: {
+    buys: number;                  // buys players sent
+    withStop: number;              // of them, with a stop loss
+    buyers: number;                // distinct players who sent a buy
+    players: number;               // distinct players who sent a buy with a stop loss
+    fired: number;                 // sells the stops made (when the runner fired them)
+    firedPnlIls: number;           // the gain of those that executed, added up (− = losses taken)
+  };
 };
 
 // One bar of a usage chart. start = the day, or the Monday of the week (YYYY-MM-DD, Israel).
@@ -497,6 +534,7 @@ export type AdminMonitoring = {
   totals: Record<MonitoringRange, MonitoringTotals>;
   daily: UsageBucket[];            // 30 days, oldest first, includes today, days with no usage filled with zeros
   weekly: UsageBucket[];           // 12 weeks starting Monday, oldest first, includes this week, zero-filled
+  stopsNow: { active: number; players: number };   // active stop losses right now, and how many players hold them
 };
 
 // GET /admin/db: the database's health, read live. Nothing here changes anything.

@@ -9,7 +9,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type {
-  ClockView, Dashboard, HoldingView, LiveClockView, MarketSession, PortfolioView, RejectionView, StandingView, WorldTime,
+  ClockView, Dashboard, HoldingView, LiveClockView, MarketSession, PortfolioView, RejectionView, StandingView, StopSaleView, WorldTime,
 } from '../src/contract.js';
 
 const app = <T>(path: string): Promise<T> => import(new URL(`../../src/${path}.ts`, import.meta.url).href) as Promise<T>;
@@ -18,8 +18,10 @@ type Notice = { id: string; title: string; reason: string; when: string };
 type MarketChip = { key: 'tase' | 'us'; label: string; open: boolean; state: string; a11y: string };
 type LiveTime = { weekday: number; minutes: number; dayOffset: number; ended: boolean };   // src/dashboard/liveClock.ts
 
-const { rejectionNotices, rejectionsHeading, idsToMark, REJECTION_FALLBACK } = await app<{
+const { rejectionNotices, rejectionsHeading, idsToMark, REJECTION_FALLBACK, stopSaleNotices, stopSalesHeading } = await app<{
   rejectionNotices(rejections: RejectionView[], holdings: Pick<HoldingView, 'symbol' | 'nameHe'>[]): Notice[];
+  stopSaleNotices(sales: StopSaleView[]): Notice[];
+  stopSalesHeading(count: number): string;
   rejectionsHeading(count: number): string;
   idsToMark(shown: string[], sent: ReadonlySet<string>): string[];
   REJECTION_FALLBACK: Record<NonNullable<RejectionView['code']>, string>;
@@ -105,6 +107,28 @@ describe('rejection toasts (D-023)', () => {
   it('the heading counts them', () => {
     expect(rejectionsHeading(1)).toBe('פקודה נדחתה');
     expect(rejectionsHeading(3)).toBe('3 פקודות נדחו');
+  });
+});
+
+describe('stop-loss toasts (D-037)', () => {
+  const sale = (s: Partial<StopSaleView> = {}): StopSaleView => ({
+    id: '77', symbol: 'TEVA', currency: 'ILS', stopPrice: 95, fillPrice: 94, units: 100, ils: 9400, realizedPnlIls: -600, at: TUE_CLOSE, ...s,
+  });
+
+  it('what was sold, at which price against the stop, the ₪ and the result, and when', () => {
+    expect(stopSaleNotices([sale()])).toEqual([
+      { id: '77', title: 'TEVA · נמכרו 100 יח׳', reason: 'בשער ₪94.00 (הסטופ: ₪95.00) · ₪9,400 · הפסד ₪600', when: 'יום ג׳ 17:30' },
+    ]);
+  });
+
+  it('a US stock in dollars, and a stop that still made money', () => {
+    const [n] = stopSaleNotices([sale({ symbol: 'NVDA', currency: 'USD', stopPrice: 180, fillPrice: 179.5, units: 2.5, ils: 1660.38, realizedPnlIls: 120.5 })]);
+    expect(n.reason).toBe('בשער $179.50 (הסטופ: $180.00) · ₪1,660.38 · רווח ₪120.50');
+  });
+
+  it('the heading counts them', () => {
+    expect(stopSalesHeading(1)).toBe('הסטופ לוס הופעל');
+    expect(stopSalesHeading(3)).toBe('3 סטופ לוס הופעלו');
   });
 });
 

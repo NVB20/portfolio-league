@@ -9,11 +9,12 @@ import type { Pool, PoolClient } from 'pg';
 import type { SendOrderError, SendOrderErrorCode, SendOrderResult, SentOrderView } from './contract.js';
 import { loadCalendar } from './calendar.js';
 import { CLOCK_COLUMNS, type ClockSqlRow, effectiveNow, worldTime } from './dashboard.js';
+import { latestClose } from './trade.js';
 import { format, parse, SCALE } from './game/fixed.js';
 import { type Journal, reserveJournal } from './game/ledger.js';
-import { type Calendar, executionFor, type Market } from './game/marketHours.js';
+import { type Calendar, executionFor, lastClosedDay, type Market } from './game/marketHours.js';
 import {
-  checkSend, checkTiming, type HeldPosition, parseSendBody, RATE_LIMIT, retryAfterSeconds, SEND_REASONS,
+  checkSend, checkStop, checkTiming, type HeldPosition, parseSendBody, RATE_LIMIT, retryAfterSeconds, SEND_REASONS,
   type SendRequest, type SendRuleCode,
 } from './game/orderRules.js';
 
@@ -28,6 +29,8 @@ const RULE_ERRORS: Record<SendRuleCode, string> = {
   INSUFFICIENT_UNITS: 'not enough free units',
   OVER_LIMIT: 'the holding would be over 20% of the portfolio',
   GAME_OVER: 'the game is over: this order could never execute',
+  STOP_NOT_BELOW_PRICE: 'the stop loss must be below the latest price',
+  STOP_NO_PRICE: 'no price is known yet for this security, so no stop loss can be set',
 };
 
 function fail(status: SendFailure['status'], code: SendOrderErrorCode, error: string, reason?: string): SendFailure {
@@ -36,7 +39,7 @@ function fail(status: SendFailure['status'], code: SendOrderErrorCode, error: st
 
 // The order as the screens show it. float8 only here, for the JSON (the contract uses numbers).
 const VIEW_COLUMNS = `id::text AS id, symbol, side, status, amount_ils::float8 AS amount_ils, units::float8 AS units,
-  price_type, placed_at, executes_at, client_order_id`;
+  price_type, placed_at, executes_at, client_order_id, stop_price::float8 AS stop_price`;
 
 type ViewRow = {
   id: string;
@@ -49,6 +52,7 @@ type ViewRow = {
   placed_at: Date;
   executes_at: Date;
   client_order_id: string | null;
+  stop_price: number | null;
 };
 
 function toView(r: ViewRow, market: Market): SentOrderView {
@@ -61,6 +65,7 @@ function toView(r: ViewRow, market: Market): SentOrderView {
     priceType: r.price_type,
     market,
     executesAt: worldTime(r.executes_at),
+    stopPrice: r.stop_price,
     status: r.status,
     placedAt: worldTime(r.placed_at),
     clientOrderId: r.client_order_id,
@@ -104,24 +109,26 @@ async function sendIn(c: PoolClient, uid: string, req: SendRequest, calendar: Ca
   // 2. A retried request (the response was lost): the same id and the same order get the stored order back,
   //    with no new row and no second reserve, whatever has happened to it since.
   if (req.clientOrderId !== null) {
-    const prior = (await c.query<ViewRow & { amount_exact: string | null; units_exact: string | null }>(
-      `SELECT ${VIEW_COLUMNS}, amount_ils AS amount_exact, units AS units_exact
+    const prior = (await c.query<ViewRow & { amount_exact: string | null; units_exact: string | null; stop_exact: string | null }>(
+      `SELECT ${VIEW_COLUMNS}, amount_ils AS amount_exact, units AS units_exact, stop_price AS stop_exact
        FROM orders WHERE uid = $1 AND client_order_id = $2`,
       [uid, req.clientOrderId],
     )).rows[0];
     if (prior) {
       const same = prior.symbol === req.symbol && prior.side === req.side
-        && sameSize(prior.amount_exact, req.amount, SCALE.ILS) && sameSize(prior.units_exact, req.units, SCALE.UNITS);
+        && sameSize(prior.amount_exact, req.amount, SCALE.ILS) && sameSize(prior.units_exact, req.units, SCALE.UNITS)
+        && sameSize(prior.stop_exact, req.stop, SCALE.PRICE);
       return same
         ? { status: 200, body: { order: toView(prior, security.market), replay: true } }
         : fail(409, 'CLIENT_ID_CONFLICT', 'clientOrderId was already used for a different order');
     }
   }
 
-  // 3. The rate limit, in real time (D-021). Only stored orders count: a refused send writes nothing.
+  // 3. The rate limit, in real time (D-021). Only stored orders count: a refused send writes nothing. A sell a
+  //    stop made (D-037) isn't one the player sent, so it never counts.
   const recent = (await c.query<{ created_at: Date; real_now: Date }>(
     `SELECT created_at, now() AS real_now FROM orders
-     WHERE uid = $1 AND created_at > now() - make_interval(secs => $2)
+     WHERE uid = $1 AND origin = 'player' AND created_at > now() - make_interval(secs => $2)
      ORDER BY created_at DESC LIMIT $3`,
     [uid, RATE_LIMIT.windowSeconds, RATE_LIMIT.orders],
   )).rows;
@@ -158,16 +165,25 @@ async function sendIn(c: PoolClient, uid: string, req: SendRequest, calendar: Ca
     : checkSend({ side: 'sell', units: req.units!, position: position?.held ?? null });
   if (refusal) return fail(422, refusal.code, RULE_ERRORS[refusal.code], refusal.reason);
 
+  // 6b. A stop loss (D-037) must be below the price the trade screen shows: the latest close of this market's
+  //     last closed day.
+  if (req.stop !== null) {
+    const close = await latestClose(c, req.symbol, lastClosedDay(security.market, now, calendar));
+    const bad = checkStop(req.stop, close === null ? null : parse(close, SCALE.PRICE));
+    if (bad) return fail(422, bad.code, RULE_ERRORS[bad.code], bad.reason);
+  }
+
   // 7. The order, then what it sets aside: a reserve journal + reserved_cash (buy, D-019), or reserved_units (sell).
   const row = (await c.query<ViewRow>(
-    `INSERT INTO orders (uid, symbol, side, amount_ils, units, placed_at, executes_at, price_type, client_order_id)
-     VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6, $7, $8, $9)
+    `INSERT INTO orders (uid, symbol, side, amount_ils, units, placed_at, executes_at, price_type, client_order_id, stop_price)
+     VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6, $7, $8, $9, $10::numeric)
      RETURNING ${VIEW_COLUMNS}`,
     [
       uid, req.symbol, req.side,
       req.amount === null ? null : format(req.amount, SCALE.ILS),
       req.units === null ? null : format(req.units, SCALE.UNITS),
       now, exec.at, exec.priceType, req.clientOrderId,
+      req.stop === null ? null : format(req.stop, SCALE.PRICE),
     ],
   )).rows[0];
 
