@@ -89,7 +89,7 @@ function Gauge({ value, rank, players }: { value: number; rank: number; players:
 // "your place". A tap explains the rank right beside the tile (rankTip).
 export function RankTile({ value, kind }: { value: number; kind: 'return' | 'stability' }) {
   const p = usePalette();
-  const label = kind === 'return' ? 'דירוג תשואה · × 0.85' : 'דירוג יציבות · × 0.15';
+  const label = kind === 'return' ? 'דירוג תשואה · 85%' : 'דירוג יציבות · 15%';
   return (
     <InfoTip tip={rankTip(kind, value)} label={`${label}: ${rankText(value)}`} style={[styles.tile, { backgroundColor: p.tile }]}>
       <View style={styles.tileTop}>

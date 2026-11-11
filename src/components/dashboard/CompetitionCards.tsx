@@ -76,12 +76,12 @@ export function ScoreBreakdownCard({ standing }: { standing: StandingView | null
               solid
               tip={scoreTip(standing.returnRank, standing.stabilityRank, standing.score)}
             />
-            <Tile value={rankText(standing.returnRank)} label="דירוג תשואה · × 0.85" tip={rankTip('return', standing.returnRank)} />
+            <Tile value={rankText(standing.returnRank)} label="דירוג תשואה · 85%" tip={rankTip('return', standing.returnRank)} />
           </View>
           <View style={styles.tileRow}>
             <Tile
               value={rankText(standing.stabilityRank)}
-              label="דירוג יציבות · × 0.15"
+              label="דירוג יציבות · 15%"
               color={standing.stabilityRank < standing.returnRank ? colors.warn : undefined}
               tip={rankTip('stability', standing.stabilityRank)}
             />
