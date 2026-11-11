@@ -2,7 +2,8 @@
 // Next to the clock, two chips: ת״א and ניו יורק, each open (pulsing dot) or closed, in words too (D-022).
 // While the admin runs the clock, the time and the chips move on by themselves between loads, like the world
 // time panel (liveClock.ts, D-017), so the two never disagree on one screen.
-// On the admin page (side="admin") a "ניהול" badge replaces the tabs and a button leads back to the player side.
+// On the admin side (side="admin") two admin tabs replace the player tabs: "לוח ניהול" (/admin-dashboard) and
+// "ניטור" (/admin-monitoring, D-036). A button leads back to the player side.
 // It lies OVER the scrolling page (absolute), so the cards slide underneath it like in the mock-up.
 // Web: see-through page color + blur, no border. Phones: solid page color (no blur on native).
 // "סקירה" (/dashboard), "מסחר" (/trade) and "טבלה" (/leaderboard) exist; the other tabs are shown disabled until
@@ -36,14 +37,32 @@ export const BAR_HEIGHT = 68;
 const LOGO_HEIGHT = 40;
 const LOGO_RATIO = 577 / 624;   // assets/logo.png
 
-// side 'admin': the admin page. A "ניהול" badge replaces the player tabs, and a button leads back.
+// side 'admin': the admin pages. Their own two tabs replace the player tabs, and a button leads back.
 export type Side = 'player' | 'admin';
 
-type Props = { clock: LiveClockView | null; name: string; rankLine: string | null; active?: Page; side?: Side };
+export type AdminTab = 'admin-dashboard' | 'admin-monitoring';
+const ADMIN_TABS: { label: string; page: AdminTab }[] = [
+  { label: 'לוח ניהול', page: 'admin-dashboard' },
+  { label: 'ניטור', page: 'admin-monitoring' },
+];
 
-export function TopBar({ clock, name, rankLine, active = 'dashboard', side = 'player' }: Props) {
+type Props = {
+  clock: LiveClockView | null;
+  name: string;
+  rankLine: string | null;
+  active?: Page;          // the player tab that is on (side 'player')
+  side?: Side;
+  adminTab?: AdminTab;    // the admin tab that is on (side 'admin')
+};
+
+export function TopBar({ clock, name, rankLine, active = 'dashboard', side = 'player', adminTab = 'admin-dashboard' }: Props) {
   const { colors } = useTheme();
-  const { isPhone } = useLayout();
+  const { isPhone, isWide } = useLayout();
+  // One strip, two sets of tabs. A player tab with no screen yet (page: null) shows disabled, and not on phones.
+  const tabs: { label: string; page: Page | AdminTab | null; on: boolean }[] =
+    side === 'admin'
+      ? ADMIN_TABS.map((t) => ({ ...t, on: t.page === adminTab }))
+      : TABS.filter((t) => !isPhone || t.page !== null).map((t) => ({ ...t, on: t.page === active }));
   const [menuOpen, setMenuOpen] = useState(false);
   const blink = useLoop(2000);   // a market's live dot pulses while it is open
   const elapsed = useElapsed(clock);
@@ -56,20 +75,14 @@ export function TopBar({ clock, name, rankLine, active = 'dashboard', side = 'pl
 
         {/* The rounded pill IS the scroll area, so on a narrow screen the tabs scroll inside its rounded edge. */}
         <View style={styles.tabsSlot}>
-        {side === 'admin' ? (
-          <View style={[styles.badge, { backgroundColor: colors.accentTint }]}>
-            <Text style={[styles.badgeText, { color: colors.accent }]}>ניהול</Text>
-          </View>
-        ) : (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           style={[styles.tabsPill, { backgroundColor: colors.surface, borderColor: colors.line }]}
           contentContainerStyle={styles.tabsContent}
         >
-          <View style={styles.tabs} accessibilityRole="tablist">
-            {TABS.filter((t) => !isPhone || t.page !== null).map(({ label, page }) => {
-              const on = page === active;
+          <View style={styles.tabs} accessibilityRole="tablist" accessibilityLabel={side === 'admin' ? 'עמודי הניהול' : undefined}>
+            {tabs.map(({ label, page, on }) => {
               const built = page !== null;
               return (
                 <Pressable
@@ -89,7 +102,6 @@ export function TopBar({ clock, name, rankLine, active = 'dashboard', side = 'pl
             })}
           </View>
         </ScrollView>
-        )}
         </View>
 
         {clock && t && !isPhone ? (
@@ -101,8 +113,9 @@ export function TopBar({ clock, name, rankLine, active = 'dashboard', side = 'pl
           </View>
         ) : null}
 
-        {/* Phones: the way back is in the avatar menu instead, to keep the bar from overflowing. */}
-        {side === 'admin' && !isPhone ? (
+        {/* Below desktop width the way back is in the avatar menu instead: with the clock and two admin tabs,
+            the button would squeeze the tabs into a scrolling sliver on an 800px screen. */}
+        {side === 'admin' && isWide ? (
           <Button label="חזרה לצד השחקן" small onPress={() => router.navigate('/dashboard')} />
         ) : null}
 
@@ -170,8 +183,6 @@ const styles = StyleSheet.create({
   tab: { paddingVertical: 9, paddingHorizontal: 18, borderRadius: 999 },
   tabPhone: { paddingHorizontal: 14 },
   tabText: { fontSize: 13.5, fontWeight: '500' },
-  badge: { borderRadius: 999, paddingVertical: 7, paddingHorizontal: 16 },
-  badgeText: { fontSize: 13, fontWeight: '600' },
   clock: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderRadius: 999, padding: 4 },
   dot: { width: 7, height: 7, borderRadius: 4 },
   clockText: { fontSize: 13, paddingHorizontal: 8 },

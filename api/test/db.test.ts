@@ -63,9 +63,12 @@ describe('createPool: a connection the database ends', () => {
       const c = await db.connect();
       const pid = await pidOf(c);
       const slow = c.query('SELECT pg_sleep(5)');
+      // Watched from the start: the session's end can reject the query before terminate() itself has answered,
+      // and a rejection nobody is waiting for yet is reported as unhandled (the run then fails at random).
+      const failed = expect(slow).rejects.toThrow();
       await sleep(100);
       await terminate(pid);
-      await expect(slow).rejects.toThrow();
+      await failed;
       await sleep(200);   // the session's end arrives after the query's own error
       c.release();
       expect(uncaught).toEqual([]);

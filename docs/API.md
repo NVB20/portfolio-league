@@ -18,6 +18,7 @@ Only these write to the database. Everything else is read-only.
 | `PATCH /me/theme` | the dark/light choice | `users.theme` | Yes, only that column |
 | `PATCH /me/chart-settings` | the full chart's settings | `users.chart_settings` (JSONB, known keys only) | Yes, only that column |
 | `POST /me/orders` | a new `pending` order, and what it sets aside: a buy's cash, a sell's units | `orders` (one row). Buy: a `reserve` journal (`journals` + 2 `ledger_entries`) and `portfolios.reserved_cash`. Sell: `positions.reserved_units` | Only by sending an order the rules allow (D-028). Never cash, units, prices or the clock directly. An order can't be changed or cancelled |
+| `POST /me/seen` | the check-in (D-026) and its optional usage report (D-036) | `users.last_seen_at`, one `app_opens` row when a visit starts; today's `usage_pages_daily` and `usage_confirms_daily` rows (added to) | Only their own rows. The server decides what is a visit; a usage report is capped per request (120 s of time, 50 per count) |
 | `POST /me/rejections/seen` | the rejection toasts the app showed (D-023) | `orders.notified_at` of the player's own rejected orders | Only that column, only on their own rejected orders |
 | `GET /me/dashboard`, `GET /me/trade` (the catch-up before reading, D-025) | the player's value at the latest open or close whose orders have run, when the runner's batch hasn't reached them yet | that player's `portfolios` totals and week columns, and the marks of their `positions` | No. The runner's own update, for this one player (D-031) |
 | `POST /admin/clock/advance`, `/start`, `/stop` (admins only) | the clock move; advance and stop first run every open and close they pass (the runner, D-021, D-029) | The run: `market_events`, executed/rejected `orders`, `journals` + `ledger_entries`, `positions`, `portfolios`, `portfolio_snapshots`, `world_clock.events_through`. Then one transaction: `world_clock` (`now_at`, `real_at`, `running`) + one `admin_actions` row | No. Admins only (D-017, D-030) |
@@ -130,11 +131,18 @@ Errors are `{ error, code, reason? }` (`SendOrderError`): `error` in English, a 
 **When it runs:** the send uses the effective world time (`worldNow`: the running clock, capped at `ends_at`, never before the latest event the runner has started). During an admin jump that has already started the 17:30 close, an order goes to the next open, not into the close. The send holds the player's portfolio `FOR UPDATE` and then the clock row `FOR SHARE`, so one player's sends run one at a time, other players never wait, and a clock move or event start waits for the sends in progress. Those writers lock the clock table in `EXCLUSIVE` mode, which Postgres queues fairly: a send that arrives after one waits behind it, so a stream of sends can't hold an event back (D-021).
 
 ### `POST /me/seen`
-The app checks in when it opens and every 60 seconds while it is open and visible (D-026). The body is ignored. Returns `{ ok: true }`; 404 before `POST /me`.
+The app checks in when it opens and every 60 seconds while it is open and visible (D-026). The body is optional: a usage report (D-036). Returns `{ ok: true }`; 404 before `POST /me`.
 
-- Sets `users.last_seen_at`. Check-ins less than 30 seconds apart write nothing.
-- Locks the player's `users` row `FOR NO KEY UPDATE`, not `FOR UPDATE`: the runner's scoring holds `FOR KEY SHARE` on every ranked player's row until it commits (the board's foreign keys, D-034), and a check-in must not wait for it.
-- A check-in after more than 30 minutes away (or the first one ever) adds one row to `app_opens`: a new visit.
+- **Presence (D-026):**
+  - Sets `users.last_seen_at`. Check-ins less than 30 seconds apart write nothing.
+  - Locks the player's `users` row `FOR NO KEY UPDATE`, not `FOR UPDATE`: the runner's scoring holds `FOR KEY SHARE` on every ranked player's row until it commits (the board's foreign keys, D-034), and a check-in must not wait for it.
+  - A check-in after more than 30 minutes away (or the first one ever) adds one row to `app_opens`: a new visit. Nothing in the body can start one.
+- **Usage (D-036, [api/src/usage.ts](../api/src/usage.ts)):** the optional JSON body (`UsageReport`) is what happened since the app's last check-in: `{ "pages": { "<page>": { "views": 1, "ms": 42000 } }, "confirms": { "opened": 1, "backed": 0 } }`. Both fields are optional. `<page>` is `dashboard`, `trade`, `journal` or `leaderboard`; `confirms` is the trade screen's confirm popup (opened, and closed without sending).
+  - The server caps it: `views`, `opened` and `backed` at most 50 each, `ms` at most 120,000 for all pages together (over that, every page shrinks by the same factor). Below 0 counts as 0 and fractions are cut. Unknown pages and unknown top-level fields are dropped.
+  - No body, an empty body, `null` or `{}` is a plain check-in, as older app versions send.
+  - It is added to today's rows (real Israel date, computed by Postgres) of `usage_pages_daily` and `usage_confirms_daily`, both in one statement (the pages upsert is a `WITH` part of the popup upsert): a report is written whole or not at all, and on one date. A part with nothing to add writes no row. It is written even when the presence part writes nothing, in its own statement after the presence transaction, so the `users` row lock is never held longer.
+  - So an error answer (401, 404, 5xx) means no usage was written, and the app sends that report again with its next check-in. After a 400 or its own 10 s timeout it doesn't (D-036).
+- 400 `{ error }` when the body isn't JSON or isn't an object, or a known field has the wrong shape: `pages` or a page that isn't an object, a `views`, `ms`, `opened` or `backed` that is missing or isn't a finite number. Nothing is written, not even the check-in.
 
 ### `GET /me/leaderboard?view=top|around&from=`
 The weekly table (D-032, [api/src/leaderboard.ts](../api/src/leaderboard.ts)). Read-only: the runner's scoring step writes `standings` and `weekly_scores` (D-034), and this route only reads them. It doesn't run the catch-up (D-025). Returns `LeaderboardView`.
@@ -200,6 +208,37 @@ Up to 5 players, by rank on the latest scored day of this week, then by portfoli
 - `q` (optional) filters by display name or email, case-insensitive. `%` and `_` match themselves.
 - `q` longer than 100 characters: 400.
 - `totalValue` is the stored `portfolios.equity` the runner keeps current after every event (D-019, D-024), the same number the player's dashboard shows. Nothing is added up on read (D-031).
+
+### `GET /admin/monitoring`
+The monitoring page (D-036, [api/src/monitoring.ts](../api/src/monitoring.ts)): how players use the app. Real time and real Israel dates; the world clock plays no part. Returns `AdminMonitoring`:
+
+- `today`: Postgres's real Israel date, the same one the check-ins write with. Every range ends on it.
+- `since`: the first day with any usage row; null = nothing measured yet, so the page can say so instead of showing zeros as data.
+- `totals.today`, `totals.d7` (today and the 6 days before) and `totals.d30` (today and the 29 days before), each a `MonitoringTotals`:
+  - `orders`: orders sent in the range (real `orders.created_at`, from midnight Israel time of the range's first day), by their status now: `sent` = `executed` + `rejected` + `pending`. From the orders table, never from the app.
+  - `confirms`: `{ opened, backed }`, the trade screen's confirm popup.
+  - `pages` (`MonitoringPageRow[]`): `{ page, views, ms, players }`, most time first (then most views, then by name). A page nobody used in the range is left out.
+  - `ms`: all time in the app. `players`: distinct players with any page usage; a player on two pages counts once.
+- `daily`: 30 `UsageBucket`s `{ start, players, ms: { dashboard, trade, journal, leaderboard } }`, oldest first, ending today. A day with no usage is all zeros.
+- `weekly`: 12 buckets, each a Monday-to-Sunday week (`date_trunc('week')`, like the game's week), oldest first, ending with this week so far. Zero-filled the same way.
+- A page that is no longer tracked keeps its old rows out of every number.
+- **One run at a time** per API process: a request that arrives while a run is going gets that run's answer, so retries and reloads never stack up runs that each hold a pool connection.
+- **Cost:** 7 short queries, one pool connection at a time: `today` and `since` (`min(day)` of each table's primary key), the orders (a range of `orders_created_idx`, the 3 ranges as `FILTER`s of one pass), the popup totals, the page totals (one row per page per player first, then `GROUPING SETS` give the page rows and the all-pages row), the time per day and page for the 12 weeks (in the primary key's order; the 30 daily and 12 weekly bars are added up from it), and the distinct players per day (30 days) and per week (12 weeks). Distinct players compare ids byte by byte (`COLLATE "C"`), not by the database's language collation. The usage tables grow with players × pages per day, never with clicks: about 1M rows for 12 weeks at 4,000 daily players on 3 pages. Measured on local Postgres 17, the request takes about 1 s there and about 3 s at 3.4M rows.
+
+### `GET /admin/db`
+The database's health, read live (D-036). Read-only, and there is no SQL console. Its own route, so the page can refresh it every 30 seconds without running the usage queries again. Returns `AdminDbHealth`:
+
+- `checkedAt` (real time, ISO) and `latencyMs`: the round trip of `SELECT 1` from the API, the wait for a pool connection included.
+- `pool`: the API's own pg pool: `max`, `total`, `idle` and `waiting` (requests waiting for a free connection).
+- `server`:
+  - `version` (for example `17.2`), `startedAt` (`pg_postmaster_start_time()`), `sizeBytes` (this database)
+  - `connections`: client connections to the whole server by state (`active`, `idle`, `idleInTransaction`), their `total`, and `max_connections` as `max`
+  - `longestQuerySec`: the longest-running active query other than this request's own; null = none
+  - `cacheHitPct`: the share of this database's block reads served from memory since its statistics were last reset; null = no reads yet
+- `tables`: the 5 largest tables of the `public` schema, indexes included: `{ name, bytes, rows }`. `rows` is Postgres's estimate from the last `VACUUM` or `ANALYZE`; -1 before the first (no estimate yet, never shown as 0 rows). Autovacuum leaves a table with fewer than about 50 changed rows alone, so a small table can stay at -1.
+- No query text is ever returned: `pg_stat_activity.query` is never read.
+- On a managed host the API's role may not see every statistic. Postgres hides other roles' connection states (they count in `total` only); a statistic the host refuses outright falls back to zeros or null and is logged, and the rest still answers.
+- If Postgres is down, the admin check itself fails (500), so the page shows "no connection" from the failed request instead of numbers.
 
 ### Admin clock moves: `POST /admin/clock/advance`, `/start`, `/stop`
 The admin's clock buttons (D-017, D-030; [api/src/clockActions.ts](../api/src/clockActions.ts)). Admins only, like every `/admin` route. Start and stop take no body; advance takes an optional one (below).

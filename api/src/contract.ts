@@ -396,3 +396,62 @@ export type AdminPlayer = {
 };
 
 export type AdminPlayers = { players: AdminPlayer[]; limit: number };
+
+// ---------- Usage monitoring (D-036): POST /me/seen's body, GET /admin/monitoring, GET /admin/db ----------
+// Real time and real Israel dates, like presence (D-026): it measures people, not the game.
+
+// The player pages the app tracks. Admin pages and the login page are never tracked.
+export type UsagePage = 'dashboard' | 'trade' | 'journal' | 'leaderboard';
+
+// Optional body of POST /me/seen: what happened since the app's last check-in. No body = a plain check-in.
+// The server caps it (time at most 120 s per request in total, each count at most 50) and adds it to daily totals.
+export type UsageReport = {
+  pages?: Partial<Record<UsagePage, { views: number; ms: number }>>;
+  confirms?: { opened: number; backed: number };   // the trade screen's confirm popup: opened, closed without sending
+};
+
+export type MonitoringRange = 'today' | 'd7' | 'd30';   // today, the last 7 days, the last 30 days (each includes today)
+
+export type MonitoringPageRow = {
+  page: UsagePage;
+  views: number;
+  ms: number;                      // time on the page, visible and not idle
+  players: number;                 // distinct players who used it in the range
+};
+
+export type MonitoringTotals = {
+  // Orders sent in the range (real created_at), by their status now. Comes from the orders table, not the app.
+  orders: { sent: number; executed: number; rejected: number; pending: number };
+  confirms: { opened: number; backed: number };
+  pages: MonitoringPageRow[];      // most time first; a page nobody used in the range is left out
+  ms: number;                      // all time in the app in the range
+  players: number;                 // distinct players with any page usage in the range
+};
+
+// One bar of a usage chart. start = the day, or the Monday of the week (YYYY-MM-DD, Israel).
+export type UsageBucket = { start: string; players: number; ms: Record<UsagePage, number> };
+
+export type AdminMonitoring = {
+  today: string;                   // the real Israel date the ranges end on (YYYY-MM-DD)
+  since: string | null;            // the first day with any usage row; null = nothing measured yet
+  totals: Record<MonitoringRange, MonitoringTotals>;
+  daily: UsageBucket[];            // 30 days, oldest first, includes today, days with no usage filled with zeros
+  weekly: UsageBucket[];           // 12 weeks starting Monday, oldest first, includes this week, zero-filled
+};
+
+// GET /admin/db: the database's health, read live. Nothing here changes anything.
+export type AdminDbHealth = {
+  checkedAt: string;               // real time, ISO
+  latencyMs: number;               // round trip of SELECT 1 from the API
+  pool: { max: number; total: number; idle: number; waiting: number };   // the API's own pg pool
+  server: {
+    version: string;               // e.g. "16.4"
+    startedAt: string;             // real time, ISO
+    sizeBytes: number;             // this database
+    connections: { active: number; idle: number; idleInTransaction: number; total: number; max: number };   // client connections, whole server
+    longestQuerySec: number | null;   // the longest-running active query other than this request's; null = none
+    cacheHitPct: number | null;    // share of block reads served from memory, this database; null = no reads yet
+  };
+  // The 5 largest by total size. rows = Postgres's estimate; -1 = the table was never analyzed, so no estimate yet.
+  tables: { name: string; bytes: number; rows: number }[];
+};

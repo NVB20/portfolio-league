@@ -9,6 +9,7 @@
 // rate limit the trade data is loaded again: a success or a lost answer changes pending orders, available cash
 // and free units, and a refusal means the preview was out of date. The preview checks the same rules as the
 // server when sending (D-028); the server checks them again, and the runner at the execution price.
+// Opening the popup and backing out of it are counted for the admin's monitoring page (D-036, src/usage/tracker.ts).
 // World time runs at real speed (D-017): when a market opens or closes, a new day begins or the clock reaches its
 // end, the data is loaded again, and until it arrives nothing can be sent and no execution time is promised.
 
@@ -25,6 +26,7 @@ import { orderBody } from '../trade/orderBody';
 import { checkOrder, clampLevel, defaultLevels, pendingBuysIls, pendingListCut, type Levels, type Side } from '../trade/orderCheck';
 import { useSendOrder } from '../trade/useSendOrder';
 import { useChart, useChartSettings, useTrade } from '../trade/useTrade';
+import { ConfirmFunnel, usage } from '../usage/tracker';
 import { Button } from '../components/dashboard/Button';
 import { Card, Empty } from '../components/dashboard/Card';
 import { CardRow, CardStack } from '../components/dashboard/CardRow';
@@ -190,13 +192,25 @@ function TradeView({ data, name, uid, loading, reload }: {
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const openedAt = useRef(0);
-  useEffect(() => setConfirming(false), [orderKey]);
+
+  // The admin's popup funnel (D-036) counts every opening, and every close without a send by the player's choice:
+  // back, a tap outside, Escape, a change to the order, or leaving the screen with it open. A send is not one, and
+  // neither is a failed send that closes it with a toast, a send still on its way, or one that got no answer.
+  // ConfirmFunnel (src/usage/tracker.ts) holds those rules and counts one opening as a back-out at most once.
+  const [funnel] = useState(() => new ConfirmFunnel(usage));
+  const shutConfirm = useCallback((backedOut: boolean) => {
+    funnel.closed(backedOut);
+    setConfirming(false);
+  }, [funnel]);
+  useEffect(() => shutConfirm(true), [orderKey, shutConfirm]);
+  useEffect(() => () => funnel.closed(true), [funnel]);
 
   // A double-click on a send button must neither send nor close the popup with its second click.
   const armed = () => Date.now() - openedAt.current >= ARM_MS;
 
   const openConfirm = () => {
     openedAt.current = Date.now();
+    funnel.opened();
     setConfirmError(null);
     setConfirming(true);
     prepare(orderKey, body);
@@ -204,15 +218,18 @@ function TradeView({ data, name, uid, loading, reload }: {
   };
   const closeConfirm = () => {
     if (busy || !armed()) return;   // an order on its way: wait for its answer
-    setConfirming(false);
+    shutConfirm(true);
   };
   const confirm = async () => {
     if (!armed()) return;
     setConfirmError(null);
+    const answered = funnel.send();
     const out = await send(orderKey, body);
+    // Stored, or no answer (it may be stored): closing the popup after this is no back-out.
+    answered(out !== null && (out.ok || out.outcome === 'unknown'));
     if (!out) return;   // a send is already on its way, or nothing to send
     if (out.ok) {
-      setConfirming(false);
+      shutConfirm(false);
       showToast(sentToast(out.result, today));
       void reload();    // pending orders, available cash and free units
       return;
@@ -222,7 +239,7 @@ function TradeView({ data, name, uid, loading, reload }: {
     // body and id. Any other failure closes it and says why in a toast.
     if (out.reload) void reload();
     if (out.retry) return setConfirmError(out.message);
-    setConfirming(false);
+    shutConfirm(false);
     showToast(out.message, ERROR_TOAST_MS);
   };
 

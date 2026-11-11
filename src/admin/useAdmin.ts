@@ -1,12 +1,17 @@
-// Data for the admin page: GET /admin/overview when the page opens and then every minute, and
-// GET /admin/players again whenever the search changes (after a short pause, so typing doesn't send a
-// request per letter).
-// The API checks the admin role on both; this file only fetches.
+// Data for the admin pages. /admin-dashboard: GET /admin/overview when the page opens and then every minute,
+// and GET /admin/players again whenever the search changes (after a short pause, so typing doesn't send a
+// request per letter). /admin-monitoring (D-036): GET /admin/monitoring once, and GET /admin/db every 30 s while
+// the page is on top.
+// The API checks the admin role on all of them; this file only fetches.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
+import { useIsFocused } from 'expo-router';
 import { ApiError, apiFetch } from '../api';
 import type {
   AdminActivity,
+  AdminDbHealth,
+  AdminMonitoring,
   AdminOverview,
   AdminPlayers,
   ClockActionError,
@@ -18,6 +23,8 @@ import type {
 
 const SEARCH_PAUSE_MS = 300;
 const REFRESH_MS = 60_000;
+// The database card is a live status light, so it asks more often than the overview. One cheap request.
+const DB_REFRESH_MS = 30_000;
 // A jump runs every open and close on the way, for every affected player. Give it longer than a normal read.
 const CLOCK_TIMEOUT_MS = 120_000;
 
@@ -138,4 +145,102 @@ export function useAdminPlayers(query: string) {
   }, [query]);
 
   return state;
+}
+
+// How players use the app, and the orders and confirm popup behind it (D-036). Daily totals that change slowly,
+// so it loads once when the page opens. `reload` is for the retry button.
+export function useAdminMonitoring() {
+  const [state, setState] = useState<State<AdminMonitoring>>({ data: null, error: null, isLoading: true });
+  const alive = useRef(true);   // false after the page closes, so a late answer doesn't set state
+
+  // The request alone. The first load needs no "loading" set (the state starts in it); the retry sets it first.
+  const load = useCallback(
+    () =>
+      apiFetch<AdminMonitoring>('/admin/monitoring')
+        .then((data) => {
+          if (alive.current) setState({ data, error: null, isLoading: false });
+        })
+        .catch((e) => {
+          console.error('Could not load the monitoring numbers', e);
+          if (alive.current) setState((s) => ({ ...s, error: 'לא הצלחנו לטעון את נתוני הניטור', isLoading: false }));
+        }),
+    [],
+  );
+
+  const reload = useCallback(() => {
+    setState((s) => ({ ...s, isLoading: true, error: null }));
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    alive.current = true;
+    void load();
+    return () => {
+      alive.current = false;
+    };
+  }, [load]);
+
+  return { ...state, reload };
+}
+
+// The database's health, every 30 s while the page is open, on top and visible. A hidden tab or an app in the
+// background stops asking (react-native-web reports a hidden tab as 'background'), and coming back asks at once.
+// So does leaving the page: on the web the stack keeps a page mounted, hidden, under the one a tab opened, so
+// without the focus check a page left through the top bar would go on asking, one more poller per visit.
+// A failed check clears the numbers rather than showing the last good ones as if they were live. Most failures
+// mean the database or server can't be reached: the admin check itself needs the database, so when Postgres is
+// down this request fails too, and that failure is the signal. A 401 or 403 (`denied`) is different: the server
+// refused this caller (the admin role was removed, or the session ended), so the database did answer.
+export function useAdminDb() {
+  const [state, setState] = useState<State<AdminDbHealth> & { denied: boolean }>({
+    data: null, error: null, denied: false, isLoading: true,
+  });
+  const focused = useIsFocused();
+
+  useEffect(() => {
+    if (!focused) return;
+    let alive = true;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const check = async () => {
+      setState((s) => ({ ...s, isLoading: true }));
+      try {
+        const data = await apiFetch<AdminDbHealth>('/admin/db');
+        if (alive) setState({ data, error: null, denied: false, isLoading: false });
+      } catch (e) {
+        console.error('Could not check the database', e);
+        const denied = e instanceof ApiError && (e.status === 401 || e.status === 403);
+        if (alive) setState({ data: null, error: dbErrorText(e), denied, isLoading: false });
+      }
+    };
+    const start = () => {
+      if (timer) return;
+      check();
+      timer = setInterval(check, DB_REFRESH_MS);
+    };
+    const stop = () => {
+      if (timer) clearInterval(timer);
+      timer = null;
+    };
+
+    if (AppState.currentState === 'active') start();
+    const sub = AppState.addEventListener('change', (s) => (s === 'active' ? start() : stop()));
+    return () => {
+      alive = false;
+      stop();
+      sub.remove();
+    };
+  }, [focused]);
+
+  return state;
+}
+
+// Why the database check failed, in one short line for the card: the server's own answer when there was one.
+function dbErrorText(e: unknown): string {
+  if (e instanceof ApiError) {
+    const reason = (e.body as { error?: unknown } | null)?.error;
+    return `השרת ענה ${e.status}${typeof reason === 'string' ? ` · ${reason}` : ''}`;
+  }
+  if (e instanceof Error && e.name === 'AbortError') return 'השרת לא ענה תוך 10 שניות';
+  return `הבקשה לא הגיעה לשרת${e instanceof Error ? ` · ${e.message}` : ''}`;
 }
