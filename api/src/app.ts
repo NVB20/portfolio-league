@@ -14,6 +14,8 @@ import { cachedDaily, fetchYahooDaily, getChart, type FetchDaily } from './chart
 import { pickChartSettings } from './chartSettings.js';
 import { ACTIVITY_DAYS, getAdminActivity, getAdminOverview, getAdminPlayers, requireAdmin } from './admin.js';
 import { recordSeen } from './presence.js';
+import { hasUsage, parseUsageText, recordUsage } from './usage.js';
+import { getAdminMonitoring, getDbHealth, oneAtATime } from './monitoring.js';
 import { sendOrder } from './orders.js';
 import { parseOrderJson } from './game/orderRules.js';
 import { advanceClock, parseAdvanceBody, startClock, stopClock } from './clockActions.js';
@@ -66,11 +68,19 @@ export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDai
     return c.json(await upsertUser(db, uid, email, name));
   });
 
-  // The app checks in when it opens and about once a minute while open (D-026). The body is ignored:
-  // the server alone decides whether this starts a new visit.
+  // The app checks in when it opens and about once a minute while open (D-026). The server alone decides whether
+  // this starts a new visit: nothing in the body can claim one. The optional body is a usage report (UsageReport,
+  // D-036): time and views per page, and the confirm popup, since the last check-in. It is checked and capped
+  // before anything is written, so a bad body is a 400 that writes nothing, not even the check-in. No body = a
+  // plain check-in, as older app versions send. The report is written even when the check-in itself writes
+  // nothing (under 30 s apart), in its own statement after the presence transaction.
   me.post('/seen', async (c) => {
-    const seen = await recordSeen(db, c.get('user').uid);
+    const uid = c.get('user').uid;
+    const usage = parseUsageText(await c.req.text().catch(() => ''));
+    if (!usage.ok) return c.json({ error: usage.error }, 400);
+    const seen = await recordSeen(db, uid);
     if (!seen) return c.json({ error: 'user not found, call POST /me first' }, 404);
+    if (hasUsage(usage.report)) await recordUsage(db, uid, usage.report);
     return c.json({ ok: true });
   });
 
@@ -184,6 +194,16 @@ export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDai
     }
     return c.json(await getAdminActivity(db, days));
   });
+
+  // The monitoring page (D-036): orders sent and the confirm popup, time and views per page for today, 7 and
+  // 30 days, and the usage chart's 30 days and 12 weeks. Usage is real time, from POST /me/seen's reports.
+  // One run at a time per API process: a request that arrives during a run shares its answer.
+  const monitoring = oneAtATime(() => getAdminMonitoring(db));
+  admin.get('/monitoring', async (c) => c.json(await monitoring()));
+
+  // The database's health, read live (D-036). Its own route, so the page can refresh it every 30 s without
+  // running the usage queries again. If Postgres is down, the admin check above already fails.
+  admin.get('/db', async (c) => c.json(await getDbHealth(db)));
 
   // The clock moves (D-017, D-030). Each runs the opens and closes it passes, then moves the clock and logs the
   // action in one transaction. 409 NO_WORLD | CLOCK_BUSY (the runner is busy; try again) | CLOCK_AT_END and

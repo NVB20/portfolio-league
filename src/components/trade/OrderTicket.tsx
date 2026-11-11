@@ -96,8 +96,10 @@ export function AmountSlider({ side, value, max, onPick, disabled = false }: {
   // The drag handler is made once and reads the latest props from here.
   const live = useRef({ range, off, width, onPick });
   live.current = { range, off, width, onPick };
+  // Where the drag started along the track. A ref, not a variable inside the handler: React may not reassign a
+  // render's variable after the render is done.
+  const startX = useRef(0);
   const pan = useMemo(() => {
-    let startX = 0;
     const pickAt = (px: number) => {
       const { range: r, width: w, onPick: pick } = live.current;
       if (r && w > THUMB) pick(sliderAmount((px - THUMB / 2) / (w - THUMB), r));
@@ -108,10 +110,10 @@ export function AmountSlider({ side, value, max, onPick, disabled = false }: {
       onPanResponderTerminationRequest: () => false,   // a drag that drifts up or down stays a drag, not a scroll
       // The children ignore touches, so locationX is along the track; a move adds how far the finger went.
       onPanResponderGrant: (e) => {
-        startX = e.nativeEvent.locationX;
-        pickAt(startX);
+        startX.current = e.nativeEvent.locationX;
+        pickAt(startX.current);
       },
-      onPanResponderMove: (_, g) => pickAt(startX + g.dx),
+      onPanResponderMove: (_, g) => pickAt(startX.current + g.dx),
     });
   }, []);
 
