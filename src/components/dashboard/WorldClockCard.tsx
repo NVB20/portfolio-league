@@ -1,5 +1,6 @@
 // The shared world clock and both markets' hours on today's timeline (Israel time, 08:00-24:00).
-// "Advance clock" is admin-only (DD-10, D-001): it opens the admin page, where the clock moves are (D-030).
+// "Advance clock" is admin-only (DD-10, D-001): it opens the admin page scrolled to the world clock section,
+// where the advance / start / stop buttons are (D-030).
 
 import { StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
@@ -37,7 +38,12 @@ export function WorldClockCard({ clock, isAdmin }: { clock: ClockView | null; is
       )}
       {isAdmin ? (
         <View style={styles.admin}>
-          <Button label="קדם שעון ▸" small onPress={() => router.navigate('/admin-dashboard')} hint="מנהל בלבד. קידום השעון בדף הניהול" />
+          <Button
+            label="קדם שעון ▸"
+            small
+            onPress={() => router.navigate({ pathname: '/admin-dashboard', params: { to: 'clock' } })}
+            hint="מנהל בלבד. פותח את שעון העולם בדף הניהול"
+          />
         </View>
       ) : null}
     </Card>

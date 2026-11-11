@@ -9,7 +9,7 @@
 //                  the gaps between rows widen with scroll speed
 
 import { Children, ReactNode } from 'react';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import { Animated, LayoutChangeEvent, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../../useTheme';
 import { useLayout, webSticky } from './layout';
 import { FadeUp, OffsetProvider, ScrollReveal, SeenContext, Spread, useDrift, useMeasure, useSeen } from './motion';
@@ -25,10 +25,11 @@ type Props = {
   after?: ReactNode;     // under the actions, still in the headline column (the dashboard's world time panel)
   alt?: boolean;
   first?: boolean;       // the first section: no divider above, and it plays the load sequence
+  onLayout?: (e: LayoutChangeEvent) => void;   // the whole section's box, for a screen that scrolls to what comes after it
   children: ReactNode;   // the cards, one CardRow per child
 };
 
-export function Section({ eyebrow, title, body, actions, after, alt = false, first = false, children }: Props) {
+export function Section({ eyebrow, title, body, actions, after, alt = false, first = false, onLayout, children }: Props) {
   const { colors } = useTheme();
   const { isWide, gap, headlineSize } = useLayout();
   const stage = useMeasure();
@@ -74,7 +75,10 @@ export function Section({ eyebrow, title, body, actions, after, alt = false, fir
 
   return (
     <View
-      onLayout={stage.onLayout}
+      onLayout={(e) => {
+        stage.onLayout(e);
+        onLayout?.(e);
+      }}
       style={[styles.stage, { borderTopColor: colors.line, borderTopWidth: first ? 0 : 1 }, isWide ? styles.stageWide : null]}
     >
       {isWide && alt ? [cards, copy] : [copy, cards]}

@@ -6,14 +6,14 @@
 //   1. Overview: who is online now, who came today, who came back several times (D-026), sign-ups,
 //      30-day trend with next-day / 7-day return
 //   2. World clock: advance / start / stop (POST /admin/clock/*), the ticker light, both markets, the
-//      engine's last run, the order queue
+//      engine's last run, the order queue. "קדם שעון" on the player dashboard opens the page here (?to=clock)
 //   3. Players: the top 5, searchable; more than that is the leaderboard's job
 //   4. System: how far the data goes, the admin action log
 // Numbers we don't have yet say what will fill them, never a made-up value.
 
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { router } from 'expo-router';
+import { ActivityIndicator, Animated, LayoutChangeEvent, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { router, useLocalSearchParams } from 'expo-router';
 import type { AdminActionView, AdminOverview, AdminPlayer, AdminRunView } from '../../api/src/contract';
 import { useAuth } from '../auth/AuthProvider';
 import { useTheme } from '../useTheme';
@@ -48,6 +48,8 @@ import { WorldClockCard } from '../components/dashboard/WorldClockCard';
 
 // Advancing can't be undone (the clock never goes back), so the first press only arms the button.
 const CONFIRM_MS = 4_000;
+// After the trend card gets its data: time for it to lay out at its new height before the jump to the clock stops following.
+const JUMP_SETTLE_MS = 300;
 
 export default function AdminDashboardScreen() {
   const { colors } = useTheme();
@@ -80,14 +82,36 @@ function AdminView({ data, name, reload }: { data: AdminOverview; name: string; 
   const { colors } = useTheme();
   const { motion, onScroll } = useScrollMotion();
   const wrap = useMeasure(0);
+  const activity = useAdminActivity();
+  const scroll = useRef<{ scrollTo: (o: { y: number; animated?: boolean }) => void } | null>(null);
+
+  // Opened from "קדם שעון" (?to=clock): start at the world clock section. The trend card above it gets its
+  // data after the page opens and grows, pushing the clock down, so the jump follows until that card is done.
+  // The clock section starts where the overview ends. Read it from the overview: on web, onLayout fires only
+  // when a box changes size, so the clock section itself never reports being pushed down.
+  const { to } = useLocalSearchParams<{ to?: string }>();
+  const followClock = useRef(to === 'clock');
+  const onOverviewLayout = (e: LayoutChangeEvent) => {
+    if (!followClock.current) return;
+    const { y, height } = e.nativeEvent.layout;
+    // The content starts under the bar (paddingTop: BAR_HEIGHT), so this puts the clock section right under it.
+    scroll.current?.scrollTo({ y: y + height, animated: !motion.reduce });
+  };
+  useEffect(() => {
+    if (activity.isLoading || !followClock.current) return;
+    const t = setTimeout(() => {
+      followClock.current = false;
+    }, JUMP_SETTLE_MS);
+    return () => clearTimeout(t);
+  }, [activity.isLoading]);
 
   return (
     <MotionProvider value={motion}>
       <View style={[styles.page, { direction: 'rtl', backgroundColor: colors.page }]}>
-        <Animated.ScrollView contentContainerStyle={styles.scroll} onScroll={onScroll} scrollEventThrottle={16}>
+        <Animated.ScrollView ref={scroll as never} contentContainerStyle={styles.scroll} onScroll={onScroll} scrollEventThrottle={16}>
           <View style={styles.wrap} onLayout={wrap.onLayout}>
             <OffsetProvider value={wrap.abs}>
-              <Overview d={data} />
+              <Overview d={data} activity={activity} onLayout={onOverviewLayout} />
               <ClockSection d={data} reload={reload} />
               <PlayersSection total={data.players.total} />
               <SystemSection d={data} />
@@ -106,12 +130,15 @@ function AdminView({ data, name, reload }: { data: AdminOverview; name: string; 
 
 // ---------- 1. Overview ----------
 
-function Overview({ d }: { d: AdminOverview }) {
+type Activity = ReturnType<typeof useAdminActivity>;
+
+function Overview({ d, activity, onLayout }: { d: AdminOverview; activity: Activity; onLayout: (e: LayoutChangeEvent) => void }) {
   const p = d.players;
   const pr = d.presence;
   return (
     <Section
       first
+      onLayout={onLayout}
       eyebrow="לוח ניהול · ליגת תיקים"
       title={
         <>
@@ -160,16 +187,16 @@ function Overview({ d }: { d: AdminOverview }) {
         </Card>
       </CardRow>
       <CardRow>
-        <TrendCard />
+        <TrendCard activity={activity} />
       </CardRow>
     </Section>
   );
 }
 
 // Players per day for 30 days, and how many come back the next day and a week later (D-026).
-// This is how the retention feature will be measured.
-function TrendCard() {
-  const { data, error, isLoading } = useAdminActivity();
+// This is how the retention feature will be measured. The page loads the data (AdminView needs to know when it lands).
+function TrendCard({ activity }: { activity: Activity }) {
+  const { data, error, isLoading } = activity;
   const { colors } = useTheme();
   const p = usePalette();
   const days = data?.days ?? [];
