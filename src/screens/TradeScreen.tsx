@@ -5,7 +5,7 @@
 //   3. After sending: pending orders and how an order executes
 //
 // Data: GET /me/trade (one request) + GET /me/chart/:symbol for the full chart.
-// Sending: the second press of the confirm step calls POST /me/orders (useSendOrder). After any answer but a
+// Sending: the send button opens a confirm popup, whose button calls POST /me/orders (useSendOrder). After any answer but a
 // rate limit the trade data is loaded again: a success or a lost answer changes pending orders, available cash
 // and free units, and a refusal means the preview was out of date. The preview checks the same rules as the
 // server when sending (D-028); the server checks them again, and the runner at the execution price.
@@ -20,7 +20,7 @@ import { useTheme } from '../useTheme';
 import { ilsExact, pct } from '../dashboard/format';
 import { marketsChanged } from '../dashboard/markets';
 import { useElapsed } from '../dashboard/useElapsed';
-import { EXCHANGE, executionShort, GAME_OVER_LINE, marketLine, money, sentToast } from '../trade/copy';
+import { checkChip, EXCHANGE, executionShort, GAME_OVER_LINE, marketLine, money, sentToast } from '../trade/copy';
 import { orderBody } from '../trade/orderBody';
 import { checkOrder, clampLevel, defaultLevels, pendingBuysIls, pendingListCut, type Levels, type Side } from '../trade/orderCheck';
 import { useSendOrder } from '../trade/useSendOrder';
@@ -37,7 +37,7 @@ import { BAR_HEIGHT, TopBar } from '../components/dashboard/TopBar';
 import { BigChart } from '../components/trade/BigChart';
 import type { ChartPalette } from '../components/trade/BigChart.types';
 import { LevelInputs, PositionToggle, RiskReward, StatsStrip, type Measurement } from '../components/trade/OrderCenter';
-import { AmountField, QuickAmounts, SendBox, SideToggle, Toast } from '../components/trade/OrderTicket';
+import { AmountField, AmountSlider, ConfirmOrder, SendBox, SideToggle, Toast } from '../components/trade/OrderTicket';
 import { PickerCard } from '../components/trade/PickerCard';
 import { TenDayChartCard } from '../components/trade/TenDayChart';
 import { CashCard, PositionCard, PreviewCard, RulesCard } from '../components/trade/TradeCards';
@@ -47,7 +47,7 @@ const DEFAULT_SYMBOL = 'NVDA';
 const DEFAULT_AMOUNT = '10000';
 const TOAST_MS = 3600;
 const ERROR_TOAST_MS = 6500;   // a failure has more to read
-const ARM_MS = 450;            // a confirm press this soon after the step opened is a double-click's second click
+const ARM_MS = 450;            // a press this soon after the popup opened is a double-click's second click
 const FRESH_MS = 60_000;       // opening the confirm step reloads data older than this (an admin clock move, ...)
 const UPDATING_LINE = 'מעדכן את מועד הביצוע…';
 
@@ -185,21 +185,30 @@ function TradeView({ data, name, uid, loading, reload }: {
   const body = sec && check.ok ? orderBody({ symbol: sec.symbol, side, amount, sell: check.sell }) : null;
   const orderKey = `${symbol}:${side}:${amountText}`;
 
-  // One confirm step for both send boxes (the ticket and the order center), so a send from either closes both.
+  // One confirm popup for both send buttons (the ticket and the order center).
   // Any change to the order (side, amount, security) closes it.
   const [confirming, setConfirming] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
   const openedAt = useRef(0);
   useEffect(() => setConfirming(false), [orderKey]);
 
+  // A double-click on a send button must neither send nor close the popup with its second click.
+  const armed = () => Date.now() - openedAt.current >= ARM_MS;
+
   const openConfirm = () => {
     openedAt.current = Date.now();
+    setConfirmError(null);
     setConfirming(true);
     prepare(orderKey, body);
     if (Date.now() - loadedAt > FRESH_MS && !loading) void reload();
   };
+  const closeConfirm = () => {
+    if (busy || !armed()) return;   // an order on its way: wait for its answer
+    setConfirming(false);
+  };
   const confirm = async () => {
-    // The confirm button sits where the send button was: a double-click must not send.
-    if (Date.now() - openedAt.current < ARM_MS) return;
+    if (!armed()) return;
+    setConfirmError(null);
     const out = await send(orderKey, body);
     if (!out) return;   // a send is already on its way, or nothing to send
     if (out.ok) {
@@ -208,11 +217,13 @@ function TradeView({ data, name, uid, loading, reload }: {
       void reload();    // pending orders, available cash and free units
       return;
     }
-    showToast(out.message, ERROR_TOAST_MS);
     // After a refusal the preview was out of date; after no answer the order may be pending. The reload keeps
-    // orderKey, so after no answer the confirm step stays open, and pressing again resends the same body and id.
+    // orderKey, so after no answer the popup stays open with the reason, and pressing again resends the same
+    // body and id. Any other failure closes it and says why in a toast.
     if (out.reload) void reload();
-    if (!out.retry) setConfirming(false);
+    if (out.retry) return setConfirmError(out.message);
+    setConfirming(false);
+    showToast(out.message, ERROR_TOAST_MS);
   };
 
   const execLine = moved
@@ -222,20 +233,7 @@ function TradeView({ data, name, uid, loading, reload }: {
       : sec.execution.gameOver
         ? GAME_OVER_LINE
         : `${executionShort(sec.execution, today)} · ${EXCHANGE[sec.exchange]}`;
-  const sendBox = sec ? (
-    <SendBox
-      side={side}
-      amount={amount}
-      ok={check.ok}
-      execLine={execLine}
-      confirming={confirming}
-      sending={busy}
-      updating={updating}
-      onOpen={openConfirm}
-      onBack={() => setConfirming(false)}
-      onConfirm={confirm}
-    />
-  ) : null;
+  const sendBox = <SendBox side={side} ok={check.ok} sending={busy} updating={updating} onOpen={openConfirm} />;
 
   if (!sec) {
     return (
@@ -256,7 +254,7 @@ function TradeView({ data, name, uid, loading, reload }: {
       <SideToggle side={side} onChange={setSide} disabled={busy} />
       <View>
         <AmountField value={amountText} onChange={setAmountText} disabled={busy} />
-        <QuickAmounts side={side} max={check.maxIls} onPick={(v) => setAmountText(String(v))} disabled={busy} />
+        <AmountSlider side={side} value={amount} max={check.maxIls} onPick={(v) => setAmountText(String(v))} disabled={busy} />
       </View>
       {sendBox}
     </View>
@@ -399,6 +397,22 @@ function TradeView({ data, name, uid, loading, reload }: {
 
         <Toast message={toast} />
         <TopBar clock={data.clock} name={name} rankLine={null} active="trade" />
+        <ConfirmOrder
+          open={confirming}
+          side={side}
+          symbol={sec.symbol}
+          name={sec.nameHe}
+          amount={amount}
+          units={check.units}
+          execLine={execLine}
+          ok={check.ok}
+          blocked={check.ok ? null : checkChip(check).label}
+          error={confirmError}
+          sending={busy}
+          updating={updating}
+          onBack={closeConfirm}
+          onConfirm={confirm}
+        />
       </View>
     </MotionProvider>
   );

@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  CAP, checkOrder, cleanAmount, MIN_ORDER_ILS, PENDING_LIST_MAX, pendingBuysIls, pendingListCut, sellPlan, shortfallIls, shownFreeIls,
+  CAP, checkOrder, cleanAmount, groupAmount, MIN_ORDER_ILS, SLIDER_STEP, sliderAmount, sliderRange, sliderRatio, PENDING_LIST_MAX, pendingBuysIls, pendingListCut, sellPlan, shortfallIls, shownFreeIls,
   type CheckInput, type CheckStatus, type HoldingInput,
 } from '../../src/trade/orderCheck.js';
 import { bodyKey, memoryFor, newClientOrderId, orderBody, SendMemory, type OrderBody } from '../../src/trade/orderBody.js';
@@ -391,6 +391,58 @@ describe('cleanAmount (unchanged)', () => {
   it('digits only, no leading zeros, at most 7 digits', () => {
     expect(cleanAmount('₪0012,500')).toBe('12500');
     expect(cleanAmount('123456789')).toBe('1234567');
+  });
+});
+
+describe('groupAmount', () => {
+  it('shows the digits with thousands commas, and an empty field stays empty', () => {
+    expect(groupAmount('')).toBe('');
+    expect(groupAmount('100')).toBe('100');
+    expect(groupAmount('100000')).toBe('100,000');
+    expect(groupAmount('1000000')).toBe('1,000,000');
+  });
+
+  it('round-trips through cleanAmount', () => {
+    expect(cleanAmount(groupAmount('1234567'))).toBe('1234567');
+  });
+});
+
+describe('the amount slider', () => {
+  it('a buy runs from the ₪100 minimum to the whole-₪ maximum, or not at all under ₪100', () => {
+    expect(sliderRange('buy', 187_654.9)).toEqual({ lo: MIN_ORDER_ILS, hi: 187_654 });
+    expect(sliderRange('buy', 100)).toEqual({ lo: 100, hi: 100 });
+    expect(sliderRange('buy', 99.99)).toBeNull();
+    expect(sliderRange('buy', 0)).toBeNull();
+  });
+
+  it('a sell worth under ₪100 can still sell everything; nothing free means no slider', () => {
+    expect(sliderRange('sell', 5_000)).toEqual({ lo: 100, hi: 5_000 });
+    expect(sliderRange('sell', 50)).toEqual({ lo: 50, hi: 50 });
+    expect(sliderRange('sell', 0)).toBeNull();
+  });
+
+  it('the ends are exactly the minimum and the maximum; in between moves in ₪100 steps', () => {
+    const r = { lo: 100, hi: 187_654 };
+    expect(sliderAmount(0, r)).toBe(100);
+    expect(sliderAmount(-0.2, r)).toBe(100);
+    expect(sliderAmount(1, r)).toBe(187_654);
+    expect(sliderAmount(1.3, r)).toBe(187_654);
+    expect(sliderAmount(0.5, r) % SLIDER_STEP).toBe(0);
+    expect(sliderAmount(0.99999, r)).toBeLessThanOrEqual(187_654);   // rounding up never passes the maximum
+  });
+
+  it('a one-amount range always picks it', () => {
+    expect(sliderAmount(0, { lo: 50, hi: 50 })).toBe(50);
+    expect(sliderAmount(0.4, { lo: 50, hi: 50 })).toBe(50);
+  });
+
+  it('follows the typed amount, and an amount outside the range sits at an end', () => {
+    const r = { lo: 100, hi: 10_100 };
+    expect(sliderRatio(5_100, r)).toBe(0.5);
+    expect(sliderRatio(0, r)).toBe(0);
+    expect(sliderRatio(50_000, r)).toBe(1);
+    expect(sliderRatio(50, { lo: 50, hi: 50 })).toBe(1);
+    expect(sliderRatio(0, { lo: 50, hi: 50 })).toBe(0);
   });
 });
 

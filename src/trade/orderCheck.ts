@@ -174,6 +174,39 @@ export function cleanAmount(text: string): string {
   return text.replace(/\D/g, '').replace(/^0+(?=\d)/, '').slice(0, MAX_DIGITS);
 }
 
+// The amount field as the player sees it: '100000' → '100,000'. What the screen keeps is cleanAmount's digits.
+export function groupAmount(digits: string): string {
+  return digits === '' ? '' : Number(digits).toLocaleString('en-US');
+}
+
+// The amount slider under the amount field: from the ₪100 minimum to the most this order may be (Check.maxIls:
+// a buy's available cash and the 20% room left in the security, a sell's free units). It moves in ₪100 steps;
+// its far end is the exact maximum.
+export const SLIDER_STEP = 100;
+export type SliderRange = { lo: number; hi: number };
+
+// null = there is nothing it could pick (a buy with less than ₪100 of room or cash, a sell with no free unit).
+// A sell worth under ₪100 may still sell everything, so its range is that one amount.
+export function sliderRange(side: Side, maxIls: number): SliderRange | null {
+  const hi = Math.floor(maxIls);
+  if (side === 'buy') return hi >= MIN_ORDER_ILS ? { lo: MIN_ORDER_ILS, hi } : null;
+  return hi >= 1 ? { lo: Math.min(MIN_ORDER_ILS, hi), hi } : null;
+}
+
+// Where an amount sits along the slider, 0 to 1. An amount outside the range sits at its end.
+export function sliderRatio(amount: number, { lo, hi }: SliderRange): number {
+  if (hi <= lo) return amount >= hi ? 1 : 0;
+  return Math.min(1, Math.max(0, (amount - lo) / (hi - lo)));
+}
+
+// The amount at a point along the slider (0 to 1): whole ₪100 steps in between, exactly lo and hi at the ends.
+export function sliderAmount(ratio: number, { lo, hi }: SliderRange): number {
+  if (ratio >= 1 || hi <= lo) return hi;
+  if (ratio <= 0) return lo;
+  const v = Math.round((lo + ratio * (hi - lo)) / SLIDER_STEP) * SLIDER_STEP;
+  return Math.min(hi, Math.max(lo, v));
+}
+
 // A price field: digits and one dot, two decimals, at most 10 characters.
 export function cleanPrice(text: string): string {
   let s = text.replace(/[^\d.]/g, '');

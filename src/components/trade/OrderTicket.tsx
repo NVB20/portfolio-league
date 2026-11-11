@@ -1,15 +1,16 @@
 // The order controls, shared by the ticket (stage 1) and the order center beside the chart (stage 2):
-// buy/sell switch, ₪ amount, quick amounts, and the send button with its two-step confirm.
-// The screen does the sending (useSendOrder) and holds the one confirm step both send boxes show; these only
+// buy/sell switch, ₪ amount, the amount slider, the send button, and the confirm popup it opens.
+// The screen does the sending (useSendOrder) and holds the one confirm popup both send buttons open; these only
 // ask for it. While an order is on its way, everything that would change it is disabled.
 
-import { useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useMemo, useRef, useState } from 'react';
+import { Modal, PanResponder, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useTheme } from '../../useTheme';
 import { ils } from '../../dashboard/format';
-import { cleanAmount, MIN_ORDER_ILS, type Side } from '../../trade/orderCheck';
+import { cleanAmount, groupAmount, MIN_ORDER_ILS, SLIDER_STEP, sliderAmount, sliderRange, sliderRatio, type Side } from '../../trade/orderCheck';
 import { Button } from '../dashboard/Button';
-import { ltr } from '../dashboard/layout';
+import { ltr, rtl } from '../dashboard/layout';
+import { useReduce } from '../dashboard/motion';
 
 export function SideToggle({ side, onChange, disabled = false }: { side: Side; onChange: (s: Side) => void; disabled?: boolean }) {
   const { colors } = useTheme();
@@ -38,6 +39,8 @@ export function SideToggle({ side, onChange, disabled = false }: { side: Side; o
   );
 }
 
+// `value` is digits only; the field shows them with commas (100,000), and cleanAmount takes the commas out again.
+// No maxLength: the commas would count toward it, and cleanAmount already stops at 7 digits.
 export function AmountField({ value, onChange, compact = false, disabled = false }: {
   value: string;
   onChange: (v: string) => void;
@@ -52,14 +55,13 @@ export function AmountField({ value, onChange, compact = false, disabled = false
       <View style={[styles.inp, compact && styles.inpCompact, { backgroundColor: colors.surface, borderColor: focused ? colors.accent : colors.line2 }, disabled && styles.off]}>
         <Text style={[styles.cur, { color: colors.faint }]}>₪</Text>
         <TextInput
-          value={value}
+          value={groupAmount(value)}
           onChangeText={(t) => onChange(cleanAmount(t))}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
           editable={!disabled}
           keyboardType="number-pad"
           inputMode="numeric"
-          maxLength={7}
           autoComplete="off"
           autoCorrect={false}
           accessibilityLabel="סכום בשקלים"
@@ -72,80 +74,177 @@ export function AmountField({ value, onChange, compact = false, disabled = false
   );
 }
 
-// ₪10,000 / ₪25,000 / ₪50,000 / the most allowed (buy) or every free unit (sell: `max` is their value as
-// shown, which sells them all). The last one is off when there is nothing it could fill in (a buy under the
-// ₪100 minimum, a sell with no free unit), so the preview keeps saying why instead of "enter an amount".
-export function QuickAmounts({ side, max, onPick, disabled = false }: { side: Side; max: number; onPick: (v: number) => void; disabled?: boolean }) {
+const THUMB = 22;
+
+// The amount as a slider, from the ₪100 minimum to the most this order may be (`max` = Check.maxIls: a buy's
+// available cash and the 20% room left in this security, a sell's free units, whose far end sells them all).
+// It follows what is typed, and moving it types the amount. The minimum is on the left, like the weight bars
+// and the amount field. It is off when there is nothing it could pick, so the preview keeps saying why.
+export function AmountSlider({ side, value, max, onPick, disabled = false }: {
+  side: Side;
+  value: number;
+  max: number;
+  onPick: (v: number) => void;
+  disabled?: boolean;
+}) {
   const { colors } = useTheme();
-  const top = Math.floor(max);
-  const items: [string, number, boolean][] = [
-    [ils(10_000), 10_000, true],
-    [ils(25_000), 25_000, true],
-    [ils(50_000), 50_000, true],
-    [side === 'buy' ? 'המקסימום המותר' : 'מכור הכל', top, top >= (side === 'buy' ? MIN_ORDER_ILS : 1)],
-  ];
+  const range = sliderRange(side, max);
+  const off = disabled || !range;
+  const [width, setWidth] = useState(0);
+  const x = (range ? sliderRatio(value, range) : 0) * Math.max(0, width - THUMB);   // the thumb's left edge
+
+  // The drag handler is made once and reads the latest props from here.
+  const live = useRef({ range, off, width, onPick });
+  live.current = { range, off, width, onPick };
+  const pan = useMemo(() => {
+    let startX = 0;
+    const pickAt = (px: number) => {
+      const { range: r, width: w, onPick: pick } = live.current;
+      if (r && w > THUMB) pick(sliderAmount((px - THUMB / 2) / (w - THUMB), r));
+    };
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => !live.current.off,
+      onMoveShouldSetPanResponder: () => !live.current.off,
+      onPanResponderTerminationRequest: () => false,   // a drag that drifts up or down stays a drag, not a scroll
+      // The children ignore touches, so locationX is along the track; a move adds how far the finger went.
+      onPanResponderGrant: (e) => {
+        startX = e.nativeEvent.locationX;
+        pickAt(startX);
+      },
+      onPanResponderMove: (_, g) => pickAt(startX + g.dx),
+    });
+  }, []);
+
+  // Arrow keys (web) and screen readers move it by a twentieth of the range.
+  const nudge = range ? Math.max(SLIDER_STEP, Math.round((range.hi - range.lo) / 20 / SLIDER_STEP) * SLIDER_STEP) : 0;
+  const to = (v: number) => {
+    if (range && !off) onPick(Math.min(range.hi, Math.max(range.lo, v)));
+  };
+  const keys = {
+    onKeyDown: (e: { key: string; preventDefault: () => void }) => {
+      if (!range) return;
+      const v = ({ ArrowRight: value + nudge, ArrowUp: value + nudge, ArrowLeft: value - nudge, ArrowDown: value - nudge, Home: range.lo, End: range.hi } as Record<string, number>)[e.key];
+      if (v === undefined) return;
+      e.preventDefault();
+      to(v);
+    },
+  } as object;
+
   return (
-    <View style={styles.quick}>
-      {items.map(([label, v, can]) => {
-        const off = disabled || !can;
-        return (
-          <Pressable
-            key={label}
-            onPress={() => onPick(v)}
-            disabled={off}
-            accessibilityRole="button"
-            accessibilityState={{ disabled: off }}
-            style={[styles.quickBtn, { borderColor: colors.line2, backgroundColor: colors.surface }, off && styles.off]}
-          >
-            <Text style={[styles.quickText, { color: colors.muted }]}>{label}</Text>
-          </Pressable>
-        );
-      })}
+    <View style={styles.slider}>
+      <View
+        {...pan.panHandlers}
+        {...keys}
+        onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
+        focusable={!off}
+        accessibilityRole="adjustable"
+        accessibilityLabel="סכום הפקודה"
+        accessibilityState={{ disabled: off }}
+        accessibilityValue={range ? { min: range.lo, max: range.hi, now: Math.min(range.hi, Math.max(range.lo, value)), text: ils(value) } : undefined}
+        accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+        onAccessibilityAction={(e) => to(value + (e.nativeEvent.actionName === 'increment' ? nudge : -nudge))}
+        style={[styles.track, ltr, off ? styles.off : webDrag]}
+      >
+        <View style={[styles.rail, { backgroundColor: colors.line2 }]} />
+        <View style={[styles.fill, { width: x + THUMB / 2, backgroundColor: colors.accent }]} />
+        <View style={[styles.thumb, { left: x, backgroundColor: colors.accent, borderColor: colors.page }]} />
+      </View>
+      <View style={[styles.ends, ltr]}>
+        <Text style={[styles.endText, { color: colors.faint }]}>{ils(range?.lo ?? MIN_ORDER_ILS)}</Text>
+        <Text style={[styles.endText, { color: colors.faint }]}>{`${side === 'buy' ? 'מקסימום' : 'הכל'} ${ils(Math.max(0, Math.floor(max)))}`}</Text>
+      </View>
     </View>
   );
 }
 
-// The send button. First press asks to confirm (an order can't be cancelled); the second sends.
-// The screen holds `confirming`, so both send boxes show the same step and a send from either closes both.
+// The send button. It opens the confirm popup (an order can't be cancelled); the popup's button sends.
 // sending: the order is on its way. updating: the trade data is loading again (after a send, or because the
 // clock moved on), so the preview may be out of date: nothing can be sent until it is current.
-export function SendBox({ side, amount, ok, execLine, confirming, sending, updating, onOpen, onBack, onConfirm }: {
+export function SendBox({ side, ok, sending, updating, onOpen }: {
   side: Side;
-  amount: number;
   ok: boolean;
-  execLine: string;      // "שער הפתיחה · 16:30 · NASDAQ"
-  confirming: boolean;
   sending: boolean;
   updating: boolean;
-  onOpen: () => void;      // open the confirm step
-  onBack: () => void;      // close it without sending
-  onConfirm: () => void;   // send (the screen closes the step when done, or keeps it for a safe retry)
+  onOpen: () => void;   // open the confirm popup
 }) {
   const { colors } = useTheme();
-  const verb = side === 'buy' ? 'קנייה' : 'מכירה';
   const wait = sending ? 'שולח…' : updating ? 'מעדכן…' : null;
-
-  if (confirming) {
-    return (
-      <View style={styles.send}>
-        <Text style={[styles.warn, { color: colors.warn }]}>לא ניתן לבטל אחרי השליחה.</Text>
-        <View style={styles.pair}>
-          <View style={styles.flex}>
-            <Button label={wait ?? `אשר ${verb} · ${ils(amount)}`} variant="primary" disabled={wait !== null || !ok} onPress={onConfirm} />
-          </View>
-          <View style={styles.flex}>
-            <Button label="חזור" disabled={sending} onPress={onBack} />
-          </View>
-        </View>
-        <Text style={[styles.warn, { color: colors.faint }]}>{execLine}</Text>
-      </View>
-    );
-  }
-
   return (
     <View style={styles.send}>
-      <Button label={wait ?? `שלח פקודת ${verb}`} variant="primary" disabled={!ok || wait !== null} onPress={onOpen} />
+      <Button label={wait ?? `שלח פקודת ${side === 'buy' ? 'קנייה' : 'מכירה'}`} variant="primary" disabled={!ok || wait !== null} onPress={onOpen} />
       <Text style={[styles.warn, { color: colors.faint }]}>פקודה שנשלחה לא ניתנת לביטול.</Text>
+    </View>
+  );
+}
+
+// The confirm step, as a popup over the screen: the order, when it executes, and that it can't be cancelled.
+// A tap outside, Escape or back closes it without sending (the screen ignores that while the order is on its
+// way). The screen keeps it open after a failure where pressing again is safe, with the reason in `error`.
+export function ConfirmOrder({ open, side, symbol, name, amount, units, execLine, ok, blocked, error, sending, updating, onBack, onConfirm }: {
+  open: boolean;
+  side: Side;
+  symbol: string;
+  name: string;            // the security's Hebrew name
+  amount: number;
+  units: number;           // estimated for a buy, exact for a sell (D-018)
+  execLine: string;        // "שער הפתיחה · 16:30 · NASDAQ"; '' when not known
+  ok: boolean;
+  blocked: string | null;  // why it can't be sent any more (the data was loaded again), shown when !ok
+  error: string | null;    // the last send failed but pressing again is safe
+  sending: boolean;
+  updating: boolean;
+  onBack: () => void;      // close without sending
+  onConfirm: () => void;   // send (the screen closes the popup when done)
+}) {
+  const { colors } = useTheme();
+  const reduce = useReduce();
+  const verb = side === 'buy' ? 'קנייה' : 'מכירה';
+  const wait = sending ? 'שולח…' : updating ? 'מעדכן…' : null;
+  const n = units.toLocaleString('en-US', { maximumFractionDigits: side === 'sell' ? 8 : 3 });
+  return (
+    <Modal visible={open} transparent animationType={reduce ? 'none' : 'fade'} onRequestClose={onBack}>
+      {/* The Modal renders outside the screen's tree, so the Hebrew direction is set again here. */}
+      <Pressable style={[styles.scrim, rtl]} onPress={onBack} accessibilityLabel="סגירה בלי לשלוח">
+        {/* Inner Pressable swallows taps so tapping inside the popup doesn't close it. */}
+        <Pressable
+          onPress={() => {}}
+          role="dialog"
+          aria-modal
+          aria-label={`אישור פקודת ${verb}`}
+          style={[styles.dialog, { backgroundColor: colors.surface, borderColor: colors.line2 }, dialogShadow]}
+        >
+          <View>
+            <Text style={[styles.dTitle, { color: colors.fg }]}>{`אישור פקודת ${verb}`}</Text>
+            <Text style={[styles.dSub, { color: colors.faint }]}>{`${name} · ${symbol}`}</Text>
+          </View>
+          <Text style={[styles.dAmount, { color: colors.fg }]}>{ils(amount)}</Text>
+          <View>
+            <DRow label={side === 'sell' ? 'יחידות למכירה' : 'יחידות משוערות'} value={n} />
+            {execLine ? <DRow label="מועד ביצוע" value={execLine} /> : null}
+          </View>
+          <Text style={[styles.warn, { color: colors.warn }]}>לא ניתן לבטל אחרי השליחה.</Text>
+          {error ? <Text accessibilityRole="alert" style={[styles.warn, { color: colors.neg }]}>{error}</Text> : null}
+          {!ok && !wait && blocked ? <Text style={[styles.warn, { color: colors.neg }]}>{`אי אפשר לשלוח: ${blocked}`}</Text> : null}
+          <View style={styles.pair}>
+            <View style={styles.flex}>
+              <Button label={wait ?? `אשר ${verb} · ${ils(amount)}`} variant="primary" disabled={wait !== null || !ok} onPress={onConfirm} />
+            </View>
+            <View style={styles.flex}>
+              <Button label="חזור" disabled={sending} onPress={onBack} />
+            </View>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function DRow({ label, value }: { label: string; value: string }) {
+  const { colors } = useTheme();
+  return (
+    <View style={[styles.dRow, { borderTopColor: colors.line }]}>
+      <Text style={[styles.dLabel, { color: colors.faint }]}>{label}</Text>
+      <Text style={[styles.dValue, { color: colors.fg }]}>{value}</Text>
     </View>
   );
 }
@@ -165,6 +264,9 @@ export function Toast({ message }: { message: string | null }) {
 
 const webNoOutline = { outlineStyle: 'none' } as unknown as object;
 const toastShadow = { boxShadow: '0 20px 40px -20px rgba(0,0,0,.9)' } as unknown as object;
+const dialogShadow = { boxShadow: '0 30px 60px -20px rgba(0,0,0,.8)' } as unknown as object;
+// Web: a touch drag on the slider moves it instead of scrolling the page, and a mouse drag selects no text.
+const webDrag = { touchAction: 'none', cursor: 'pointer', userSelect: 'none' } as unknown as object;
 
 const styles = StyleSheet.create({
   seg: { flexDirection: 'row', gap: 4, padding: 4, borderRadius: 999, borderWidth: 1 },
@@ -176,14 +278,27 @@ const styles = StyleSheet.create({
   cur: { fontSize: 22, fontWeight: '500' },
   input: { flex: 1, minWidth: 0, fontSize: 30, fontWeight: '500', letterSpacing: -0.5, textAlign: 'left', paddingVertical: 2 },
   inputCompact: { fontSize: 24 },
-  quick: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 },
-  quickBtn: { borderWidth: 1, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
-  quickText: { fontSize: 12.5, fontWeight: '500' },
+  slider: { marginTop: 10 },
+  // 28px tall to be easy to grab; the 4px rail sits in the middle. The children ignore touches (see AmountSlider).
+  track: { height: 28 },
+  rail: { position: 'absolute', left: 0, right: 0, top: 12, height: 4, borderRadius: 2, pointerEvents: 'none' },
+  fill: { position: 'absolute', left: 0, top: 12, height: 4, borderRadius: 2, pointerEvents: 'none' },
+  thumb: { position: 'absolute', top: 3, width: THUMB, height: THUMB, borderRadius: THUMB / 2, borderWidth: 3, pointerEvents: 'none' },
+  ends: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 2 },
+  endText: { fontSize: 11.5, fontVariant: ['tabular-nums'] },
   off: { opacity: 0.45 },
   send: { gap: 8 },
   warn: { fontSize: 12, textAlign: 'center' },
   pair: { flexDirection: 'row', gap: 8 },
   flex: { flex: 1 },
+  scrim: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 16, backgroundColor: 'rgba(4, 10, 12, 0.6)' },
+  dialog: { width: '100%', maxWidth: 380, borderWidth: 1, borderRadius: 22, padding: 20, gap: 14 },
+  dTitle: { fontSize: 18, fontWeight: '600' },
+  dSub: { fontSize: 12.5, marginTop: 2 },
+  dAmount: { fontSize: 34, fontWeight: '500', letterSpacing: -0.5, fontVariant: ['tabular-nums'] },
+  dRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, paddingVertical: 9, borderTopWidth: 1 },
+  dLabel: { fontSize: 13 },
+  dValue: { flexShrink: 1, fontSize: 13.5, fontWeight: '600', fontVariant: ['tabular-nums'] },
   // In the RTL page flex-end is the LEFT edge: the toast sits opposite the right-hand side where a Hebrew page starts.
   toastWrap: { position: 'absolute', bottom: 20, left: 16, right: 16, alignItems: 'flex-end' },
   toast: { borderRadius: 16, paddingVertical: 12, paddingHorizontal: 16, maxWidth: 420 },

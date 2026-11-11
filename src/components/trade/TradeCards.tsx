@@ -134,11 +134,15 @@ export function CashCard({ cash, availableCash, totalValue, usd }: { cash: numbe
   );
 }
 
+// A tile is half a card wide, so a long figure (₪1,000,000, ₪999,999.50) gets a smaller size instead of
+// breaking onto a second line.
+const tileSize = (value: string) => (value.length <= 8 ? 22 : value.length <= 10 ? 18 : 15);
+
 function Tile({ value, label, solid = false, color }: { value: string; label: string; solid?: boolean; color?: string }) {
   const { colors } = useTheme();
   return (
     <View style={[styles.tile, { backgroundColor: solid ? colors.accent : colors.surface2 }]}>
-      <Text style={[styles.tileValue, { color: solid ? colors.accentInk : color ?? colors.fg }]}>{value}</Text>
+      <Text style={[styles.tileValue, { fontSize: tileSize(value), color: solid ? colors.accentInk : color ?? colors.fg }]}>{value}</Text>
       <Text style={[styles.tileLabel, { color: solid ? colors.accentInk : colors.faint }, solid && { opacity: 0.75 }]}>{label}</Text>
     </View>
   );
@@ -197,7 +201,7 @@ const styles = StyleSheet.create({
   kv: { fontSize: 30, fontWeight: '500', letterSpacing: -0.5, marginTop: 12, fontVariant: ['tabular-nums'] },
   tiles: { flexDirection: 'row', gap: 10, marginTop: 12 },
   tile: { flex: 1, borderRadius: 16, padding: 14, justifyContent: 'flex-end' },
-  tileValue: { fontSize: 22, fontWeight: '600', fontVariant: ['tabular-nums'] },
+  tileValue: { fontWeight: '600', fontVariant: ['tabular-nums'] },
   tileLabel: { fontSize: 12, marginTop: 4 },
   rules: { marginTop: 8 },
   rule: { flexDirection: 'row', gap: 12, alignItems: 'flex-start', paddingVertical: 10, borderTopWidth: 1 },
