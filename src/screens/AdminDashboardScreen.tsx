@@ -7,12 +7,13 @@
 //      30-day trend with next-day / 7-day return
 //   2. World clock: advance / start / stop (POST /admin/clock/*), the ticker light, both markets, the
 //      engine's last run, the order queue
-//   3. Players: up to 50, searchable
+//   3. Players: the top 5, searchable; more than that is the leaderboard's job
 //   4. System: how far the data goes, the admin action log
 // Numbers we don't have yet say what will fill them, never a made-up value.
 
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { router } from 'expo-router';
 import type { AdminActionView, AdminOverview, AdminPlayer, AdminRunView } from '../../api/src/contract';
 import { useAuth } from '../auth/AuthProvider';
 import { useTheme } from '../useTheme';
@@ -352,6 +353,9 @@ function LastRunCard({ run, behind }: { run: AdminRunView | null; behind: number
 
 function PlayersSection({ total }: { total: number }) {
   const [query, setQuery] = useState('');
+  const list = useAdminPlayers(query);
+  // More players than the API sends (PLAYERS_LIMIT): the rest are in the players' full leaderboard.
+  const more = list.data !== null && total > list.data.limit;
   return (
     <Section
       eyebrow="שחקנים"
@@ -362,17 +366,18 @@ function PlayersSection({ total }: { total: number }) {
         </>
       }
       body="צפייה בלבד. חיפוש לפי שם תצוגה או אימייל."
+      actions={more ? <Button label="לטבלה המלאה" onPress={() => router.navigate('/leaderboard')} /> : null}
     >
       <CardRow>
-        <PlayersCard query={query} onQuery={setQuery} />
+        <PlayersCard query={query} onQuery={setQuery} list={list} />
       </CardRow>
     </Section>
   );
 }
 
-function PlayersCard({ query, onQuery }: { query: string; onQuery: (q: string) => void }) {
+function PlayersCard({ query, onQuery, list }: { query: string; onQuery: (q: string) => void; list: ReturnType<typeof useAdminPlayers> }) {
   const { colors } = useTheme();
-  const { data, error, isLoading } = useAdminPlayers(query);
+  const { data, error, isLoading } = list;
   const players = data?.players ?? [];
 
   return (
@@ -410,7 +415,9 @@ function PlayersCard({ query, onQuery }: { query: string; onQuery: (q: string) =
   );
 }
 
-const COLS = { rank: 52, value: 120, pending: 72, visits: 80, seen: 104, role: 72 };
+// Fixed columns + the name's minimum + the gaps = the table's minimum width (styles.table). It must fit the
+// card's inner width on a wide screen (about 606px), or the last column scrolls out of sight.
+const COLS = { rank: 44, value: 108, pending: 64, visits: 76, seen: 100 };
 
 function PlayerHeader() {
   const { colors } = useTheme();
@@ -423,7 +430,6 @@ function PlayerHeader() {
       <Text style={[cell, { width: COLS.pending }]}>ממתינות</Text>
       <Text style={[cell, { width: COLS.visits }]}>פתיחות היום</Text>
       <Text style={[cell, { width: COLS.seen }]}>נראה לאחרונה</Text>
-      <Text style={[cell, { width: COLS.role }]}>תפקיד</Text>
     </View>
   );
 }
@@ -436,7 +442,10 @@ function PlayerRow({ player: p }: { player: AdminPlayer }) {
     <View style={[styles.tr, { borderBottomColor: colors.line }]}>
       <Text style={[styles.td, styles.num, { width: COLS.rank, color: colors.faint }]}>{p.rank ? `#${p.rank}` : '—'}</Text>
       <View style={styles.nameCol}>
-        <Text style={[styles.td, { color: colors.fg }]} numberOfLines={1}>{p.name ?? 'ללא שם תצוגה'}</Text>
+        <View style={styles.nameLine}>
+          <Text style={[styles.td, styles.name, { color: colors.fg }]} numberOfLines={1}>{p.name ?? 'ללא שם תצוגה'}</Text>
+          {p.isAdmin ? <Chip variant="up">מנהל</Chip> : null}
+        </View>
         <Text style={[styles.email, ltr, { color: colors.faint }]} numberOfLines={1}>{p.email}</Text>
       </View>
       <Text style={[styles.td, styles.num, { width: COLS.value, color: colors.fg }]}>{ils(p.totalValue)}</Text>
@@ -445,9 +454,6 @@ function PlayerRow({ player: p }: { player: AdminPlayer }) {
       <View style={[styles.seenCell, { width: COLS.seen }]}>
         {online ? <View style={[styles.dot, { backgroundColor: colors.accent }]} /> : null}
         <Text style={[styles.td, { color: online ? colors.accent : colors.muted }]} numberOfLines={1}>{seen}</Text>
-      </View>
-      <View style={{ width: COLS.role, alignItems: 'flex-start' }}>
-        <Chip variant={p.isAdmin ? 'up' : 'ghost'}>{p.isAdmin ? 'מנהל' : 'שחקן'}</Chip>
       </View>
     </View>
   );
@@ -587,7 +593,7 @@ const styles = StyleSheet.create({
   spinner: { marginTop: 20 },
   tableScroll: { marginTop: 12 },
   tableContent: { flexGrow: 1 },
-  table: { flexGrow: 1, minWidth: 760 },
+  table: { flexGrow: 1, minWidth: 572 },   // 392 of COLS + 140 for the name + 5 gaps of 8
   seenCell: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   bars: { flexDirection: 'row', alignItems: 'flex-end', gap: 3, height: 96, marginTop: 16 },
   bar: { flex: 1, borderRadius: 3, minWidth: 2 },
@@ -596,8 +602,12 @@ const styles = StyleSheet.create({
   logTime: { fontSize: 12, width: 78 },
   clockNote: { fontSize: 14, lineHeight: 21, marginTop: 14, maxWidth: 520 },
   tr: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, borderBottomWidth: 1 },
-  th: { fontSize: 12, fontWeight: '500' },
-  td: { fontSize: 13.5 },
-  nameCol: { flex: 1, minWidth: 160 },
+  // textAlign right on every cell: a number or an email has no Hebrew letter, so the browser would set it
+  // left-to-right and push it to the left of its column, away from its Hebrew header.
+  th: { fontSize: 12, fontWeight: '500', textAlign: 'right' },
+  td: { fontSize: 13.5, textAlign: 'right' },
+  nameCol: { flex: 1, minWidth: 140 },
+  nameLine: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  name: { flexShrink: 1 },
   email: { fontSize: 11.5, marginTop: 1, textAlign: 'right' },
 });

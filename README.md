@@ -14,7 +14,7 @@ A weekly stock-trading game. Each player gets a virtual ₪1,000,000, buys and s
 |---|------|--------|
 | The game | Sign up (email or Google), a dashboard, a trading screen with a full chart, orders by the rules, a shared world clock | Built |
 | The engine | Order execution at each open and close, the 20% rule, the USD/ILS conversion, a double-entry ledger | Built, 486+ API tests |
-| Leaderboard | Weekly return, max drawdown, percentile ranks, score | TODO |
+| Leaderboard | The weekly table: your place, the podium, the top 20, "around me", past weeks; the dashboard's place and top 5 (D-032). The engine scores every player who is competing at every open and close, and writes the week's final board at its last event (D-034) | Built |
 | Retention feature | TODO | TODO |
 | Admin side | World clock buttons, engine health, players online, day-1 / day-7 return, action log | Built |
 | Production | CI (tests on every PR, Docker image on every merge), retry-safe engine, measured load | Partly built, see [Production readiness](#production-readiness) |
@@ -86,8 +86,14 @@ The brief leaves gaps on purpose. These are the ones I filled.
 | TASE before 2026 | Monday to Thursday until 02.01.2026, then Monday to Friday (D-013) | TASE traded Sunday to Thursday until 2026; Yahoo has no Sundays, and the game week is Monday to Friday |
 | Portfolio value during the day | Each holding is valued at its latest open or close (D-024, D-031) | Prices only exist at opens and closes |
 | The week | Monday's first open to Friday's last close. Return and max drawdown are measured at every open and close (D-024) | The only moments the value can change |
-| Players nothing touched this week | Return 0, drawdown 0 (D-024) | Their value didn't move |
-| Players with no trades, mid-week joiners, ties | TODO | Being decided with the scoring |
+| Who is ranked | Everyone who holds a stock now, plus everyone an open or close touched this week (they held a stock at it, or an order of theirs was due at it). A player who only holds cash and did nothing this week isn't ranked. A player who sold everything this week stays, with the numbers they locked in (D-034) | An idle sign-up isn't competing. In a falling week, a crowd of untouched cash accounts (return 0, drawdown 0) would fill the podium |
+| Players holding a stock that nothing touched yet this week | Return 0, drawdown 0 (D-024) | Their value didn't move |
+| Players holding one market's stocks | One board for everyone. A player with only US stocks is on it from Monday's first event: their numbers wait for New York's open, but their place can move as other players' numbers change (D-032) | The brief has one weekly leaderboard, and until New York opens a US-only portfolio really hasn't moved (D-024) |
+| Mid-week joiners | Ranked from the open or close where their first buy fills. Their week's return counts from their value before that trade (₪1,000,000 for a new player) (D-034) | No special case: it is the same weekly reset every player gets |
+| Ties inside a percentile | Your rank is the share of the *other* ranked players you did at least as well as. Tied players share the higher percentile, so the best return and the smallest drop always get 100 (D-034) | The brief says 100 = the highest and 100 = the smallest drop. With the usual `percent_rank()`, a tie at the top would score below 100, and every Monday morning many US-only holders tie at 0 / 0 |
+| Rounding | Each rank, and the score, to 2 decimals, half away from zero, computed exactly (integers, no floats). The score is taken from the two rounded ranks (D-034) | The API returns each rank and the score to 2 decimals, so a row can be checked with a calculator against those numbers, and the database and the tests agree to the last digit. The screens round them: the table shows the ranks and the score to 1 decimal, and the score card writes ≈ when its rounded numbers don't add up |
+| Equal scores | No shared places: equal scores are broken by % gain, then the smaller drawdown, then the earlier sign-up (and the user id for two sign-ups in the same microsecond) (D-032, D-034) | Each place is one player, so "you are #12" means one thing. Only percentages decide, never ₪ amounts, so a bigger portfolio has no edge |
+| How often the board updates | At every open and close, up to 4 times a day, in the same transaction that finishes the event. The week's final board is written at its last event (Friday's last close, or earlier on a holiday or at the end of the history) (D-034). An open leaderboard screen asks again every 15 to 30 seconds while the clock has passed an open or close that isn't scored yet (D-032) | Values only change at opens and closes. A crash re-runs the scoring together with the event, so the board never lags behind a finished event. The ticker runs a passed event up to a minute later, so the screen's own reload as the clock passes an open usually comes too early |
 | Order rate | 5 orders per minute per player (D-021, D-028) | Protects the order queue from one player's script |
 | Who moves the clock | Admins only. Otherwise it runs at real speed. It stops at the end of the price history (D-017) | One shared clock for everyone, and the game must not freeze while the admin is away |
 | Names on the leaderboard | The display name from the sign-in, never the email (D-010) | Every player sees the leaderboard; emails are private |
@@ -95,10 +101,12 @@ The brief leaves gaps on purpose. These are the ones I filled.
 ## Rules I think are bad or exploitable
 
 1. **Real history means a known future.** With real prices, anyone can look up what a stock did after the world's date. Fixes, from cheap to real: hide the year and shift dates; disguise the names; or, in production, run on live markets with real time, where nobody knows the close.
-2. **Sitting in cash wins stability.** Cash has a drawdown of 0, so a player who never trades gets the top stability rank (15% of the score). In a falling week, a return of 0 also beats most players. Fix: rank only players who held stocks during the week, or measure stability relative to the money invested.
+2. **A ₪100 ticket and the rest in cash wins stability.** Cash has a drawdown of 0. Players who never trade aren't ranked (D-034), but a single ₪100 buy puts a player on the board with a return and drawdown of almost 0. That nearly tops the stability rank (15% of the score), and in a falling week a return of almost 0 also beats most players. Fix: a minimum invested share to be ranked, or stability measured against the money invested.
 3. **Rank beats size, so the best strategy is maximum risk.** The score uses percentiles, not returns: being first by 0.1% scores the same as first by 20%. The best play is 5 positions of 20% in the most volatile stocks. The 15% stability weight barely pushes back. Fix: give stability more weight, or score risk-adjusted return (a Sharpe-like ratio).
-4. **Many accounts, one winner.** Sign up 10 times with 10 different bets, and one of them tops the weekly table. Fix: one account per verified phone number for anything with a prize.
-5. **20% only at purchase** lets a portfolio drift to 50% in one stock that rose. That's fine for realism (I kept it), but then "20%" is really an entry rule, not a diversification rule.
+4. **Sell everything after a good start, and the week is locked.** A player up 5% on Tuesday can sell everything: the return stops moving and the drawdown can't grow until Friday. Fix: weigh the return by the time the money was invested.
+5. **Joining late means fewer chances to drop.** A player whose first buy fills on Thursday has only one or two opens and closes of drawdown, so a small drop and a high stability rank. Fix: rank only players who held stocks from the week's first event, or scale by the days played.
+6. **Many accounts, one winner.** Sign up 10 times with 10 different bets, and one of them tops the weekly table. Fix: one account per verified phone number for anything with a prize.
+7. **20% only at purchase** lets a portfolio drift to 50% in one stock that rose. That's fine for realism (I kept it), but then "20%" is really an entry rule, not a diversification rule.
 
 ## What I gave up, and why
 
@@ -161,6 +169,7 @@ cd api
 npm install
 npm run migrate:dev                 # create the tables
 npm run seed:world                  # copy the 40 securities, prices, USD/ILS and the clock start
+npm run seed:sample-board           # dev only: a made-up leaderboard before any real trades (D-033); -- --clear removes it
 npm run dev                         # the API on :3000 (reads api/.env)
 npm test                            # the API tests
 

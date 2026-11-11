@@ -12,7 +12,6 @@ import type {
   ClockView,
   Dashboard,
   HoldingView,
-  LeaderRow,
   LiveClockView,
   MarketSession,
   OrderView,
@@ -30,12 +29,14 @@ import { weekReturnPct, type WeekState } from './game/week.js';
 import { loadCalendar } from './calendar.js';
 import { catchUpPlayer } from './runner.js';
 import { isNearCap, returnPct } from './game/performance.js';
-import { addDays, hhmm, ISRAEL, isoWeek, mondayOf, weekdayOf, zonedParts, zonedToInstant } from './game/time.js';
+import { addDays, hhmm, ISRAEL, isoWeek, mondayOf, zonedParts, zonedToInstant } from './game/time.js';
+// leaderboard.ts imports loadNow and ANONYMOUS_NAME back from here; both sides only call each other at run time.
+import { boardWeek, type Db, inSnapshot, leaderRow, loadBoard, loadRows, loadStanding } from './leaderboard.js';
 
 const LEADERBOARD_TOP = 5;
 const PENDING_SHOWN = 2;      // DD-07
 const REJECTIONS_SHOWN = 5;   // D-023: the toast lists at most this many
-const ANONYMOUS_NAME = 'שחקן';
+export const ANONYMOUS_NAME = 'שחקן';   // the board's name for a player with no display name (never the email)
 const MAX_BIGINT = 9_223_372_036_854_775_807n;   // Postgres BIGINT, the type of orders.id
 
 // The world clock's "now", the window of the current competition week, and the last date whose
@@ -63,7 +64,7 @@ export async function getDashboard(db: Pool, uid: string): Promise<Dashboard | n
   if (!owned) return null;
 
   const week = now ? await loadWeek(db, uid, now, owned) : NO_WEEK;
-  const competition = now ? await loadCompetition(db, uid, now) : { standing: null, leaderboard: { players: 0, top: [] } };
+  const competition = now ? await loadCompetition(db, uid, now) : NO_COMPETITION;
 
   return {
     clock: now ? liveClockView(now) : null,
@@ -482,64 +483,35 @@ export async function loadUsdIls(db: Pool, now: Now | null): Promise<UsdIlsView 
 
 // ---------- competition: your standing + the top of the table ----------
 
-async function loadCompetition(
-  db: Pool,
-  uid: string,
-  now: Now,
-): Promise<{ standing: StandingView | null; leaderboard: Dashboard['leaderboard'] }> {
-  const empty = { standing: null, leaderboard: { players: 0, top: [] } };
+type Competition = { standing: StandingView | null; leaderboard: Dashboard['leaderboard'] };
 
-  // The latest scored day of this week = the current table.
-  const latest = await db.query<{ day: string | null; players: number }>(
-    `WITH d AS (SELECT max(day) AS day FROM standings WHERE day BETWEEN $1 AND $2)
-     SELECT d.day::text AS day, (SELECT count(*)::int FROM standings s WHERE s.day = d.day) AS players FROM d`,
-    [now.monday, now.today],
-  );
-  const day = latest.rows[0]?.day;
-  if (!day) return empty;
-  const players = latest.rows[0].players;
+const NO_COMPETITION: Competition = { standing: null, leaderboard: { players: 0, week: null, top: [] } };
 
-  const top = await db.query<{ rank: number; name: string; return_pct: number; score: number; is_me: boolean }>(
-    `SELECT st.rank, COALESCE(u.display_name, $3) AS name, st.return_pct::float8 AS return_pct,
-            st.score::float8 AS score, st.uid = $2 AS is_me
-     FROM standings st JOIN users u ON u.uid = st.uid
-     WHERE st.day = $1 ORDER BY st.rank LIMIT $4`,
-    [day, uid, ANONYMOUS_NAME, LEADERBOARD_TOP],
-  );
-  const leaderboard = {
-    players,
-    top: top.rows.map(
-      (r): LeaderRow => ({ rank: r.rank, name: r.name, returnPct: r.return_pct, score: r.score, isMe: r.is_me }),
-    ),
-  };
+// The same board as GET /me/leaderboard (D-032, leaderboard.ts): the latest scored day up to today, so on the
+// weekend and on Monday before the first open it is the week that just closed. Index lookups only, in one snapshot
+// (inSnapshot), so the top 5 and my standing always come from the same ranking, even while the scoring rewrites it.
+function loadCompetition(db: Pool, uid: string, now: Now): Promise<Competition> {
+  return inSnapshot(db, (c) => readCompetition(c, uid, now));
+}
 
-  // My rows this week (Mon..latest day): the last one is my standing, the one before gives the rank change.
-  const mine = await db.query<{
-    day: string;
-    score: number;
-    rank: number;
-    return_rank: number;
-    stability_rank: number;
-  }>(
-    `SELECT day::text AS day, score::float8 AS score, rank, return_rank::float8 AS return_rank,
-            stability_rank::float8 AS stability_rank
-     FROM standings WHERE uid = $1 AND day BETWEEN $2 AND $3 ORDER BY day`,
-    [uid, now.monday, day],
-  );
-  const current = mine.rows[mine.rows.length - 1];
-  if (!current || current.day !== day) return { standing: null, leaderboard };   // not scored today (e.g. joined late)
+async function readCompetition(db: Db, uid: string, now: Now): Promise<Competition> {
+  const board = await loadBoard(db, now);
+  if (!board) return NO_COMPETITION;
 
-  const previous = mine.rows[mine.rows.length - 2];
+  const top = await loadRows(db, board, uid, 1, LEADERBOARD_TOP);
+  // null = I'm not on this board (not ranked this week, e.g. joined late).
+  const me = await loadStanding(db, board, uid);
   return {
-    leaderboard,
-    standing: {
-      rank: current.rank,
-      players,
-      score: current.score,
-      returnRank: current.return_rank,
-      stabilityRank: current.stability_rank,
-      rankChange: previous ? previous.rank - current.rank : null,
-      days: mine.rows.map((r) => ({ date: r.day, weekday: weekdayOf(r.day), score: r.score })),
+    leaderboard: { players: board.players, week: boardWeek(board), top: top.map(leaderRow) },
+    standing: me && {
+      rank: me.rank,
+      players: me.players,
+      score: me.score,
+      returnRank: me.returnRank,
+      stabilityRank: me.stabilityRank,
+      rankChange: me.rankChange,   // vs. the previous scored day of the week; null on its first
+      days: me.days,               // Mon..the board's day
+      maxDrawdownPct: me.maxDrawdownPct,   // the board's week (on Monday before the open, last week's), not the portfolio's
     },
   };
 }

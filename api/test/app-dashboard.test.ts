@@ -6,8 +6,11 @@
 // `export` is an error. A static import would pull them into `npm run typecheck` and fail it. vitest loads them
 // as they are; their shapes are written out below from the shared contract (the app's own `npx tsc` checks them).
 
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import type { ClockView, HoldingView, LiveClockView, MarketSession, PortfolioView, RejectionView, WorldTime } from '../src/contract.js';
+import type {
+  ClockView, Dashboard, HoldingView, LiveClockView, MarketSession, PortfolioView, RejectionView, StandingView, WorldTime,
+} from '../src/contract.js';
 
 const app = <T>(path: string): Promise<T> => import(new URL(`../../src/${path}.ts`, import.meta.url).href) as Promise<T>;
 
@@ -28,8 +31,9 @@ const { marketChips, oneMarketToday, marketsChanged } = await app<{
   oneMarketToday(markets: ClockView['markets']): string | null;
 }>('dashboard/markets');
 
-const { cashFigures } = await app<{
+const { cashFigures, standingSummary } = await app<{
   cashFigures(p: Pick<PortfolioView, 'availableCash' | 'reservedCash'>): { label: string; value: string }[];
+  standingSummary(d: Dashboard): string;
 }>('dashboard/copy');
 
 // ---------- rejection toasts ----------
@@ -290,5 +294,50 @@ describe('cashFigures: available cash, and the reserved part when there is one',
 
   it('agorot are shown when there are any', () => {
     expect(cashFigures({ availableCash: 299_899.5, reservedCash: 100.25 }).map((f) => f.value)).toEqual(['₪299,899.50', '₪100.25']);
+  });
+});
+
+// ---------- the standing sentence (D-034) ----------
+
+describe('standingSummary: the drawdown advice only when it is true, with the number from the board', () => {
+  const standing = (o: Partial<StandingView> = {}): StandingView => ({
+    rank: 5, players: 40, score: 70, returnRank: 80, stabilityRank: 30, rankChange: null, days: [], maxDrawdownPct: 2.5, ...o,
+  });
+  // Only what the sentence reads; the portfolio's drawdown is set to a number that must never show.
+  const dash = (s: StandingView | null) => ({ standing: s, portfolio: { maxDrawdownPct: 0 } }) as unknown as Dashboard;
+
+  it('the leader gets no advice, even with the weaker stability rank', () => {
+    const leader = standingSummary(dash(standing({ rank: 1, returnRank: 100, stabilityRank: 75, maxDrawdownPct: 1.2 })));
+    expect(leader).not.toContain('יותר מרוב');
+    expect(standingSummary(dash(standing({ rank: 1, returnRank: 100, stabilityRank: 0 })))).not.toContain('יותר מרוב');
+  });
+
+  it('a stability rank of 50 or more is not "more than most players": the plain score line', () => {
+    expect(standingSummary(dash(standing({ stabilityRank: 60 })))).toBe('ציון 70.0 מתוך 100, מקום 5 מתוך 40 שחקנים.');
+    expect(standingSummary(dash(standing({ stabilityRank: 50 })))).toBe('ציון 70.0 מתוך 100, מקום 5 מתוך 40 שחקנים.');
+  });
+
+  it('below 50 and below the return rank: the advice, with the drawdown of the board row, never of the portfolio', () => {
+    const advice = standingSummary(dash(standing({ stabilityRank: 30, maxDrawdownPct: 2.5 })));
+    expect(advice).toContain('יותר מרוב');
+    expect(advice).toContain('2.5%');
+    expect(advice).not.toContain('0.0%');
+    // Stability below 50 but not the weaker rank: the return is what holds the place back, so no drawdown advice.
+    expect(standingSummary(dash(standing({ returnRank: 20, stabilityRank: 30 })))).not.toContain('יותר מרוב');
+  });
+});
+
+// ---------- no dead buttons for screens that exist ----------
+
+describe('buttons for built screens are connected', () => {
+  const source = (path: string) => readFileSync(new URL(`../../src/${path}`, import.meta.url), 'utf8');
+
+  it('the full-table button of the admin page and the advance button of the clock card no longer say "not built yet"', () => {
+    const admin = source('screens/AdminDashboardScreen.tsx');
+    const clockCard = source('components/dashboard/WorldClockCard.tsx');
+    expect(admin).not.toContain('יחובר כשמסך הטבלה ייבנה');
+    expect(admin).toContain("router.navigate('/leaderboard')");
+    expect(clockCard).not.toContain('יחובר כשקידום השעון ייבנה');
+    expect(clockCard).toContain("router.navigate('/admin-dashboard')");
   });
 });

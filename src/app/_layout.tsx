@@ -49,6 +49,7 @@ function GuardedStack() {
         <Stack.Screen name="index" />
         <Stack.Screen name="dashboard" />
         <Stack.Screen name="trade" />
+        <Stack.Screen name="leaderboard" />
 
         {/* Admins only. Everyone else goes back to their dashboard.
             This is a convenience: the API checks the admin role on every admin endpoint anyway. */}

@@ -10,6 +10,7 @@
     "migrate:dev": "node --env-file=.env node_modules/node-pg-migrate/bin/node-pg-migrate.js up --migrations-dir migrations",
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --migration-file-language sql --migration-filename-format utc",
     "seed:world": "tsx --env-file=.env scripts/seed-world.ts",
+    "seed:sample-board": "tsx --env-file=.env scripts/seed-sample-board.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "eslint ."

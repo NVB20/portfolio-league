@@ -8,6 +8,7 @@ import type { Pool } from 'pg';
 import { requireAuth, type AppEnv, type VerifyToken } from './auth.js';
 import { setTheme, upsertUser } from './users.js';
 import { getDashboard, markRejectionsSeen, parseSeenIds } from './dashboard.js';
+import { getLeaderboard } from './leaderboard.js';
 import { getTrade, saveChartSettings } from './trade.js';
 import { cachedDaily, fetchYahooDaily, getChart, type FetchDaily } from './chart.js';
 import { pickChartSettings } from './chartSettings.js';
@@ -28,6 +29,8 @@ export type Deps = {
 const SYMBOL = /^[A-Z0-9-]{1,10}$/;
 // The admin player search: long enough for any email, short enough to keep the query cheap.
 const MAX_SEARCH = 100;
+// The leaderboard's first place: 1 to 999,999,999, digits only (so the page's last place still fits an INTEGER).
+const LEADERBOARD_FROM = /^[1-9][0-9]{0,8}$/;
 
 export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDaily(fetchYahooDaily) }: Deps) {
   const app = new Hono<AppEnv>();
@@ -76,6 +79,18 @@ export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDai
     const dashboard = await getDashboard(db, c.get('user').uid);
     if (!dashboard) return c.json({ error: 'user not found, call POST /me first' }, 404);
     return c.json(dashboard);
+  });
+
+  // The weekly table (D-032). ?view=top (default) with ?from= (a place, default 1): 20 rows from there.
+  // ?view=around: my place ± 5. Read-only: no catch-up, the scoring writes the places.
+  me.get('/leaderboard', async (c) => {
+    const view = c.req.query('view') ?? 'top';
+    const from = c.req.query('from') ?? '1';
+    if (view !== 'top' && view !== 'around') return c.json({ error: 'view must be "top" or "around"' }, 400);
+    if (!LEADERBOARD_FROM.test(from)) return c.json({ error: 'from must be a whole number from 1 to 999999999' }, 400);
+    const board = await getLeaderboard(db, c.get('user').uid, { view, from: Number(from) });
+    if (!board) return c.json({ error: 'user not found, call POST /me first' }, 404);
+    return c.json(board);
   });
 
   // Body: { "theme": "dark" | "light" }. Any other field (like roles) is ignored.
@@ -153,7 +168,7 @@ export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDai
   // The admin page's numbers: clock, player counts, order queue, the state of the world's data.
   admin.get('/overview', async (c) => c.json(await getAdminOverview(db)));
 
-  // Up to 50 players by this week's rank. ?q= filters by display name or email.
+  // Up to 5 players by this week's rank. ?q= filters by display name or email.
   admin.get('/players', async (c) => {
     const q = (c.req.query('q') ?? '').trim();
     if (q.length > MAX_SEARCH) return c.json({ error: `q must be at most ${MAX_SEARCH} characters` }, 400);

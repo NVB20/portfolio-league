@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Not a package. Marks src/leaderboard as ES modules for the API's NodeNext type check, which loads the pure helpers (board.ts) through api/test/app-leaderboard.test.ts. Metro and the app's tsconfig ignore it."
+}

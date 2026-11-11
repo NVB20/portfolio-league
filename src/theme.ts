@@ -95,6 +95,10 @@ export const fixed = {
   inverseAccentInk: '#081214',
   warnFill: '#F2B84B',
   warnFillInk: '#6B4500',
+  // Other players' initials on the leaderboard (LD-06): five dark fills with a white letter pass contrast on
+  // both themes, so one set serves both. The API picks the fill (LeaderboardRow.avatar, 0..4).
+  avatarFills: ['#2A5A5E', '#3B4F7A', '#5A4A7A', '#7A5A3B', '#2F6B5A'] as const,
+  avatarInk: '#FFFFFF',
 };
 
 export type Colors = typeof dark;
