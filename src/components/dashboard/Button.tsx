@@ -1,5 +1,5 @@
 // primary (accent fill), outline, and ink (dark fill inside an inverse card).
-// `disabled` is used for actions whose screen isn't built yet (order form, full leaderboard).
+// `disabled` greys a button out and ignores presses (an action that isn't available right now).
 
 import { Pressable, StyleSheet, Text } from 'react-native';
 import { useTheme } from '../../useTheme';

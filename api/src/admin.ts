@@ -18,7 +18,7 @@ import { clockView, loadNow, worldTime, type Now } from './dashboard.js';
 import { addDays, ISRAEL, zonedParts, zonedToInstant } from './game/time.js';
 import { ONLINE_MINUTES } from './presence.js';
 
-export const PLAYERS_LIMIT = 50;
+export const PLAYERS_LIMIT = 5;   // the admin page shows the top few; the full table is the leaderboard
 const REJECT_REASONS_SHOWN = 3;
 
 // After requireAuth: 403 unless the caller's row says admin. Read from Postgres on every request,

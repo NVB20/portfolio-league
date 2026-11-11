@@ -353,7 +353,7 @@ describe('admin, seeded world', () => {
     const res = await call('GET', '/admin/players', 'root');
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.limit).toBe(50);
+    expect(body.limit).toBe(5);
     expect(body.players.map((p: { uid: string }) => p.uid)).toEqual(['alice', 'bob', 'root']);
     expect(body.players[0]).toMatchObject({
       uid: 'alice',

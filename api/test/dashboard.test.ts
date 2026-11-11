@@ -74,7 +74,7 @@ describe('GET /me/dashboard, empty world', () => {
       rejections: [],
       usdIls: null,
       standing: null,
-      leaderboard: { players: 0, top: [] },
+      leaderboard: { players: 0, week: null, top: [] },
     });
   });
 
@@ -452,12 +452,14 @@ describe('GET /me/dashboard, seeded world', () => {
         { date: '2026-11-09', weekday: 1, score: 50 },
         { date: '2026-11-10', weekday: 2, score: 90 },
       ],
+      maxDrawdownPct: 0,   // the board row's (Tuesday), not the portfolio's 1.6 now
     });
   });
 
   it('shows the leaderboard with display names, never emails', async () => {
     expect((await dashboard()).leaderboard).toEqual({
       players: 2,
+      week: { start: '2026-11-09', day: '2026-11-10', final: false },   // the latest scored day, a live week (D-032)
       top: [
         { rank: 1, name: 'Alice', returnPct: 2, score: 90, isMe: true },
         { rank: 2, name: 'שחקן', returnPct: 0, score: 40, isMe: false },
@@ -470,6 +472,40 @@ describe('GET /me/dashboard, seeded world', () => {
     const d = await (await call('GET', '/me/dashboard', 'carol')).json();
     expect(d.standing).toBeNull();
     expect(d.leaderboard.players).toBe(2);
+  });
+
+  it('counts the players by the last place, and shows only the top 5 (D-032)', async () => {
+    await db.query(
+      `INSERT INTO users (uid, email, display_name)
+       SELECT 'x' || g, 'x' || g || '@example.com', 'X' || g FROM generate_series(3, 7) g`,
+    );
+    await db.query(
+      `INSERT INTO standings (day, uid, return_pct, max_drawdown_pct, return_rank, stability_rank, score, rank)
+       SELECT '2026-11-10', 'x' || g, 0, 0, 10, 10, 10, g FROM generate_series(3, 7) g`,
+    );
+    const { leaderboard, standing } = await dashboard();
+    expect(leaderboard.players).toBe(7);
+    expect(leaderboard.top.map((r: { rank: number; name: string }) => [r.rank, r.name])).toEqual([
+      [1, 'Alice'], [2, 'שחקן'], [3, 'X3'], [4, 'X4'], [5, 'X5'],
+    ]);
+    expect(standing.players).toBe(7);
+  });
+
+  it('keeps showing the closed week on Monday before its first open (final)', async () => {
+    await db.query(`UPDATE world_clock SET now_at = '2026-11-16T07:00:00Z'`);   // the next Monday, 09:00 Israel
+    const { leaderboard, standing } = await dashboard();
+    expect(leaderboard.week).toEqual({ start: '2026-11-09', day: '2026-11-10', final: true });
+    expect(leaderboard.players).toBe(2);
+    expect(standing).toMatchObject({ rank: 1, rankChange: 1, days: [{ date: '2026-11-09', weekday: 1, score: 50 }, { date: '2026-11-10', weekday: 2, score: 90 }] });
+  });
+
+  it('takes the drawdown of the standing from the week of the board, not of the portfolio, on Monday before the open', async () => {
+    await db.query(`UPDATE standings SET max_drawdown_pct = 1.2 WHERE day = '2026-11-10' AND uid = 'alice'`);
+    await db.query(`UPDATE world_clock SET now_at = '2026-11-16T07:00:00Z'`);   // the next Monday, 09:00 Israel
+    const { portfolio, standing, leaderboard } = await dashboard();
+    expect(leaderboard.week.final).toBe(true);
+    expect(standing.maxDrawdownPct).toBe(1.2);    // last week's, the board shown
+    expect(portfolio.maxDrawdownPct).toBe(0);     // this week: nothing has touched the portfolio yet
   });
 
   describe('rejection toasts (D-023)', () => {

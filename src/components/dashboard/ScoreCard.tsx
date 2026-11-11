@@ -6,6 +6,7 @@ import Svg, { Circle, Path } from 'react-native-svg';
 import type { StandingView } from '../../../api/src/contract';
 import { fixed } from '../../theme';
 import { score, WEEKDAY_LETTERS } from '../../dashboard/format';
+import { noScoreLine, rankChangeText, rankText } from '../../leaderboard/board';
 import { Card, Empty, usePalette } from './Card';
 import { Button } from './Button';
 import { Chip } from './Chip';
@@ -18,12 +19,18 @@ const GAUGE_DELAY = 1700;
 const ARC = 'M10,60 A50,50 0 0 1 110,60';
 const ARC_LENGTH = Math.PI * 50;   // half a circle of radius 50
 
-export function ScoreCard({ standing, todayWeekday }: { standing: StandingView | null; todayWeekday: number | null }) {
+// `finalWeek` = the board shown is a closed week (D-032: the weekend, or Monday before the open), as its ISO week
+// number: the card then says the score is that week's final one, not this week's.
+export function ScoreCard({ standing, todayWeekday, finalWeek = null }: {
+  standing: StandingView | null;
+  todayWeekday: number | null;
+  finalWeek?: number | null;
+}) {
   return (
     <Card
       inverse
       title="הציון השבועי"
-      sub="85% דירוג תשואה · 15% דירוג יציבות"
+      sub={finalWeek === null ? '85% דירוג תשואה · 15% דירוג יציבות' : `שבוע ${finalWeek} · התוצאה הסופית`}
       end={standing?.rankChange ? <RankChangeChip change={standing.rankChange} /> : null}
     >
       {standing ? (
@@ -39,14 +46,15 @@ export function ScoreCard({ standing, todayWeekday }: { standing: StandingView |
           </View>
         </>
       ) : (
-        <Empty>הציון הראשון שלך יחושב בסוף יום המסחר הראשון של השבוע.</Empty>
+        <Empty>{noScoreLine(finalWeek !== null)}</Empty>
       )}
     </Card>
   );
 }
 
+// Against the previous scored day of the week, which isn't always yesterday (LD-09).
 export function RankChangeChip({ change }: { change: number }) {
-  return <Chip variant={change > 0 ? 'up' : 'down'}>{`${change > 0 ? '▲' : '▼'} ${Math.abs(change)} מאתמול`}</Chip>;
+  return <Chip variant={change > 0 ? 'up' : 'down'}>{rankChangeText(change)}</Chip>;
 }
 
 function Gauge({ value, rank, players }: { value: number; rank: number; players: number }) {
@@ -76,13 +84,14 @@ function Gauge({ value, rank, players }: { value: number; rank: number; players:
   );
 }
 
-function RankTile({ value, label, dot }: { value: number; label: string; dot: 'ink' | 'accent' }) {
+// One of the two rank tiles (return / stability) with its ink or accent dot. Also on the leaderboard's "your place".
+export function RankTile({ value, label, dot }: { value: number; label: string; dot: 'ink' | 'accent' }) {
   const p = usePalette();
   return (
     <View style={[styles.tile, { backgroundColor: p.tile }]}>
       <View style={styles.tileTop}>
         <View style={[styles.dot, { backgroundColor: dot === 'ink' ? p.fg : fixed.inverseAccent }]} />
-        <Text style={[styles.tileValue, { color: p.fg }]}>{Math.round(value)}</Text>
+        <Text style={[styles.tileValue, { color: p.fg }]}>{rankText(value)}</Text>
       </View>
       <Text style={[styles.tileLabel, { color: p.sub }]}>{label}</Text>
     </View>

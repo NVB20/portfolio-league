@@ -1,9 +1,11 @@
 // Section 3: the weekly leaderboard (top 5 + you), how your score is made, and the daily streak.
 
 import { Animated, StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import type { Dashboard, StandingView } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
 import { pct, score } from '../../dashboard/format';
+import { rankDelta, rankText, scoreEquation } from '../../leaderboard/board';
 import { Card, Empty, usePalette } from './Card';
 import { Button } from './Button';
 import { Chip } from './Chip';
@@ -16,12 +18,13 @@ export function LeaderboardCard({ leaderboard, standing }: { leaderboard: Dashbo
     <Card
       title="טבלת השבוע"
       sub={leaderboard.players > 0 ? `${leaderboard.players.toLocaleString('en-US')} שחקנים` : undefined}
-      end={<IconButton label="פתח את הטבלה המלאה" />}
+      end={<IconButton label="פתח את הטבלה המלאה" onPress={() => router.navigate('/leaderboard')} />}
     >
       {leaderboard.top.length === 0 ? (
         <Empty>הטבלה תיפתח אחרי שהציונים הראשונים של השבוע יחושבו.</Empty>
       ) : (
         <View style={styles.rows}>
+          {/* The place is unique on a board (no shared places, D-032), so it is the row's key. */}
           {leaderboard.top.map((r, i) => (
             <View key={r.rank} style={[styles.row, i > 0 && { borderTopWidth: 1, borderTopColor: colors.line }]}>
               <Text style={[styles.rank, { color: colors.faint }]}>{r.rank}</Text>
@@ -52,31 +55,33 @@ export function LeaderboardCard({ leaderboard, standing }: { leaderboard: Dashbo
 
 export function ScoreBreakdownCard({ standing }: { standing: StandingView | null }) {
   const { colors } = useTheme();
+  // The same arrow as the table's row (no change = "–", not "▲ 0"), against the previous scored day of the week.
+  const delta = standing ? rankDelta(standing.rankChange) : null;
   return (
     <Card
       title="איך הציון מורכב"
       sub={
         standing
-          ? `0.85 × ${Math.round(standing.returnRank)} + 0.15 × ${Math.round(standing.stabilityRank)} = ${score(standing.score)}`
+          ? scoreEquation(standing.returnRank, standing.stabilityRank, standing.score)
           : '0.85 × דירוג תשואה + 0.15 × דירוג יציבות'
       }
     >
-      {standing ? (
+      {standing && delta ? (
         <View style={styles.tiles}>
           <View style={styles.tileRow}>
             <Tile value={score(standing.score)} label="הציון השבועי" solid />
-            <Tile value={String(Math.round(standing.returnRank))} label="דירוג תשואה · × 0.85" />
+            <Tile value={rankText(standing.returnRank)} label="דירוג תשואה · × 0.85" />
           </View>
           <View style={styles.tileRow}>
             <Tile
-              value={String(Math.round(standing.stabilityRank))}
+              value={rankText(standing.stabilityRank)}
               label="דירוג יציבות · × 0.15"
               color={standing.stabilityRank < standing.returnRank ? colors.warn : undefined}
             />
             <Tile
-              value={standing.rankChange === null ? '–' : `${standing.rankChange >= 0 ? '▲' : '▼'} ${Math.abs(standing.rankChange)}`}
-              label="מקומות מאתמול"
-              color={standing.rankChange === null ? undefined : standing.rankChange >= 0 ? colors.accent : colors.neg}
+              value={delta.text}
+              label="מקומות מהיום הקודם"
+              color={delta.tone === 'up' ? colors.accent : delta.tone === 'down' ? colors.neg : colors.faint}
             />
           </View>
         </View>

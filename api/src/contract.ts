@@ -107,9 +107,20 @@ export type StandingView = {
   stabilityRank: number;
   rankChange: number | null;       // + = moved up since the previous day; null on the first day
   days: { date: string; weekday: number; score: number }[];   // this week, Mon..today
+  maxDrawdownPct: number;          // the board row's week drawdown: the board's week, not always the portfolio's
 };
 
+// One row of the board. `rank` is the place: unique on a board, 1..players (no shared places, D-032).
 export type LeaderRow = { rank: number; name: string; returnPct: number; score: number; isMe: boolean };
+
+// Which board is shown (D-032): the latest scored day up to today. `final` = its places won't change any more:
+// its week is before the current world week (e.g. Monday before the week's first open), or the week's final
+// weekly_scores rows exist (written at the week's last close, so the weekend shows final once they are written).
+export type BoardWeek = {
+  start: string;   // the week's Monday, 'YYYY-MM-DD'
+  day: string;     // the scored day shown, 'YYYY-MM-DD'
+  final: boolean;
+};
 
 // ---------- GET /me/trade: the trading screen ----------
 
@@ -179,8 +190,49 @@ export type Dashboard = {
   pendingOrders: { total: number; next: OrderView[] };   // next = the 2 that run first (DD-07)
   rejections: RejectionView[];     // unseen rejected orders, newest first, at most 5 (D-023)
   usdIls: UsdIlsView | null;
-  standing: StandingView | null;   // null = no score computed for you this week
-  leaderboard: { players: number; top: LeaderRow[] };
+  standing: StandingView | null;   // null = you're not on the board shown (not ranked this week, or nothing scored yet)
+  leaderboard: { players: number; week: BoardWeek | null; top: LeaderRow[] };   // top = places 1..5
+};
+
+// ---------- GET /me/leaderboard: the weekly table (D-032) ----------
+// ?view=top&from=1 (the default): 20 rows from place `from`. ?view=around: my place ± 5 (the top 20 when I'm not
+// on the board). Read-only: the runner's scoring step writes the places at every open and close (D-034,
+// scoring.ts), the API only reads them.
+
+export type LeaderboardRow = LeaderRow & {
+  avatar: number;                  // 0..4: which of the five avatar fills (LD-06), from a hash on the server; never the player's id
+  maxDrawdownPct: number;
+  returnRank: number;
+  stabilityRank: number;
+  rankChange: number | null;       // + = places gained since the previous scored day of this week; null on its first day
+  days: (number | null)[];         // the daily score, Mon..Fri (always 5 entries); null = no score that day
+};
+
+export type LeaderboardMe = StandingView & {
+  returnPct: number;
+  ahead: { rank: number; score: number } | null;   // the place just above mine; null when I'm first
+};
+
+export type PastWeekView = { weekStart: string; rank: number; players: number; score: number };
+
+export type LeaderboardView = {
+  clock: LiveClockView | null;     // the world clock, for the top bar and the reload at each open and close; null = no world
+  week: BoardWeek | null;          // null = nothing has been scored yet
+  players: number;                 // players on this board (0 when week is null)
+  me: LeaderboardMe | null;        // null = I'm not on this board (not ranked this week)
+  podium: LeaderboardRow[];        // places 1..3
+  view: 'top' | 'around';          // what `rows` holds ('top' when 'around' was asked but I'm not on the board)
+  rows: LeaderboardRow[];          // in place order
+  from: number;                    // the place of rows[0]; 1 when rows is empty
+  hasMore: boolean;                // there are places after the last row
+  pastWeeks: PastWeekView[];       // my last 4 closed weeks before this board's week, newest first
+  // The world instant (ISO) of the latest finished open or close; null = none yet. The scoring commits with the
+  // event's 'done' (D-034), so this changes exactly when the board is rewritten: two pages with the same
+  // scoredAt (and day) come from the same ranking.
+  scoredAt: string | null;
+  // The world clock has passed an open or close that isn't scored yet (not started, or still running): the board
+  // is about to change, so ask again soon. False when no world exists.
+  behind: boolean;
 };
 
 // POST /me/rejections/seen: the rejection toasts the app showed, by order id (1 to 5, the `rejections[].id`s).

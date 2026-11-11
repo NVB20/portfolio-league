@@ -14,6 +14,7 @@ import { useTheme } from '../useTheme';
 import { useDashboard } from '../dashboard/useDashboard';
 import { splitIls } from '../dashboard/format';
 import { holdingsSummary, nearCapLine, portfolioSummary, standingLine, standingSummary } from '../dashboard/copy';
+import { boardEyebrow, gameEnded, headline, isoWeek, rankLine as boardRankLine } from '../leaderboard/board';
 import { Button } from '../components/dashboard/Button';
 import { Card, Empty } from '../components/dashboard/Card';
 import { CardRow, CardStack } from '../components/dashboard/CardRow';
@@ -33,6 +34,7 @@ import { WorldClockCard } from '../components/dashboard/WorldClockCard';
 import { WorldTimePanel } from '../components/dashboard/WorldTimePanel';
 
 const toTrade = () => router.navigate('/trade');
+const toLeaderboard = () => router.navigate('/leaderboard');
 const STARTING_CASH = 1_000_000;
 
 export default function DashboardScreen() {
@@ -42,9 +44,9 @@ export default function DashboardScreen() {
 
   // The player's own name, for their own menu. (The leaderboard uses the name saved by the API.)
   const name = user?.displayName || user?.email?.split('@')[0] || 'שחקן';
-  const rankLine = data?.standing
-    ? `מקום #${data.standing.rank}${data.clock ? ` · שבוע ${data.clock.week}` : ''}`
-    : null;
+  // The week of the board shown, not the clock's: on Monday before the open they differ (D-032), as on /leaderboard.
+  const week = data?.leaderboard.week;
+  const rankLine = boardRankLine(data?.standing?.rank ?? null, week ? isoWeek(week.start) : null);
 
   if (data) return <DashboardView data={data} isAdmin={roles.includes('admin')} name={name} rankLine={rankLine} />;
 
@@ -131,7 +133,7 @@ function Content({ d, isAdmin }: { d: Dashboard; isAdmin: boolean }) {
         actions={
           <>
             <Button label="+ פקודה חדשה" variant="primary" onPress={toTrade} />
-            <Button label="לטבלת השבוע" disabled hint="יחובר כשמסך הטבלה ייבנה" />
+            <Button label="לטבלת השבוע" onPress={toLeaderboard} />
           </>
         }
         after={<WorldTimePanel clock={d.clock} />}
@@ -140,7 +142,13 @@ function Content({ d, isAdmin }: { d: Dashboard; isAdmin: boolean }) {
           <PortfolioChartCard portfolio={d.portfolio} weekStartAt={d.clock?.weekStartAt ?? null} nowAt={d.clock?.at ?? null} />
         </CardRow>
         <CardRow>
-          <ScoreCard standing={d.standing} todayWeekday={d.clock?.weekday ?? null} />
+          {/* A closed week on the board (D-032: the weekend, Monday before the open) has no "today", and the card
+              says it is that week's final score: the eyebrow above names the new week. */}
+          <ScoreCard
+            standing={d.standing}
+            todayWeekday={d.leaderboard.week?.final ? null : (d.clock?.weekday ?? null)}
+            finalWeek={d.leaderboard.week?.final ? isoWeek(d.leaderboard.week.start) : null}
+          />
           <CardStack
             top={<PendingOrdersCard orders={d.pendingOrders} today={today} />}
             bottom={<WorldClockCard clock={d.clock} isAdmin={isAdmin} />}
@@ -191,7 +199,7 @@ function Content({ d, isAdmin }: { d: Dashboard; isAdmin: boolean }) {
 
       {/* 3. Competition */}
       <Section
-        eyebrow="טבלת השבוע · נסגרת יום ו׳ 13:50"
+        eyebrow={boardEyebrow(d.leaderboard.week, false, gameEnded(d.leaderboard.week, d.clock))}
         title={
           d.standing ? (
             <>
@@ -200,14 +208,13 @@ function Content({ d, isAdmin }: { d: Dashboard; isAdmin: boolean }) {
               {`.\n${standingLine(d.standing)}`}
             </>
           ) : (
-            <>
-              {'הטבלה עוד לא נפתחה.\n'}
-              <Accent>הציון הראשון בסוף היום.</Accent>
-            </>
+            // Not on the board shown: nothing scored yet, or not ranked this week (no stock held and no trade this
+            // week, D-034). The score card above says how to get on.
+            <NotRankedTitle leaderboard={d.leaderboard} />
           )
         }
         body={standingSummary(d)}
-        actions={<Button label="לטבלה המלאה" disabled hint="יחובר כשמסך הטבלה ייבנה" />}
+        actions={<Button label="לטבלה המלאה" onPress={toLeaderboard} />}
       >
         <CardRow>
           <LeaderboardCard leaderboard={d.leaderboard} standing={d.standing} />
@@ -217,6 +224,17 @@ function Content({ d, isAdmin }: { d: Dashboard; isAdmin: boolean }) {
           <StreakCard />
         </CardRow>
       </Section>
+    </>
+  );
+}
+
+// Section 3's headline when you're not on the board: the same two lines as the leaderboard page's.
+function NotRankedTitle({ leaderboard }: { leaderboard: Dashboard['leaderboard'] }) {
+  const h = headline({ week: leaderboard.week, players: leaderboard.players, me: null });
+  return (
+    <>
+      {`${h.lead}\n`}
+      <Accent>{h.accent}</Accent>
     </>
   );
 }

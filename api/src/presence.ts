@@ -19,11 +19,15 @@ export async function recordSeen(db: Pool, uid: string): Promise<{ newVisit: boo
   try {
     // One transaction with the row locked, so two check-ins at the same moment can't both start a visit.
     // now() is the transaction's start time, so every comparison below uses the same instant.
+    // FOR NO KEY UPDATE, not FOR UPDATE: only last_seen_at changes, never the key. The runner's scoring holds
+    // FOR KEY SHARE on the users row of every ranked player (the standings and weekly_scores foreign keys) until
+    // it commits (D-034), and FOR UPDATE would wait behind it, holding a pool connection the whole time. Two
+    // check-ins of the same player still wait for each other, so a visit is counted once.
     await client.query('BEGIN');
     const { rows } = await client.query<{ fresh: boolean | null; new_visit: boolean }>(
       `SELECT last_seen_at > now() - make_interval(secs => $2) AS fresh,
               last_seen_at IS NULL OR last_seen_at < now() - make_interval(mins => $3) AS new_visit
-       FROM users WHERE uid = $1 FOR UPDATE`,
+       FROM users WHERE uid = $1 FOR NO KEY UPDATE`,
       [uid, MIN_WRITE_SECONDS, VISIT_GAP_MINUTES],
     );
     if (rows.length === 0) {

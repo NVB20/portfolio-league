@@ -1,6 +1,6 @@
 // The runner (D-021, D-029): runs every market open and close in time order. At each one it executes the
 // orders due then (checking the ledger of the players it trades), re-values only the players that event
-// affects, and closes the event with the median player line and the daily chart rows.
+// affects, and closes the event with the daily chart rows, the median player line and the leaderboard.
 //
 // Postgres is the queue. One runner at a time (a session advisory lock). Every step is a short transaction
 // that can be re-run after a crash at any point and changes nothing twice:
@@ -10,8 +10,11 @@
 //           batch checks its own players' ledger in that transaction
 //   step 2  affected players, while 'orders_done': re-mark and fold into the week, online players first;
 //           portfolios.last_event_at is the guard that makes a re-run skip players already done
-//   step 3  finish: the daily chart rows in pages, then → 'done' with the median
-// The game rules live in game/ (engine.ts, week.ts, clock.ts); this file loads, calls and writes.
+//   step 3  finish: the daily chart rows in pages, then ONE transaction: the median, the scoring (scoring.ts,
+//           D-034: the day's standings, and weekly_scores at the week's last event) and → 'done'. A crash before
+//           its commit leaves the event 'orders_done', and the re-run scores it again. After the commit, ANALYZE
+//           of the board when it wrote a new day or weekly rows (a failure is logged, not thrown)
+// The game rules live in game/ (engine.ts, week.ts, clock.ts, score.ts); this file loads, calls and writes.
 
 import type { Pool, PoolClient } from 'pg';
 import { eventsBetween } from './game/clock.js';
@@ -26,9 +29,11 @@ import {
 } from './game/engine.js';
 import { format, parse, RATE_ONE, SCALE } from './game/fixed.js';
 import { type Calendar, makeCalendar, type Market, type MarketEvent } from './game/marketHours.js';
+import { isLastEventOfWeek } from './game/score.js';
 import { addDays, ISRAEL, zonedToInstant } from './game/time.js';
 import { applyEvent, markPositions, median, startWeek, totals, type WeekState, weekOf } from './game/week.js';
 import { ONLINE_MINUTES } from './presence.js';
+import { analyzeBoard, scoreEvent } from './scoring.js';
 
 // The pg_advisory_lock key of the runner. Any fixed number; nothing else in the app takes advisory locks.
 export const RUNNER_LOCK_KEY = 20_261_110;
@@ -707,8 +712,11 @@ export async function catchUpPlayer(db: Pool, uid: string): Promise<boolean> {
 // ---------- step 3: finish ----------
 
 // The daily chart rows first (at the last event of the day, in pages), then one transaction: the median player
-// line and 'done'. The ledger check already ran in each order batch: ledger_balanced is false if any batch
-// found a mismatch, and true otherwise (also for an event with no orders: nothing to check).
+// line, the scoring (D-034) and 'done'. The ledger check already ran in each order batch: ledger_balanced is
+// false if any batch found a mismatch, and true otherwise (also for an event with no orders: nothing to check).
+// The median comes first: it is the one statement that must see a single set of portfolios (see medians).
+// After the commit, ANALYZE gives the planner a new day (analyzeBoard: only after a new day or weekly rows; a
+// failure there is only logged).
 export async function finishEvent(
   client: PoolClient,
   event: EventRow,
@@ -716,8 +724,12 @@ export async function finishEvent(
   playerBatch = DEFAULT_PLAYER_BATCH,
 ): Promise<void> {
   if (isLastEventOfDay(event, calendar)) await writeDailyRows(client, event, batchSize(playerBatch, DEFAULT_PLAYER_BATCH));
-  await inTransaction(client, async () => {
+  const scored = await inTransaction(client, async () => {
     const m = await medians(client, event.at);
+    // The week also ends at the world's end: the runner never runs an event after ends_at (runUntil).
+    const clock = await client.query<{ ends_at: Date | null }>('SELECT ends_at FROM world_clock');
+    const weekEnds = isLastEventOfWeek(event, calendar, clock.rows[0]?.ends_at ?? null);
+    const s = await scoreEvent(client, { day: event.day, at: event.at, weekEnds });
     await client.query(
       `UPDATE market_events SET status = 'done', finished_at = now(),
          duration_ms = LEAST(round(extract(epoch FROM now() - COALESCE(started_at, now())) * 1000), $4)::int,
@@ -725,7 +737,9 @@ export async function finishEvent(
        WHERE id = $1 AND status = 'orders_done'`,
       [event.id, m.value, m.returnPct, MAX_DURATION_MS],
     );
+    return s;
   });
+  await analyzeBoard(client, scored);
 }
 
 // D-024 / D-029: the daily chart rows, for every player whose last_event_at falls on this event's Israel day. In

@@ -4,7 +4,7 @@ The current Postgres schema of the app's database: every table, its fields, its 
 
 - **Source of truth:** the migrations in [api/migrations/](../api/migrations/). This file describes the schema after all of them have run.
 - **Keep it in sync:** every new migration updates this file in the same commit.
-- **Last migration covered:** `20261110100000000_runner.sql`
+- **Last migration covered:** `20261110172700000_leaderboard.sql`
 
 ## Relationships
 
@@ -13,6 +13,7 @@ erDiagram
     users ||--|| portfolios : "has one"
     users ||--o{ orders : places
     users ||--o{ standings : "ranked in"
+    users ||--o{ weekly_scores : "finished in"
     users ||--o{ app_opens : visits
     users ||--o{ admin_actions : "acts as admin"
     portfolios ||--o{ positions : holds
@@ -45,11 +46,12 @@ erDiagram
 | `orders.event_id` | `market_events.id` | many to 1 | blocked |
 | `portfolio_snapshots.uid` | `portfolios.uid` | many to 1 | CASCADE |
 | `standings.uid` | `users.uid` | many to 1 | CASCADE |
+| `weekly_scores.uid` | `users.uid` | many to 1 | CASCADE |
 | `app_opens.uid` | `users.uid` | many to 1 | CASCADE |
 | `admin_actions.uid` | `users.uid` | many to 1 | CASCADE |
 | `prices.symbol` | `securities.symbol` | many to 1 | blocked |
 
-Deleting a user removes their portfolio, positions, ledger, orders, snapshots, standings and visits (the ledger allows a delete only as part of that cascade). A security can't be deleted while anything still refers to it, and neither can a market event that orders point to.
+Deleting a user removes their portfolio, positions, ledger, orders, snapshots, standings, weekly scores and visits (the ledger allows a delete only as part of that cascade). A security can't be deleted while anything still refers to it, and neither can a market event that orders point to.
 
 ## Tables
 
@@ -274,18 +276,63 @@ Chart history: at most one row per player per trading day, written at that day's
 | `value_ils` | NUMERIC(16,2) | no | | ≥ 0 |
 
 ### `standings`
-The weekly competition as of the end of each game day (D-006).
+The live weekly board (D-032): one row per ranked player per scored day of the week, with that day's numbers and place. Written only by the runner's scoring step at every open and close (`scoreEvent` in `api/src/scoring.ts`, called from `finishEvent` in `api/src/runner.ts`; the rules in `api/src/game/score.ts`; D-034). The API only reads it (`api/src/leaderboard.ts`, for `GET /me/leaderboard` and the dashboard). `npm run seed:sample-board` fills it with made-up rows for development (D-033).
+
+**Who has a row (D-034):** at an event of week W, every player whose `portfolios.week_start` is W (an open or close touched them this week: a stock held at it, or an order due at it) or who holds an open position now. A cash-only player nothing touched this week has no row.
 
 | Field | Type | Null | Default | Notes |
 |-------|------|------|---------|-------|
-| `day` | DATE | no | | **PK part.** A Mon to Fri world-clock day |
+| `day` | DATE | no | | **PK part.** The scored day: a Mon to Fri world-clock date (Israel) |
 | `uid` | TEXT | no | | **PK part.** FK → `users.uid` |
-| `return_pct` | NUMERIC(10,4) | no | | Week return so far. `2.35` = +2.35% |
+| `return_pct` | NUMERIC(10,4) | no | | Week return so far. `2.35` = +2.35%. 0 for a row whose `week_start` isn't this week |
+| `max_drawdown_pct` | NUMERIC(10,4) | no | | ≥ 0. The largest drop from the week's peak so far |
+| `return_rank` | NUMERIC(6,2) | no | | 0 to 100. 100 = the best return. 100 × (other ranked players with a return ≤ mine) ÷ (N − 1): ties share the higher percentile (D-034) |
+| `stability_rank` | NUMERIC(6,2) | no | | 0 to 100. 100 = the smallest drawdown. 100 × (others with a drawdown ≥ mine) ÷ (N − 1) |
+| `score` | NUMERIC(6,2) | no | | 0 to 100. 0.85 × `return_rank` + 0.15 × `stability_rank`, from these stored (rounded) ranks. All three rounded half away from zero |
+| `rank` | INTEGER | no | | > 0. The place, 1..N: **unique per day** (`UNIQUE (day, rank)`) and the list order |
+
+**One player per place.** `UNIQUE (day, rank)` (`standings_day_rank_key`) means no two players share a place on a day: equal scores are broken by % gain, then the smaller drawdown, then the earlier sign-up, never by a ₪ amount (D-032). It is `DEFERRABLE` (initially immediate): Postgres checks it at the end of each statement instead of row by row, so a single `UPDATE` that swaps two players' places works. Its index is also the read path: the top N, "around me" and the player count (`max(rank)`) are each one index range or probe, never a scan of the day.
+
+**What Phase 4b must write** (the contract the leaderboard reads, D-032). Met since 11.11.2026 by the scoring step (D-034): see "How the scoring meets it" below.
+- **One row per ranked player per scored day.** Who is ranked was 4b's decision: see "Who has a row" above. Mid-week joiners have a row from the event their first buy fills.
+- **Ranks 1..N on each day: unique and without gaps.** The API counts the players as `max(rank)` of the day, never `count(*)`, and pages the table by rank ranges. A gap makes the count one too high and a page one row short.
+- **`rank` is the list order** (score, then % gain, the smaller drawdown, the earlier sign-up). The API never sorts the rows itself.
+- **A day appears whole.** The board shown is the latest day up to the world's today (`max(day)`), so a new day's rows must all be committed in one transaction, and a rewrite of a day too. Otherwise a reader can show a half-written day. The reader's side of this: each request reads the board in one read-only `REPEATABLE READ` snapshot (`inSnapshot` in `api/src/leaderboard.ts`), so a commit between two of its statements can't mix two rankings in one answer.
+- **Keep every scored day of the current week**: the rank change (▲/▼) is "my place on the previous scored day of this week − my place now", and the row's daily scores come from the same rows.
+- **Keep the closed week's standings until the next week's first scoring.** On the weekend, and on Monday before the week's first open, the board still shows the closed week from these rows. Older weeks can be deleted then (their final board is in `weekly_scores`).
+- **Run `ANALYZE standings` after committing a new day** (and `ANALYZE weekly_scores` after a new week), in the same job. The table only ever holds about 10 distinct days, so the planner keeps every day as a most-common value, and a day it has no statistics for yet is estimated at 1 row. Until autoanalyze runs (up to a minute or more after the write, exactly when every open screen reloads), "my row" and "my days" become scans of the whole day: measured at 50,000 players, 5 to 16 ms per statement instead of 0.03 to 0.1 ms, and less than half the requests per second. `ANALYZE` samples about 30,000 rows and takes well under a second. `npm run seed:sample-board` does the same.
+- **Upsert with `ON CONFLICT (day, uid)`, or delete and re-insert the day.** `standings_day_rank_key` is `DEFERRABLE`, and Postgres can't use a deferrable key as an `ON CONFLICT` arbiter: a bare `ON CONFLICT DO NOTHING`, or one that names `standings_day_rank_key`, raises an error. `ON CONFLICT (day, uid) DO UPDATE SET rank = EXCLUDED.rank, ...` works, swaps included.
+
+**How the scoring meets it** (D-034, `api/src/scoring.ts`):
+- **Delete and re-insert.** At every open and close the event's day is deleted and written again by one `INSERT … SELECT` with window functions. Places are `row_number()` by score, % return, the smaller drawdown, `users.created_at`, then `uid COLLATE "C"`, so they run 1..N with no gaps. A gap left by a deleted user in `standings` closes at the next event. The delete runs only when someone is ranked: with nobody ranked the day keeps what it holds (a development sample day, D-033), which can't be real rows, since within a week the ranked set only grows except through user deletes, and those cascade.
+- **One transaction with the event's `done`.** The day's rows are written in the runner's finish transaction, with the median and `market_events.status = 'done'`. A crash before the commit leaves the event `orders_done`, and the re-run writes the day again.
+- **The week's end.** At the week's last event (`isLastEventOfWeek` in `api/src/game/score.ts`), the same transaction copies the day to `weekly_scores`.
+- **Pruning at the next week's first scoring.** The first scoring of a new week that ranks anyone first writes `weekly_scores` for any earlier week that has none, from its last scored day. It then deletes every day before the new week's Monday. A scoring that ranks nobody prunes nothing, so the closed week stays on the board.
+- **`ANALYZE` after the commit of a new day.** `ANALYZE standings` (and `weekly_scores` when weekly rows were written) runs on the runner's connection after the commit, when the event wrote a day that had no rows before, or weekly rows. A rewrite of a day the planner already knows skips it: the statistics still hold, and `ANALYZE` cancels a running autovacuum of the table (after `deadlock_timeout`), so at every event of back-to-back events standings was never vacuumed. Autoanalyze still runs after rewrites. A failure is logged, not thrown.
+- **The scoring locks the ranked players' `users` rows.** The foreign keys of `standings` and `weekly_scores` take `FOR KEY SHARE` on each ranked player's `users` row until the finish transaction commits. A plain `UPDATE` of a non-key column doesn't wait for it, but `SELECT … FOR UPDATE` does, so the check-in (`POST /me/seen`) locks `FOR NO KEY UPDATE` (D-026).
+
+### `weekly_scores`
+The final board of each closed week (D-032): one row per ranked player, a copy of the week's last `standings` day. Past weeks on the leaderboard read it, and a row for a week marks that week's board as final.
+
+**Who writes it (D-034, `api/src/scoring.ts`):** the runner's scoring step, in the same transaction as the event's `done`:
+- At the week's last event (no open or close left before next Monday 00:00 Israel time, or before `world_clock.ends_at`): the week's rows are deleted and the day's `standings` rows copied exactly.
+- At any other event of the same week: the week's rows are deleted (normally there are none), so a final board written too early can't mark a live week as final.
+- At the first scoring of a later week that ranks anyone: an earlier week with `standings` days but no rows here gets them, copied from its last scored day, before those days are deleted.
+
+Once the next week has been scored, a week's rows don't change again, except that a deleted user's rows go with them (CASCADE).
+
+| Field | Type | Null | Default | Notes |
+|-------|------|------|---------|-------|
+| `week_start` | DATE | no | | **PK part.** The week's Monday (Israel date). A CHECK refuses any other weekday |
+| `uid` | TEXT | no | | **PK part.** FK → `users.uid` |
+| `return_pct` | NUMERIC(10,4) | no | | The week's return. `2.35` = +2.35% |
 | `max_drawdown_pct` | NUMERIC(10,4) | no | | ≥ 0 |
 | `return_rank` | NUMERIC(6,2) | no | | 0 to 100 |
 | `stability_rank` | NUMERIC(6,2) | no | | 0 to 100 |
 | `score` | NUMERIC(6,2) | no | | 0 to 100 |
-| `rank` | INTEGER | no | | > 0 |
+| `rank` | INTEGER | no | | > 0. The final place, 1..N: **unique per week** (`UNIQUE (week_start, rank)`) and the list order |
+
+Written with the same rules as `standings`: ranks 1..N without gaps, `rank` = the list order, the player count = `max(rank)` of the week. A later user deletion leaves a gap here that is never closed (a closed week is never renumbered), so `max(rank)` stays the number of players the week closed with (D-032). Nothing reads a closed week by rank range today; a full past-week board would have to page by list position.
 
 ## Indexes
 
@@ -326,12 +373,16 @@ Every primary key and UNIQUE column has its own index. The other indexes exist f
 | `orders` | `orders_unseen_rejections_idx` | `uid` WHERE `status = 'rejected' AND notified_at IS NULL` | partial | A player's rejection toasts not seen yet (D-023) |
 | `market_events` | `market_events_pkey` | `id` | PK | |
 | `market_events` | `market_events_market_kind_day_key` | `market, kind, day` | unique | One row per open or close |
-| `market_events` | `market_events_at_idx` | `at` | | The latest events, the admin page |
-| `market_events` | `market_events_unfinished_idx` | `at` WHERE `status <> 'done'` | partial | Where the runner resumes after a crash |
+| `market_events` | `market_events_at_idx` | `at` | | The latest events, the admin page. The leaderboard's `scoredAt` (the latest `done` event) and the events since the runner's last start (`behind`) |
+| `market_events` | `market_events_unfinished_idx` | `at` WHERE `status <> 'done'` | partial | Where the runner resumes after a crash. The leaderboard's `behind`: an event at or before now that isn't done |
 | `portfolio_snapshots` | `portfolio_snapshots_pkey` | `uid, at` | PK | A player's value chart |
 | `portfolio_snapshots` | `portfolio_snapshots_at_idx` | `at` | | All players' values at a given time |
-| `standings` | `standings_pkey` | `day, uid` | PK | |
-| `standings` | `standings_day_rank_idx` | `day, rank` | | The leaderboard for a day, in rank order |
+| `standings` | `standings_pkey` | `day, uid` | PK | One row per player per day. No leaderboard read uses it. The scoring deletes and re-inserts a day instead of upserting, and finds earlier days by backward probes of `max(day)` (D-034) |
+| `standings` | `standings_day_rank_key` | `day, rank` | unique, deferrable | One player per place. The latest scored day up to today (`max(day)`, read backwards), the board for a day in place order (top N, "around me", the place just above mine) and the player count, `max(rank)` |
+| `standings` | `standings_uid_day_idx` | `uid, day` | | My row on the board's day, a player's place on the previous scored day (the rank change) and a player's rows this week (the daily scores). The primary key can't serve `uid = $1 AND day BETWEEN ...` (Postgres 17 has no skip scan) |
+| `weekly_scores` | `weekly_scores_pkey` | `week_start, uid` | PK | One row per player per week. No leaderboard read uses it |
+| `weekly_scores` | `weekly_scores_week_rank_key` | `week_start, rank` | unique | One player per place. Is this week's final board written (`max(rank)`: the reader's `final`, and the scoring's check before it fills in an earlier week), a closed week's board and its player count, `max(rank)` |
+| `weekly_scores` | `weekly_scores_uid_week_idx` | `uid, week_start` | | A player's past weeks, newest first |
 
 ## Local price database (not the app schema)
 

@@ -1,7 +1,8 @@
 // The shared world clock and both markets' hours on today's timeline (Israel time, 08:00-24:00).
-// "Advance clock" is admin-only (DD-10, D-001); it's disabled until the clock endpoint exists.
+// "Advance clock" is admin-only (DD-10, D-001): it opens the admin page, where the clock moves are (D-030).
 
 import { StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import type { ClockView, MarketSession } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
 import { dayLabel, hhmm } from '../../dashboard/format';
@@ -36,7 +37,7 @@ export function WorldClockCard({ clock, isAdmin }: { clock: ClockView | null; is
       )}
       {isAdmin ? (
         <View style={styles.admin}>
-          <Button label="קדם שעון ▸" small disabled hint="מנהל בלבד. יחובר כשקידום השעון ייבנה" />
+          <Button label="קדם שעון ▸" small onPress={() => router.navigate('/admin-dashboard')} hint="מנהל בלבד. קידום השעון בדף הניהול" />
         </View>
       ) : null}
     </Card>

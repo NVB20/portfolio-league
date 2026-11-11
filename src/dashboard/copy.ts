@@ -61,10 +61,13 @@ export function standingLine(s: StandingView): string {
 
 export function standingSummary(d: Dashboard): string {
   const s = d.standing;
-  if (!s) return 'הציון מחושב בסוף כל יום מסחר: 85% לפי התשואה השבועית ו־15% לפי היציבות. הטבלה מתאפסת בכל יום שני.';
-  const mdd = d.portfolio.maxDrawdownPct;
-  if (s.stabilityRank < s.returnRank && mdd !== null) {
-    return `ירידה של ${pct(mdd, { digits: 1, signed: false })} מהשיא לשפל היא יותר מרוב השחקנים השבוע. תיק מפוזר יותר היה שומר על הדירוג.`;
+  // Not on the board shown: what the score is. How to get on (a buy that fills, D-034) is the score card's line.
+  if (!s) return 'הציון משווה אותך לכל השחקנים: 85% לפי דירוג התשואה השבועית ו־15% לפי דירוג היציבות. כל שבוע מתחיל טבלה חדשה.';
+  // The drop is "more than most players" only when fewer than half of the others dropped at least as much
+  // (stability rank < 50), and only worth advice when stability is the weaker rank and you're not already first.
+  // The number is the board row's (the board's week: on Monday before the open, last week's), never the portfolio's.
+  if (s.rank > 1 && s.stabilityRank < 50 && s.stabilityRank < s.returnRank) {
+    return `ירידה של ${pct(s.maxDrawdownPct, { digits: 1, signed: false })} מהשיא לשפל היא יותר מרוב השחקנים השבוע. תיק מפוזר יותר היה מעלה אותך בטבלה.`;
   }
   return `ציון ${s.score.toFixed(1)} מתוך 100, מקום ${s.rank} מתוך ${s.players.toLocaleString('en-US')} שחקנים.`;
 }

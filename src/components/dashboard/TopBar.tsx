@@ -5,7 +5,9 @@
 // On the admin page (side="admin") a "ניהול" badge replaces the tabs and a button leads back to the player side.
 // It lies OVER the scrolling page (absolute), so the cards slide underneath it like in the mock-up.
 // Web: see-through page color + blur, no border. Phones: solid page color (no blur on native).
-// "סקירה" (/dashboard) and "מסחר" (/trade) exist; the other tabs are shown disabled until their screens are built.
+// "סקירה" (/dashboard), "מסחר" (/trade) and "טבלה" (/leaderboard) exist; the other tabs are shown disabled until
+// their screens are built. On phones those are left out, so the three that work fit without scrolling (the tab
+// strip always opens at its first tab, which would hide an active tab further along).
 
 import { useState } from 'react';
 import { Animated, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -22,12 +24,12 @@ import { useLoop } from './motion';
 import { UserMenu } from './UserMenu';
 import { Button } from './Button';
 
-export type Page = 'dashboard' | 'trade';
+export type Page = 'dashboard' | 'trade' | 'leaderboard';
 const TABS: { label: string; page: Page | null }[] = [
   { label: 'סקירה', page: 'dashboard' },
   { label: 'מסחר', page: 'trade' },
   { label: 'פקודות', page: null },
-  { label: 'טבלה', page: null },
+  { label: 'טבלה', page: 'leaderboard' },
   { label: 'היסטוריה', page: null },
 ];
 export const BAR_HEIGHT = 68;
@@ -66,7 +68,7 @@ export function TopBar({ clock, name, rankLine, active = 'dashboard', side = 'pl
           contentContainerStyle={styles.tabsContent}
         >
           <View style={styles.tabs} accessibilityRole="tablist">
-            {TABS.map(({ label, page }) => {
+            {TABS.filter((t) => !isPhone || t.page !== null).map(({ label, page }) => {
               const on = page === active;
               const built = page !== null;
               return (
@@ -76,7 +78,8 @@ export function TopBar({ clock, name, rankLine, active = 'dashboard', side = 'pl
                   onPress={built && !on ? () => router.navigate(`/${page}`) : undefined}
                   accessibilityRole="tab"
                   accessibilityState={{ selected: on, disabled: !built }}
-                  style={[styles.tab, on && { backgroundColor: colors.accent }]}
+                  aria-selected={on}   // react-native-web ignores accessibilityState.selected
+                  style={[styles.tab, isPhone && styles.tabPhone, on && { backgroundColor: colors.accent }]}
                 >
                   <Text style={[styles.tabText, { color: on ? colors.accentInk : colors.muted }, on && { fontWeight: '600' }, !built && { opacity: 0.6 }]}>
                     {label}
@@ -165,6 +168,7 @@ const styles = StyleSheet.create({
   tabsContent: { padding: 4 },
   tabs: { flexDirection: 'row', gap: 4 },
   tab: { paddingVertical: 9, paddingHorizontal: 18, borderRadius: 999 },
+  tabPhone: { paddingHorizontal: 14 },
   tabText: { fontSize: 13.5, fontWeight: '500' },
   badge: { borderRadius: 999, paddingVertical: 7, paddingHorizontal: 16 },
   badgeText: { fontSize: 13, fontWeight: '600' },

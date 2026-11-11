@@ -48,6 +48,11 @@ Before reading, it brings the player up to the latest open or close whose orders
   - `series`: my value at Monday 00:00, one point per trading day (the daily rows), and now. `medianSeries`: the median player's value after each finished open or close this week.
 - `holdings[]` (`HoldingView`): open positions, biggest first: `units`, `freeUnits` (not locked by pending sells), `valueIls` (the last mark; at cost before the first one), `costBasisIls`, `unrealizedPnlIls`, `weightPct` (of `totalValue`, exact to 4 decimals), `nearCap`, and `dayChangePct` (a display % from the latest known closes).
 - `rejections[]` (`RejectionView`, D-023): rejected orders the player hasn't seen yet, newest rejection first, at most 5: `{ id, symbol, side, amountIls, units, code, reason, at }`. `code` is one of `NO_PRICE`, `INSUFFICIENT_CASH`, `OVER_LIMIT`, `INSUFFICIENT_UNITS` (for English text); `reason` is the Hebrew; `at` is the open or close that rejected it.
+- `leaderboard` (D-032): `{ players, week, top }`, the same board as `GET /me/leaderboard`. The board is the latest scored day (`standings.day`) up to the world's today, with no lower bound, so on the weekend and on Monday before the week's first open it is still the week that just closed.
+  - `week` (`BoardWeek`): `{ start, day, final }`. `start` is the week's Monday, `day` the scored day shown. `final` is true when that week is before the current world week or its final board is in `weekly_scores`. null = nothing scored up to today (then `players` is 0 and `top` is empty).
+  - `players`: the last place on that day, `max(rank)`. Places are unique, 1..N (no shared places), so this is one index lookup, not a count.
+  - `top`: places 1..5, `{ rank, name, returnPct, score, isMe }`. `name` is the display name, or "שחקן" when there is none; never the email.
+- `standing` (`StandingView`): my place on that board: `rank`, `players`, `score`, `returnRank`, `stabilityRank`, `rankChange` (places gained since the previous scored day of the same week; null on the week's first scored day, or when I wasn't on it), `days` (my daily scores, Monday up to the board's day) and `maxDrawdownPct` (the board row's drawdown: the board's week, so on Monday before the open it is last week's, while `portfolio.maxDrawdownPct` is already this week's 0). null = I'm not on the board shown (not ranked this week, or nothing scored yet).
 
 ### `POST /me/rejections/seen`
 The app showed the rejection toasts. Body `{ "ids": ["<order id>", ...] }`: exactly the `rejections[].id`s it showed, 1 to 5, as strings. Sets `notified_at` on those of this player's rejected orders that weren't seen yet, and returns `{ marked }` (how many). Only their own rows, only rejected orders; an id that is someone else's, pending or already seen marks nothing, so calling it again is harmless. A rejection that arrives after the read is not touched, whatever its id, and shows on the next read (D-031).
@@ -128,7 +133,46 @@ Errors are `{ error, code, reason? }` (`SendOrderError`): `error` in English, a 
 The app checks in when it opens and every 60 seconds while it is open and visible (D-026). The body is ignored. Returns `{ ok: true }`; 404 before `POST /me`.
 
 - Sets `users.last_seen_at`. Check-ins less than 30 seconds apart write nothing.
+- Locks the player's `users` row `FOR NO KEY UPDATE`, not `FOR UPDATE`: the runner's scoring holds `FOR KEY SHARE` on every ranked player's row until it commits (the board's foreign keys, D-034), and a check-in must not wait for it.
 - A check-in after more than 30 minutes away (or the first one ever) adds one row to `app_opens`: a new visit.
+
+### `GET /me/leaderboard?view=top|around&from=`
+The weekly table (D-032, [api/src/leaderboard.ts](../api/src/leaderboard.ts)). Read-only: the runner's scoring step writes `standings` and `weekly_scores` (D-034), and this route only reads them. It doesn't run the catch-up (D-025). Returns `LeaderboardView`.
+
+- **Which board:** the same as the dashboard's. It is the latest scored day up to the world's today, with no lower bound. On the weekend and on Monday before the week's first open, that is still the week that just closed.
+- **Who is on it, and when it changes (D-034):** every player who holds a stock now, or whom an open or close touched this week (a stock held at it, or an order due at it). A cash-only player nothing touched this week isn't on it, so `me` is null for them. The runner rewrites the day at every open and close, and writes the week's final board (`weekly_scores`, so `final` turns true) at the week's last event.
+- `view` (optional, default `top`):
+  - `top`: 20 places from `from`.
+  - `around`: my place ± 5 (fewer at either end). When I'm not on the board, the answer is the top 20 from place 1, with `view: "top"`, whatever `from` says.
+- `from` (optional, default 1, used by `top` only): the first place of the page, a whole number from 1 to 999999999 written as digits. "Load more" is `from` + 20. A `from` past the last place gives an empty page.
+
+The response:
+
+- `clock` (`LiveClockView`): the world clock, the same as the dashboard's. The screen's top bar shows it, and the screen reloads the board when it passes an open or a close. null = the world hasn't started.
+- `week` (`BoardWeek`): `{ start, day, final }`, as on the dashboard. `final` = the week is before the current world week, or its final board is in `weekly_scores`, so its places won't change. null = nothing scored up to today; then `players` is 0, `me` is null, and `podium` and `rows` are empty (`pastWeeks` is still filled).
+- `players`: the last place on that day (`max(rank)`). Places are unique, 1..N: equal scores never share a place.
+- `me` (`LeaderboardMe`): my place card. It has the dashboard's `StandingView` fields (`rank`, `players`, `score`, `returnRank`, `stabilityRank`, `rankChange`, `days`), plus `returnPct`, `maxDrawdownPct`, and `ahead` (`{ rank, score }` of the place just above mine; null when I'm first). null = I'm not on this board (not ranked this week).
+- `podium`: places 1..3, as rows.
+- `rows` (`LeaderboardRow[]`), in place order. Each row has:
+  - `rank`, `name` (the display name, or "שחקן"; never the email) and `isMe`
+  - `returnPct`, `maxDrawdownPct`, `returnRank`, `stabilityRank` and `score` (the stored values, as display numbers; how they are computed: D-034)
+  - `rankChange`: places gained since the previous scored day of the same week. null on the week's first scored day, or for a player who wasn't on that day.
+  - `days`: the daily score Mon..Fri, always 5 entries; null = no score that day.
+  - `avatar`: 0..4, which of the five avatar fills (LD-06). It is FNV-1a (32-bit) of the uid, mod 5. No uid or email is ever sent.
+- `view`: what `rows` holds. `from`: the place of `rows[0]` (1 when `rows` is empty). `hasMore`: there are places after the page.
+- `pastWeeks` (`PastWeekView[]`): my last 4 closed weeks before the board's week, newest first, from `weekly_scores`: `{ weekStart, rank, players, score }`. `players` is that week's last place, as the week closed (a user deleted later leaves a gap that isn't renumbered, D-032). With no board, the last 4 weeks of all.
+- `scoredAt`: the world instant (ISO) of the latest finished open or close (`market_events.status = 'done'`); null = none yet. The scoring commits in the same transaction as the event's `done`, so it changes exactly when the board is rewritten. The screen's "load more" glues a page under the rows only when its `week.day`, `scoredAt` and `players` match (`sameBoard`).
+- `behind`: the world clock has passed an open or close that isn't scored yet (started and not `done`, or not started: the clock follows real time, and the ticker runs a passed event up to a minute later). The board is about to change, so the screen loads it again every 15 to 30 seconds while this is true, at most 20 times in a row. False when no world exists. Read in the same snapshot as the board, so it can be true for one answer too many, but never false while the board is older than the clock.
+- **Cost:** every read is an index lookup, never a scan of a whole day:
+  - the day and `players`: backward probes of `(day, rank)`; `final`: one probe of `weekly_scores (week_start, rank)`
+  - a page and "around me": a range of `(day, rank)`
+  - my row, the rank changes and each row's days: `(uid, day)`
+  - past weeks: `(uid, week_start)`
+
+  - `scoredAt` and `behind`: `market_events` by `at` (`market_events_at_idx`, `market_events_unfinished_idx`): a handful of rows
+
+  About 9 short queries per request, one pool connection at a time. The board's reads run in one read-only `REPEATABLE READ` transaction (two more round trips, `BEGIN` and `COMMIT`), so a scoring commit between two of them can't mix two rankings in one answer. The dashboard's top 5 and standing do the same.
+- 400 when `view` isn't `top` or `around`, or `from` isn't 1 to 999999999 written as digits (`0`, `-1`, `1.5`, `1e3` and `01` are refused). 404 before `POST /me`.
 
 ### Admin routes
 
@@ -151,7 +195,7 @@ The admin page's numbers, in one request. Returns `AdminOverview`:
 Active players, visits and sign-ups per real Israel day, and day-1 / day-7 return (D-027). `days` is 7 to 90, default 30 (400 otherwise). Returns `{ days: [{ date, activePlayers, visits, signups }], retention: { d1, d7 } }`, each rate `{ cohort, returned, pct }` (`pct` null = nobody old enough to measure).
 
 ### `GET /admin/players?q=`
-Up to 50 players, by rank on the latest scored day of this week, then by portfolio value. Returns `{ players, limit }`; each player has `uid`, `name`, `email`, `isAdmin`, `joinedAt`, `totalValue`, `rank` (null = not scored), `pendingOrders`, `lastSeenAt` (null = never checked in), `visitsToday`.
+Up to 5 players, by rank on the latest scored day of this week, then by portfolio value. Returns `{ players, limit }`; each player has `uid`, `name`, `email`, `isAdmin`, `joinedAt`, `totalValue`, `rank` (null = not scored), `pendingOrders`, `lastSeenAt` (null = never checked in), `visitsToday`.
 
 - `q` (optional) filters by display name or email, case-insensitive. `%` and `_` match themselves.
 - `q` longer than 100 characters: 400.
