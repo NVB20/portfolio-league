@@ -82,6 +82,13 @@ One row per player. Firebase Auth owns the login; this row owns the app data.
 | `display_name` | TEXT | yes | | Shown on the leaderboard. Never the email |
 | `chart_settings` | JSONB | no | `'{}'` | Chart type, colors, indicators. Written only by `PATCH /me/chart-settings` |
 | `last_seen_at` | TIMESTAMPTZ | yes | | Real time of the app's last check-in (D-026). Online = within 2 minutes. NULL = never checked in. Written only by `POST /me/seen` |
+| `streak_days` | INTEGER | no | `0` | The daily streak (D-039): real Israel days in a row on which the player was in the app, up to `streak_last_day`. ≥ 0. A read shows 0 once `streak_last_day` is before yesterday; nothing resets it at midnight |
+| `streak_best` | INTEGER | no | `0` | The longest streak so far. ≥ `streak_days` (CHECK) |
+| `streak_last_day` | DATE | yes | | The last real Israel date counted, `(now() AT TIME ZONE 'Asia/Jerusalem')::date`. NULL exactly when `streak_days` = 0 (CHECK) |
+| `streak_week` | DATE | yes | | The Sunday of the week `streak_week_days` is for (a Sunday, CHECK). NULL = never counted |
+| `streak_week_days` | SMALLINT | no | `0` | One bit per day of that week the player was in, bit 0 = Sunday … bit 6 = Saturday (0 to 127). 0 exactly when `streak_week` is NULL (CHECK) |
+
+The five `streak_*` columns are written only by the server, at most once per player per real day: by `POST /me/seen`, and by `GET /me/dashboard` when today isn't counted yet, each under the row lock the check-in takes (`FOR NO KEY UPDATE`, D-026). The dev-only sample game (D-038) writes its players' streaks directly, counted from the visit days it writes.
 
 ### `app_opens`
 One row per visit (D-026). A check-in after more than 30 minutes away, or the very first one, starts a visit. The server decides, never the app. Real time. The dev-only sample game (`npm run seed:sample-game`, D-038) writes its players' visits directly.

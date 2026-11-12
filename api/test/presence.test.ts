@@ -131,3 +131,91 @@ describe('POST /me/seen', () => {
     expect(await visits('bob')).toBe(0);
   });
 });
+
+// The daily streak (D-039): real Israel calendar days, counted by the check-in under its row lock. "Yesterday"
+// is set with SQL from Postgres's own Israel date, so the tests don't wait for midnight.
+describe('POST /me/seen counts the daily streak', () => {
+  const TODAY = `(now() AT TIME ZONE 'Asia/Jerusalem')::date`;
+
+  async function streak(uid = 'alice') {
+    const { rows } = await db.query<{ days: number; best: number; lastDay: string | null; isToday: boolean | null; weekDays: number; dow: number }>(
+      `SELECT streak_days AS days, streak_best AS best, streak_last_day::text AS "lastDay",
+              streak_last_day = ${TODAY} AS "isToday", streak_week_days AS "weekDays",
+              extract(dow FROM ${TODAY})::int AS dow
+       FROM users WHERE uid = $1`,
+      [uid],
+    );
+    return rows[0];
+  }
+
+  // Pretend the last day counted was `daysAgo` real days ago, with `days` in a row up to it.
+  async function lastCounted(daysAgo: number, days: number, best = days, uid = 'alice') {
+    await db.query(
+      `UPDATE users SET streak_days = $2, streak_best = $3, streak_last_day = ${TODAY} - $4::int,
+                        streak_week = NULL, streak_week_days = 0
+       WHERE uid = $1`,
+      [uid, days, best, daysAgo],
+    );
+  }
+
+  it('a new player has no streak', async () => {
+    await call('POST', '/me', 'alice');
+    expect(await streak()).toMatchObject({ days: 0, best: 0, lastDay: null, weekDays: 0 });
+  });
+
+  it('the first check-in counts today: a streak of 1, and today marked in this week', async () => {
+    await call('POST', '/me', 'alice');
+    await seen();
+    const s = await streak();
+    expect(s).toMatchObject({ days: 1, best: 1, isToday: true });
+    expect(s.weekDays).toBe(1 << s.dow);
+  });
+
+  it('in yesterday and today: one more day, whatever the hours between', async () => {
+    await call('POST', '/me', 'alice');
+    await lastCounted(1, 4);
+    await seen();
+    expect(await streak()).toMatchObject({ days: 5, best: 5, isToday: true });
+  });
+
+  it('a whole day missed: starts again at 1, the best stays', async () => {
+    await call('POST', '/me', 'alice');
+    await lastCounted(2, 4);
+    await seen();
+    expect(await streak()).toMatchObject({ days: 1, best: 4, isToday: true });
+  });
+
+  it('more check-ins the same day change nothing, a new visit included', async () => {
+    await call('POST', '/me', 'alice');
+    await seen();
+    await moveSeenBack('31 minutes');
+    await seen();
+    expect(await visits()).toBe(2);
+    expect(await streak()).toMatchObject({ days: 1, best: 1 });
+  });
+
+  it('a check-in under 30 seconds after the last one still counts a new day (just before and after midnight)', async () => {
+    await call('POST', '/me', 'alice');
+    await seen();
+    await lastCounted(1, 2);
+    await moveSeenBack('10 seconds');
+    await seen();
+    expect(await streak()).toMatchObject({ days: 3, isToday: true });
+    expect(await secondsSinceSeen()).toBeGreaterThanOrEqual(10);   // the presence part still wrote nothing
+  });
+
+  it('many check-ins at the same moment count the day once', async () => {
+    await call('POST', '/me', 'alice');
+    await lastCounted(1, 6);
+    const results = await Promise.all(Array.from({ length: 10 }, () => seen()));
+    expect(results.every((r) => r.status === 200)).toBe(true);
+    expect(await streak()).toMatchObject({ days: 7, best: 7 });
+  });
+
+  it('only counts the caller', async () => {
+    await call('POST', '/me', 'alice');
+    await call('POST', '/me', 'bob');
+    await seen('alice');
+    expect(await streak('bob')).toMatchObject({ days: 0, lastDay: null });
+  });
+});

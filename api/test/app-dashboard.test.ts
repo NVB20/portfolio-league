@@ -9,7 +9,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type {
-  ClockView, Dashboard, HoldingView, LiveClockView, MarketSession, PortfolioView, RejectionView, StandingView, StopSaleView, WorldTime,
+  ClockView, Dashboard, HoldingView, LiveClockView, MarketSession, PortfolioView, RejectionView, StandingView, StopSaleView, StreakView,
+  WorldTime,
 } from '../src/contract.js';
 
 const app = <T>(path: string): Promise<T> => import(new URL(`../../src/${path}.ts`, import.meta.url).href) as Promise<T>;
@@ -364,5 +365,64 @@ describe('buttons for built screens are connected', () => {
     expect(clockCard).not.toContain('יחובר כשקידום השעון ייבנה');
     // It opens the admin page at its world clock section (?to=clock), not at the top.
     expect(clockCard).toContain("router.navigate({ pathname: '/admin-dashboard', params: { to: 'clock' } })");
+  });
+});
+
+// ---------- the daily streak card (D-039) ----------
+
+type WeekDot = { letter: string; state: 'in' | 'missed' | 'today' | 'future'; isToday: boolean };
+const { daysText, streakTitle, streakLine, weekDots, weekLabel } = await app<{
+  daysText(n: number): string;
+  streakTitle(s: StreakView): string;
+  streakLine(s: StreakView): string;
+  weekDots(s: StreakView): WeekDot[];
+  weekLabel(s: StreakView): string;
+}>('dashboard/streak');
+
+// Wednesday, in on Sunday, Monday and today (missed Tuesday): a streak of 1, best 4 from last week.
+const WED: StreakView = { days: 1, best: 4, countedToday: true, week: [true, true, false, true, false, false, false], weekday: 3 };
+
+describe('streak card: the words', () => {
+  it('days in Hebrew: one, two, many', () => {
+    expect([daysText(1), daysText(2), daysText(5)]).toEqual(['יום אחד', 'יומיים', '5 ימים']);
+  });
+
+  it('the big line', () => {
+    expect(streakTitle({ ...WED, days: 5 })).toBe('5 ימים ברצף');
+    expect(streakTitle({ ...WED, days: 1 })).toBe('יום אחד ברצף');
+    expect(streakTitle({ ...WED, days: 0, countedToday: false })).toBe('עוד אין רצף');
+  });
+
+  it('the line under it: today counted, and the best when it is higher', () => {
+    expect(streakLine(WED)).toBe('היום נספר · השיא שלך: 4 ימים');
+    expect(streakLine({ ...WED, days: 4 })).toBe('היום נספר · זה השיא שלך');
+    expect(streakLine({ ...WED, best: 1 })).toBe('היום נספר · חזרו מחר כדי להמשיך');
+  });
+
+  it('today not counted yet: keep it, or start one', () => {
+    expect(streakLine({ ...WED, days: 3, countedToday: false })).toBe('היכנסו היום כדי לשמור על הרצף');
+    expect(streakLine({ ...WED, days: 0, countedToday: false })).toBe('כניסה היום מתחילה רצף חדש');
+  });
+});
+
+describe('streak card: the week, Sunday to Saturday', () => {
+  it('seven days from Sunday: in, missed, today and the days still ahead', () => {
+    expect(weekDots(WED)).toEqual([
+      { letter: 'א', state: 'in', isToday: false },
+      { letter: 'ב', state: 'in', isToday: false },
+      { letter: 'ג', state: 'missed', isToday: false },
+      { letter: 'ד', state: 'in', isToday: true },
+      { letter: 'ה', state: 'future', isToday: false },
+      { letter: 'ו', state: 'future', isToday: false },
+      { letter: 'ש', state: 'future', isToday: false },
+    ]);
+  });
+
+  it('today not counted yet shows as today, not missed', () => {
+    expect(weekDots({ ...WED, countedToday: false, week: [true, true, false, false, false, false, false] })[3].state).toBe('today');
+  });
+
+  it('a screen reader hears how many days of the week so far', () => {
+    expect(weekLabel(WED)).toBe('ימים השבוע: 3 מתוך 4');
   });
 });

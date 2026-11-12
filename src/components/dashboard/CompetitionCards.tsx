@@ -2,13 +2,12 @@
 
 import { Animated, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
-import type { Dashboard, StandingView } from '../../../api/src/contract';
+import type { Dashboard, StandingView, StreakView } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
 import { pct, score } from '../../dashboard/format';
+import { streakLine, streakTitle, weekDots, weekLabel } from '../../dashboard/streak';
 import { rankDelta, rankText, rankTip, scoreEquation, scoreTip, type Tip } from '../../leaderboard/board';
 import { Card, Empty, usePalette } from './Card';
-import { Button } from './Button';
-import { Chip } from './Chip';
 import { IconButton } from './IconButton';
 import { InfoTip } from './InfoTip';
 import { useLoop } from './motion';
@@ -121,17 +120,17 @@ function Tile({ value, label, solid = false, color, tip }: { value: string; labe
   );
 }
 
-// The retention feature isn't chosen yet (PROGRESS, phase 6), so this card is a labelled placeholder.
-export function StreakCard() {
+// The daily streak (D-039): real days in a row on which the player was in the app, and this real week, Sunday to
+// Saturday. The API counts the days (the dashboard's own read counts today); the card only shows them.
+export function StreakCard({ streak }: { streak: StreakView }) {
   return (
-    <Card inverse title="הרצף היומי" sub="כניסה אחת ביום שומרת עליו" end={<Chip>בקרוב</Chip>}>
-      <StreakBody />
+    <Card inverse title="הרצף היומי" sub="כניסה אחת ביום שומרת עליו">
+      <StreakBody streak={streak} />
     </Card>
   );
 }
 
-// No streak is counted yet, so the five day dots (Mon-Fri) are all empty.
-function StreakBody() {
+function StreakBody({ streak }: { streak: StreakView }) {
   const p = usePalette();
   const flicker = useLoop(1600);
   return (
@@ -141,6 +140,7 @@ function StreakBody() {
         importantForAccessibility="no"
         style={[
           styles.flame,
+          { opacity: streak.days > 0 ? 1 : 0.35 },
           {
             transform: [
               { scale: flicker.interpolate({ inputRange: [0, 1], outputRange: [1, 1.08] }) },
@@ -152,15 +152,25 @@ function StreakBody() {
         🔥
       </Animated.Text>
       <View style={styles.streakText}>
-        <Text style={[styles.streakTitle, { color: p.fg }]}>עוד אין רצף</Text>
-        <Text style={[styles.streakSub, { color: p.sub }]}>הרצף יתחיל לספור כשפיצ׳ר החזרה היומית יעלה.</Text>
+        <Text style={[styles.streakTitle, { color: p.fg }]}>{streakTitle(streak)}</Text>
+        <Text style={[styles.streakSub, { color: p.sub }]}>{streakLine(streak)}</Text>
       </View>
-      <View style={styles.dots} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-        {[1, 2, 3, 4, 5].map((d) => (
-          <View key={d} style={[styles.dotDay, { backgroundColor: p.tile }]} />
+      <View style={styles.week} accessible accessibilityLabel={weekLabel(streak)}>
+        {weekDots(streak).map((d) => (
+          <View key={d.letter} style={styles.weekDay}>
+            <View
+              style={[
+                styles.dotDay,
+                d.state === 'in' && { backgroundColor: p.accentFill },
+                (d.state === 'missed' || d.state === 'today') && { backgroundColor: p.tile },
+                d.state === 'future' && { borderWidth: 1, borderColor: p.line },
+                d.isToday && { borderWidth: 2, borderColor: p.fg },
+              ]}
+            />
+            <Text style={[styles.dayLetter, { color: d.isToday ? p.fg : p.sub }]}>{d.letter}</Text>
+          </View>
         ))}
       </View>
-      <Button label="הזכירו לי מחר" variant="ink" small disabled hint="יחובר עם פיצ׳ר החזרה היומית" />
     </View>
   );
 }
@@ -185,6 +195,8 @@ const styles = StyleSheet.create({
   streakText: { flexShrink: 1 },
   streakTitle: { fontSize: 22, fontWeight: '700' },
   streakSub: { fontSize: 12.5 },
-  dots: { flexDirection: 'row', gap: 7, marginRight: 'auto' },
-  dotDay: { width: 11, height: 11, borderRadius: 6 },
+  week: { flexDirection: 'row', gap: 8, marginRight: 'auto' },
+  weekDay: { alignItems: 'center', gap: 4 },
+  dotDay: { width: 14, height: 14, borderRadius: 7 },
+  dayLetter: { fontSize: 11, fontWeight: '600' },
 });

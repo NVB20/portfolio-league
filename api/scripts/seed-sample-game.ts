@@ -23,6 +23,7 @@
 //   3. Runs the month's last open and close, leaves the clock after the last send, running again if it was.
 //   4. Writes the real-time side: sign-ups, visits (app_opens), last seen, page time and views, the confirm popup,
 //      on the last GAME_DAYS real days ending today (world day k → real day k). A few players are left online.
+//      Each player's daily streak (D-039) is counted from those visit days with the real rule (game/streak.ts).
 //
 // Safe to run again: it starts over every time and plays the same month (the real dates follow today).
 // Safety: the same checks as the sample board (D-033): a database on localhost or 127.0.0.1 only, never
@@ -36,6 +37,7 @@ import { ledgerMismatches, lockClock, type RunSummary, runUntil, withRunnerLock 
 import { upsertUser } from '../src/users.js';
 import { eventsBetween, isTradingDay } from '../src/game/clock.js';
 import { lastClosedDay, type Market } from '../src/game/marketHours.js';
+import { countDay, NO_STREAK } from '../src/game/streak.js';
 import { addDays, ISRAEL, zonedParts, zonedToInstant } from '../src/game/time.js';
 import { worldStartAt } from '../src/game/worldStart.js';
 import { checkPlayers, checkTarget, MAX_DEV_PLAYERS, mulberry32, SAMPLE_NAMES, SAMPLE_UIDS, sampleEmail, seedOf } from '../src/sampleBoard.js';
@@ -376,7 +378,7 @@ function latestClose(prices: Map<string, PriceRow[]>, symbol: string, day: strin
 
 // ---------- step 4 ----------
 
-type Written = { visits: number; pageRows: number; confirmRows: number; stopSells: number };
+type Written = { visits: number; pageRows: number; confirmRows: number; stopSells: number; streaks: number };
 
 async function writeRealTime(
   pool: pg.Pool,
@@ -392,11 +394,13 @@ async function writeRealTime(
   const pages = { day: [] as string[], page: [] as string[], uid: [] as string[], views: [] as number[], ms: [] as number[] };
   const confirms = { day: [] as string[], uid: [] as string[], opened: [] as number[], backed: [] as number[] };
   const seen = { uid: [] as string[], at: [] as Date[] };
+  const streaks = { uid: [] as string[], days: [] as number[], best: [] as number[], last: [] as string[], week: [] as string[], weekDays: [] as number[] };
   const lastDay = GAME_DAYS - 1;
   const onlineNow: string[] = [];
 
   personas.forEach((p, i) => {
     let lastSeen: Date | null = null;
+    let streak = NO_STREAK;   // D-039: each real day with a visit counts, as the check-in would have counted it
     for (const d of plans[i]) {
       if (d.sessions.length === 0) continue;
       const rng = mulberry32(seedOf(`${p.uid}|${d.day}|visits`));
@@ -408,6 +412,7 @@ async function writeRealTime(
       if (!lastSeen || end > lastSeen) lastSeen = end;
 
       const date = addDays(firstRealDate, d.day);
+      streak = countDay(streak, date) ?? streak;
       const u = usageFor(p, d.day, d.sessions.length, sent.get(`${p.uid}|${d.day}`) ?? 0);
       for (const page of USAGE_PAGES) {
         const x = u.pages[page];
@@ -429,6 +434,14 @@ async function writeRealTime(
     if (lastSeen) {
       seen.uid.push(p.uid);
       seen.at.push(lastSeen);
+    }
+    if (streak.lastDay !== null && streak.weekStart !== null) {
+      streaks.uid.push(p.uid);
+      streaks.days.push(streak.days);
+      streaks.best.push(streak.best);
+      streaks.last.push(streak.lastDay);
+      streaks.week.push(streak.weekStart);
+      streaks.weekDays.push(streak.weekDays);
     }
   });
 
@@ -461,6 +474,13 @@ async function writeRealTime(
       `UPDATE users u SET last_seen_at = t.at FROM unnest($1::text[], $2::timestamptz[]) AS t (uid, at) WHERE u.uid = t.uid`,
       [seen.uid, seen.at],
     );
+    await c.query(
+      `UPDATE users u SET streak_days = t.days, streak_best = t.best, streak_last_day = t.last, streak_week = t.week,
+                          streak_week_days = t.week_days
+       FROM unnest($1::text[], $2::int[], $3::int[], $4::date[], $5::date[], $6::smallint[]) AS t (uid, days, best, last, week, week_days)
+       WHERE u.uid = t.uid`,
+      [streaks.uid, streaks.days, streaks.best, streaks.last, streaks.week, streaks.weekDays],
+    );
     // Online now: seen in the last 2 minutes (D-026), for a few of today's players. It fades within 2 minutes.
     await c.query(
       `UPDATE users u SET last_seen_at = now() - make_interval(secs => t.secs)
@@ -482,7 +502,10 @@ async function writeRealTime(
   } finally {
     c.release();
   }
-  return { visits: opens.uid.length, pageRows: pages.uid.length, confirmRows: confirms.uid.length, stopSells: stopSells.rows.length };
+  return {
+    visits: opens.uid.length, pageRows: pages.uid.length, confirmRows: confirms.uid.length, stopSells: stopSells.rows.length,
+    streaks: streaks.uid.length,
+  };
 }
 
 // ---------- what it did ----------
@@ -536,7 +559,7 @@ async function report(
     console.log(`Live board ${board.rows[0].day} (${board.rows[0].n} players):`);
     for (const b of board.rows) console.log(`  #${b.rank} ${b.name}: ${b.ret}%, score ${b.score}`);
   }
-  console.log(`Real time: ${r.written.visits} visits, ${r.written.pageRows} page rows, ${r.written.confirmRows} confirm-popup rows; ${r.written.stopSells} stop sales moved to their real day`);
+  console.log(`Real time: ${r.written.visits} visits, ${r.written.pageRows} page rows, ${r.written.confirmRows} confirm-popup rows; ${r.written.stopSells} stop sales moved to their real day; ${r.written.streaks} daily streaks`);
   console.log(`Clock: ${r.finalAt.toISOString()}, ${r.running ? 'running again' : 'stopped'}`);
   console.log('SAMPLE DATA. Remove the players with: npm run seed:sample-game -- --clear');
 }

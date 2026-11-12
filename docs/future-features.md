@@ -49,7 +49,7 @@ Like Duolingo: one small task a day. For example:
 - Spend 10 minutes in the app.
 - Open 1 new position.
 
-Finishing the task keeps the streak going. If the task isn't done yet, a notification reminds the player before the day ends.
+The streak itself is built (D-039): today it counts any real Israel day the player is in the app. A daily task would make finishing it what keeps the streak going. If the task isn't done yet, a notification reminds the player before the real Israel day ends.
 
 ### Badges
 

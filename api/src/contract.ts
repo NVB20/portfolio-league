@@ -215,6 +215,17 @@ export type Dashboard = {
   usdIls: UsdIlsView | null;
   standing: StandingView | null;   // null = you're not on the board shown (not ranked this week, or nothing scored yet)
   leaderboard: { players: number; week: BoardWeek | null; top: LeaderRow[] };   // top = places 1..5
+  streak: StreakView;              // the daily streak, in real days (D-039)
+};
+
+// The daily streak (D-039): real Israel calendar days in a row on which the player was in the app. Real time, never
+// world time: an admin's clock jump or a stopped world changes nothing here.
+export type StreakView = {
+  days: number;            // days in a row up to today, or up to yesterday while today isn't counted yet; 0 = none
+  best: number;            // the longest streak so far
+  countedToday: boolean;   // today is already counted (the dashboard counts it before it reads, so normally true)
+  week: boolean[];         // this real week, Sunday to Saturday (7 entries): in the app that day
+  weekday: number;         // today's real Israel weekday, 0 = Sunday ... 6 = Saturday
 };
 
 // ---------- GET /me/leaderboard: the weekly table (D-032) ----------

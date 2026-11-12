@@ -222,7 +222,7 @@ function Content({ d, isAdmin }: { d: Dashboard; isAdmin: boolean }) {
           <ScoreBreakdownCard standing={d.standing} />
         </CardRow>
         <CardRow>
-          <StreakCard />
+          <StreakCard streak={d.streak} />
         </CardRow>
       </Section>
     </>

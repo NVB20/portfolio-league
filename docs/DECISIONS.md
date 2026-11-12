@@ -747,3 +747,31 @@ The balances afterwards: cash_free 1,100, stock_cost 0, realized_pnl −100 (sho
 - **Today is squeezed.** Run early in the morning, today's whole world day fits into a few real hours (just after midnight, into one instant). Run it again later in the day for a natural "today".
 - **"Online now" fades in 2 minutes**, as it should: it is only there right after the run.
 - **The samples share D-033's uids**, so the two scripts can't both be in place: the board script refuses while the samples have orders.
+
+## D-039: The daily streak counts real calendar days in the app, not 24-hour timers and not the world clock
+
+**Status:** Active (12.11.2026). The retention feature (brief, task 2). Built: the columns in [api/migrations/20261112100400649_streak.sql](../api/migrations/20261112100400649_streak.sql) ([SCHEMA.md](SCHEMA.md#users)), the rules in [api/src/game/streak.ts](../api/src/game/streak.ts) (pure), the counting in [api/src/streak.ts](../api/src/streak.ts) (called by `POST /me/seen` in [api/src/presence.ts](../api/src/presence.ts) and by `GET /me/dashboard`), the card in [src/components/dashboard/CompetitionCards.tsx](../src/components/dashboard/CompetitionCards.tsx) with its words in [src/dashboard/streak.ts](../src/dashboard/streak.ts). Tested in [api/test/streak.test.ts](../api/test/streak.test.ts), [api/test/presence.test.ts](../api/test/presence.test.ts), [api/test/dashboard.test.ts](../api/test/dashboard.test.ts) and [api/test/app-dashboard.test.ts](../api/test/app-dashboard.test.ts).
+
+**Decision:**
+- **A streak day is a real Israel calendar date on which the player was in the app.** Hours don't matter, only dates: in on 11.11 at 00:05 and on 12.11 at 22:30 is 46 hours apart but two days in a row, so the streak lives. It breaks only when a whole date passes with no entry (11.11, nothing on 12.11, then 13.11 starts again at 1).
+- **Every day counts**, Friday and Saturday too. No freezes or savers.
+- **Real time, never world time.** The world clock can stop, jump a week in minutes, or freeze at `ends_at`. None of that holds a streak back or adds a day to it.
+- **The server decides the date**, `(now() AT TIME ZONE 'Asia/Jerusalem')::date` in Postgres, never the phone's clock, so changing the phone's date can't fake a day.
+- **Counted by the check-in**, the first `POST /me/seen` of each real day, under the users row lock the check-in already takes (`FOR NO KEY UPDATE`, D-026), so check-ins at the same moment count a day once. A check-in under 30 seconds after the last one, which writes nothing for presence, still counts a new day: a check-in just before midnight and one just after are two days. A player who keeps the app open past midnight gets the new day within a minute, which a count based on visits (D-027's known weakness) would miss.
+- **The dashboard also counts it.** The app sends the dashboard's request and its first check-in at the same moment, and the dashboard's read could otherwise come first and show today as not counted yet. So `GET /me/dashboard` counts today the same way, in its own short transaction, when it isn't counted yet; most reads find it counted and write nothing. A failed count there is logged, and the card shows the streak as read.
+- **Stored, not added up on read.** Five columns on `users`: the days in a row, the best ever, the last day counted, and this week (its Sunday and one bit per weekday). At most one write per player per real day.
+- **Nothing runs at midnight.** A streak whose last day is before yesterday is over: the read shows 0. Yesterday's streak still shows on the next day until the player comes in, with "היכנסו היום כדי לשמור על הרצף".
+- **The card:** the flame, "5 ימים ברצף", whether today is counted and the best streak when it is higher, and **this real week from Sunday to Saturday**: a dot per day, filled for each day the player was in (days before a break stay filled), today ringed, and the days still ahead outlined. The "בקרוב" badge and the "הזכירו לי מחר" button are gone: there are no notifications to send it.
+- **The sample game (D-038)** counts each sample player's streak from the visit days it writes, with the same pure rule, so the cards show believable streaks.
+
+**Why:**
+- The brief asks for one feature that brings players back every day. A streak is the simplest daily reason to open the app, and it asks for nothing that could change the game's money: no passive rewards (a trading game can't hand out value for nothing).
+- Dates, not timers: a 24-hour timer punishes a player who came early one day and late the next, and nobody can see when their timer runs out. A date is what a player means by "every day".
+- Real days, not world days: the world clock moves at the admin's pace. On world days a streak would freeze while the clock is stopped and jump during a review, so it couldn't measure people coming back.
+- It is measured with what we already have: day-1 and day-7 return and active players per day (D-027) on the admin page, all on the same real Israel dates.
+
+**Known weaknesses:**
+- **Only Israel time.** A player abroad has their day cut at Israel's midnight, not their own.
+- **No reminder.** Nothing tells a player their streak is about to break; that needs notifications (pg-boss and push, D-021's next step).
+- **The best streak can't be seen by others** and there is no streak leaderboard yet.
+- **A card left open past midnight** still shows yesterday's week until the dashboard loads again; the day itself is counted by the next check-in.

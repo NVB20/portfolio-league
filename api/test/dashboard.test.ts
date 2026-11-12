@@ -76,7 +76,54 @@ describe('GET /me/dashboard, empty world', () => {
       usdIls: null,
       standing: null,
       leaderboard: { players: 0, week: null, top: [] },
+      // Opening the dashboard counts today (D-039), in real days whatever the world clock says.
+      streak: { days: 1, best: 1, countedToday: true, week: expect.any(Array), weekday: expect.any(Number) },
     });
+  });
+});
+
+// The daily streak (D-039): real Israel calendar days, never the world clock. "Yesterday" is set with SQL from
+// Postgres's own Israel date.
+describe('GET /me/dashboard, the daily streak', () => {
+  const TODAY = `(now() AT TIME ZONE 'Asia/Jerusalem')::date`;
+
+  async function realToday(): Promise<number> {
+    const { rows } = await db.query<{ dow: number }>(`SELECT extract(dow FROM ${TODAY})::int AS dow`);
+    return rows[0].dow;
+  }
+
+  it('counts today even before the first check-in, and marks it in this Sunday-to-Saturday week', async () => {
+    await call('POST', '/me', 'alice');
+    const dow = await realToday();
+    const res = await call('GET', '/me/dashboard', 'alice');
+    expect((await res.json()).streak).toEqual({
+      days: 1,
+      best: 1,
+      countedToday: true,
+      week: Array.from({ length: 7 }, (_, d) => d === dow),
+      weekday: dow,
+    });
+    const { rows } = await db.query(`SELECT streak_last_day = ${TODAY} AS counted FROM users WHERE uid = 'alice'`);
+    expect(rows[0].counted).toBe(true);
+  });
+
+  it('in yesterday: today adds one more day; a second read changes nothing', async () => {
+    await call('POST', '/me', 'alice');
+    await db.query(
+      `UPDATE users SET streak_days = 9, streak_best = 12, streak_last_day = ${TODAY} - 1, streak_week = NULL, streak_week_days = 0
+       WHERE uid = 'alice'`,
+    );
+    const first = (await (await call('GET', '/me/dashboard', 'alice')).json()).streak;
+    const second = (await (await call('GET', '/me/dashboard', 'alice')).json()).streak;
+    expect(first).toMatchObject({ days: 10, best: 12, countedToday: true });
+    expect(second).toEqual(first);
+  });
+
+  it('the world clock plays no part: the same answer with a world set years back', async () => {
+    await db.query(`INSERT INTO world_clock (now_at) VALUES ('2023-11-27T07:00:00Z')`);   // Monday 27.11.2023 09:00
+    await call('POST', '/me', 'alice');
+    const dow = await realToday();
+    expect((await (await call('GET', '/me/dashboard', 'alice')).json()).streak).toMatchObject({ days: 1, weekday: dow });
   });
 
   it('returns 404 before POST /me', async () => {

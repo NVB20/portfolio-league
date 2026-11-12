@@ -1,5 +1,6 @@
 // GET /me/dashboard: everything the player's main screen shows, read from Postgres in one request.
-// Every date filter uses the WORLD clock, never the real clock, so the dashboard shows the game's "now".
+// Every date filter uses the WORLD clock, never the real clock, so the dashboard shows the game's "now". The one
+// exception is the daily streak, which counts real days (D-039, streak.ts).
 // Empty tables give empty fields (null / []), never invented numbers.
 //
 // Money is read, never added up (D-031): cash, totals, each holding's value and the week's running totals are
@@ -31,6 +32,7 @@ import { weekReturnPct, type WeekState } from './game/week.js';
 import { loadCalendar } from './calendar.js';
 import { catchUpPlayer } from './runner.js';
 import { isNearCap, returnPct } from './game/performance.js';
+import { loadStreak } from './streak.js';
 import { addDays, hhmm, ISRAEL, isoWeek, mondayOf, zonedParts, zonedToInstant } from './game/time.js';
 // leaderboard.ts imports loadNow and ANONYMOUS_NAME back from here; both sides only call each other at run time.
 import { boardWeek, type Db, inSnapshot, leaderRow, loadBoard, loadRows, loadStanding } from './leaderboard.js';
@@ -78,6 +80,7 @@ export async function getDashboard(db: Pool, uid: string): Promise<Dashboard | n
     usdIls: await loadUsdIls(db, now),
     standing: competition.standing,
     leaderboard: competition.leaderboard,
+    streak: await loadStreak(db, uid),   // real days, not world time (D-039)
   };
 }
 
