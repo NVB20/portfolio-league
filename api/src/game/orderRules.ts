@@ -67,8 +67,8 @@ export function parseOrderJson(text: string): unknown {
 // A size as the player sent it: a decimal string, or a JSON number as its digits (parseOrderJson; a number
 // handed over directly is read through String(n)). Nothing is rounded: a number we would have to round (too
 // many decimals, 0.1 + 0.2, an exponent) is refused, so the order stored is exactly the order sent.
-// null = not a valid size.
-function readSize(v: unknown, scale: number): bigint | null {
+// null = not a valid size. Also reads the new price of a stop being moved (stopMove.ts, D-041).
+export function readSize(v: unknown, scale: number): bigint | null {
   const s = typeof v === 'number' ? String(v) : v;
   if (typeof s !== 'string' || s.length > MAX_SIZE_CHARS) return null;
   const m = PLAIN_DECIMAL.exec(s);
@@ -190,8 +190,13 @@ export function checkTiming(now: Date, executesAt: Date, endsAt: Date | null): S
 // newest first; only the first RATE_LIMIT.orders matter. null = may send. Otherwise the seconds until the
 // oldest of the last 5 is a minute old, rounded up and at least 1: the moment one more order is allowed.
 export function retryAfterSeconds(recent: readonly Date[], now: Date): number | null {
-  if (recent.length < RATE_LIMIT.orders) return null;
-  const oldest = recent[RATE_LIMIT.orders - 1];
-  const waitMs = oldest.getTime() + RATE_LIMIT.windowSeconds * 1000 - now.getTime();
+  return waitForLimit(recent, now, RATE_LIMIT.orders, RATE_LIMIT.windowSeconds);
+}
+
+// Any "at most `max` per `windowSeconds`" limit, as above: the order limit, and the stop moves' (D-041).
+export function waitForLimit(recent: readonly Date[], now: Date, max: number, windowSeconds: number): number | null {
+  if (recent.length < max) return null;
+  const oldest = recent[max - 1];
+  const waitMs = oldest.getTime() + windowSeconds * 1000 - now.getTime();
   return Math.max(1, Math.ceil(waitMs / 1000));
 }

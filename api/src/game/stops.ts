@@ -13,6 +13,7 @@ export type ActiveStop = {
   stopPrice: bigint;            // PRICE, in the security's currency
   units: bigint;                // UNITS the buy got
   activationPrice: bigint;      // PRICE the buy filled at
+  moved: boolean;               // the player moved it since (D-041): the buy's price no longer counts
 };
 
 export type StopPosition = {
@@ -29,9 +30,12 @@ export type StopPlan =
 // Fires when the event's price is at or below the stop. Also when the buy itself filled at or below the stop
 // (the price gapped past it before the buy ran): a real broker sells such a stop at the next price, whatever it
 // is. No price for the stock at this event = nothing to compare, so it waits.
-export function stopFires(stopPrice: bigint, activationPrice: bigint, eventPrice: bigint | undefined): boolean {
+// `fillPrice` = the buy's fill price, or null once the stop was moved (D-041): a moved stop was set below the price
+// the player saw, so only the event's price counts. Otherwise a stop raised above the buy price (bought at ₪100,
+// now ₪120, stop raised to ₪105) would fire at the next check whatever the price.
+export function stopFires(stopPrice: bigint, fillPrice: bigint | null, eventPrice: bigint | undefined): boolean {
   if (eventPrice === undefined) return false;
-  return eventPrice <= stopPrice || activationPrice <= stopPrice;
+  return eventPrice <= stopPrice || (fillPrice !== null && fillPrice <= stopPrice);
 }
 
 // What each fired stop does. A stop sells the units its buy got, at most the position's free units (units not

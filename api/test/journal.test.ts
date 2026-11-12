@@ -191,7 +191,7 @@ describe('GET /me/journal', () => {
       amountIls: 10000, units: null, priceType: 'open',
       placedAt: { at: '2026-11-11T10:30:00.000Z', date: '2026-11-11', weekday: 3, time: '12:30' },
       executesAt: { at: '2026-11-11T14:30:00.000Z', date: '2026-11-11', weekday: 3, time: '16:30' },
-      fill: null, reject: null, origin: 'player', stopPrice: null,
+      fill: null, reject: null, origin: 'player', stopPrice: null, stop: null,
     });
     expect(row(3)).toMatchObject({
       symbol: 'NVDA', side: 'sell', status: 'executed', amountIls: null, units: 5,

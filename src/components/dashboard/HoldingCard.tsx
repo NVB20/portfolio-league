@@ -2,15 +2,16 @@
 // A holding close to the cap is the inverse card of section 2 (DD-04).
 // The bar's full width is 25% of the portfolio, so the 20% mark sits at 80% of the bar.
 // The bar springs to its width when the card scrolls into view; the second card in a row 90ms later (DD-06).
-// Its active stop losses (D-037) are listed under the bar.
+// Its active stop losses (D-037) are listed under the bar, each with a pencil that moves it (D-041).
 
-import { useContext } from 'react';
+import { useContext, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { HoldingView } from '../../../api/src/contract';
 import { fixed } from '../../theme';
 import { ils, pct } from '../../dashboard/format';
-import { stopText } from '../../trade/copy';
+import { stopNowText } from '../../trade/stopMove';
+import { StopEditButton, StopEditor } from '../trade/StopEditor';
 import { Card, usePalette } from './Card';
 import { Chip } from './Chip';
 import { ltr } from './layout';
@@ -22,7 +23,8 @@ const CAP_PCT = 20;
 
 const EXCHANGE_NAME: Record<HoldingView['exchange'], string> = { TASE: 'תל אביב', NASDAQ: 'NASDAQ', NYSE: 'NYSE' };
 
-export function HoldingCard({ holding }: { holding: HoldingView }) {
+// onStopMoved: load the dashboard again after a stop was moved.
+export function HoldingCard({ holding, onStopMoved }: { holding: HoldingView; onStopMoved: () => void }) {
   const h = holding;
   return (
     <Card
@@ -40,7 +42,7 @@ export function HoldingCard({ holding }: { holding: HoldingView }) {
         </>
       }
     >
-      <Body holding={h} />
+      <Body holding={h} onStopMoved={onStopMoved} />
     </Card>
   );
 }
@@ -67,9 +69,10 @@ function Head({ holding: h }: { holding: HoldingView }) {
   );
 }
 
-function Body({ holding: h }: { holding: HoldingView }) {
+function Body({ holding: h, onStopMoved }: { holding: HoldingView; onStopMoved: () => void }) {
   const p = usePalette();
   const inverse = p.tone === 'inverse';
+  const [editing, setEditing] = useState<string | null>(null);   // the stop whose editor is open
   const seen = useContext(SeenContext);
   const column = useContext(ColumnContext);
   const grow = useSpring({ start: seen, delay: column * 90 });
@@ -89,12 +92,27 @@ function Body({ holding: h }: { holding: HoldingView }) {
         </Text>
         <Text style={[styles.weight, { color: p.sub }]}>תקרה 20% ברגע הקנייה</Text>
       </View>
-      {h.stops.map((s, i) => (
-        <View key={i} style={styles.stopRow}>
-          <Ionicons name="shield-checkmark" size={12} color={p.sub} />
-          <Text style={[styles.weight, { color: p.sub }]}>
-            {`${stopText(s.price, h.currency)} · ${s.units.toLocaleString('en-US', { maximumFractionDigits: 3 })} יחידות · נבדק בפתיחה ובסגירה`}
-          </Text>
+      {h.stops.map((s) => (
+        <View key={s.id}>
+          <View style={styles.stopRow}>
+            <Ionicons name="shield-checkmark" size={12} color={p.sub} />
+            <Text style={[styles.weight, styles.stopText, { color: p.sub }]}>
+              {`${stopNowText(s.price, s.originalPrice, h.currency)} · ${s.units.toLocaleString('en-US', { maximumFractionDigits: 3 })} יחידות · נבדק בפתיחה ובסגירה`}
+            </Text>
+            {editing === s.id ? null : (
+              <StopEditButton onPress={() => setEditing(s.id)} label={`הזזת סטופ ${s.price} של ${h.symbol}`} />
+            )}
+          </View>
+          {editing === s.id ? (
+            <StopEditor
+              stopId={s.id}
+              price={s.price}
+              lastClose={h.lastClose}
+              currency={h.currency}
+              onMoved={onStopMoved}
+              onClose={() => setEditing(null)}
+            />
+          ) : null}
         </View>
       ))}
     </>
@@ -116,4 +134,5 @@ const styles = StyleSheet.create({
   weight: { fontSize: 11.5 },
   bold: { fontWeight: '600' },
   stopRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 },
+  stopText: { flexShrink: 1 },
 });

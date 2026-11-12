@@ -9,7 +9,7 @@ const P = (s: string) => parse(s, SCALE.PRICE);
 const U = (s: string) => parse(s, SCALE.UNITS);
 
 const stop = (o: Partial<ActiveStop> = {}): ActiveStop => ({
-  id: '1', uid: 'alice', symbol: 'TEVA', positionId: '10', stopPrice: P('95'), units: U('100'), activationPrice: P('100'), ...o,
+  id: '1', uid: 'alice', symbol: 'TEVA', positionId: '10', stopPrice: P('95'), units: U('100'), activationPrice: P('100'), moved: false, ...o,
 });
 const open = (units: string, reserved = '0'): StopPosition => ({ status: 'open', units: U(units), reservedUnits: U(reserved) });
 
@@ -34,6 +34,13 @@ describe('stopFires: checked only at the open and the close', () => {
 
   it('waits when the stock has no price at this event', () => {
     expect(stopFires(P('95'), P('90'), undefined)).toBe(false);
+  });
+
+  it('a moved stop fires only on the price: the buy price no longer counts (D-041)', () => {
+    // Bought at ₪100, the price rose, the stop was raised to ₪105: above the buy price, below the price now.
+    expect(stopFires(P('105'), null, P('120'))).toBe(false);
+    expect(stopFires(P('105'), null, P('105'))).toBe(true);
+    expect(stopFires(P('105'), null, P('104'))).toBe(true);
   });
 });
 

@@ -210,6 +210,7 @@ type PortfolioRow = {
   cost_basis_ils: string | null;
   unrealized_pnl_ils: string | null;
   day_change_pct: number | null;
+  last_close: number | null;
 };
 
 export type OwnedPortfolio = {
@@ -235,7 +236,7 @@ export async function loadPortfolio(db: Pool, uid: string, now: Now | null): Pro
             COALESCE(x.market_value_ils, x.cost_basis_ils)::text AS value_ils,
             x.cost_basis_ils::text AS cost_basis_ils,
             COALESCE(x.unrealized_pnl_ils, 0)::text AS unrealized_pnl_ils,
-            ((px.close / px.prev_close - 1) * 100)::float8 AS day_change_pct
+            ((px.close / px.prev_close - 1) * 100)::float8 AS day_change_pct, px.close::float8 AS last_close
      FROM portfolios p
      LEFT JOIN positions x ON x.uid = p.uid AND x.status = 'open'
      LEFT JOIN securities s ON s.symbol = x.symbol
@@ -278,6 +279,7 @@ export async function loadPortfolio(db: Pool, uid: string, now: Now | null): Pro
         weightPct: weight,
         nearCap: isNearCap(weight),
         stops: stops.get(r.symbol!) ?? [],
+        lastClose: r.last_close,
       };
     });
 
@@ -303,17 +305,23 @@ export async function loadPortfolio(db: Pool, uid: string, now: Now | null): Pro
 }
 
 // The active stop losses of the player's open positions, per stock, highest first (D-037). From the player's open
-// positions (positions_uid_idx) to their stops (stop_orders_position_idx): never a scan of every active stop.
+// positions (positions_uid_idx) to their stops (stop_orders_position_idx): never a scan of every active stop. The
+// price each was sent with is its buy's (orders' primary key), so a moved one can say where it was (D-041).
 async function loadStops(db: Pool, uid: string): Promise<Map<string, StopView[]>> {
-  const { rows } = await db.query<{ symbol: string; price: number; units: number }>(
-    `SELECT so.symbol, so.stop_price::float8 AS price, so.units::float8 AS units
-     FROM positions x JOIN stop_orders so ON so.position_id = x.id AND so.status = 'active'
+  const { rows } = await db.query<{ symbol: string; id: string; price: number; original: number; units: number }>(
+    `SELECT so.symbol, so.id::text AS id, so.stop_price::float8 AS price, o.stop_price::float8 AS original,
+            so.units::float8 AS units
+     FROM positions x
+     JOIN stop_orders so ON so.position_id = x.id AND so.status = 'active'
+     JOIN orders o ON o.id = so.buy_order_id
      WHERE x.uid = $1 AND x.status = 'open'
      ORDER BY so.symbol, so.stop_price DESC, so.id`,
     [uid],
   );
   const out = new Map<string, StopView[]>();
-  for (const r of rows) out.set(r.symbol, [...(out.get(r.symbol) ?? []), { price: r.price, units: r.units }]);
+  for (const r of rows) {
+    out.set(r.symbol, [...(out.get(r.symbol) ?? []), { id: r.id, price: r.price, originalPrice: r.original, units: r.units }]);
+  }
   return out;
 }
 

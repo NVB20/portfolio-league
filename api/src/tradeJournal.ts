@@ -11,6 +11,7 @@
 
 import type { Pool } from 'pg';
 import type {
+  JournalStopView,
   RejectionCode,
   TradeJournalFilter,
   TradeJournalPeriod,
@@ -18,7 +19,7 @@ import type {
   TradeJournalStats,
   TradeJournalView,
 } from './contract.js';
-import { liveClockView, loadNow, worldTime } from './dashboard.js';
+import { liveClockView, loadNow, type Now, worldTime } from './dashboard.js';
 
 export const JOURNAL_LIMIT = { default: 20, max: 100 };
 const FILTERS: readonly TradeJournalFilter[] = ['all', 'pending', 'executed', 'rejected'];
@@ -84,6 +85,10 @@ type OrderRow = {
   reject_reason: string | null;
   origin: TradeJournalRow['origin'];
   stop_price: number | null;   // a buy's stop, or the stop a stop's sell came from (D-037)
+  // The stop a filled buy made, as it is now (D-041); all null when there is none.
+  stop_id: string | null;
+  stop_now: number | null;
+  stop_status: JournalStopView['status'] | null;
 };
 
 // Returns null when the user has no portfolio row yet (POST /me was never called).
@@ -122,9 +127,11 @@ export async function getTradeJournal(db: Pool, uid: string, q: JournalQuery): P
             o.fill_price::float8 AS fill_price, o.fx_rate::float8 AS fx_rate, o.filled_units::float8 AS filled_units,
             o.filled_ils::float8 AS filled_ils, o.realized_pnl_ils::float8 AS realized_pnl_ils,
             o.reject_code, o.reject_reason, o.origin,
-            COALESCE(o.stop_price, so.stop_price)::float8 AS stop_price
+            COALESCE(o.stop_price, so.stop_price)::float8 AS stop_price,
+            sb.id::text AS stop_id, sb.stop_price::float8 AS stop_now, sb.status AS stop_status
      FROM orders o JOIN securities s ON s.symbol = o.symbol
      LEFT JOIN stop_orders so ON so.id = o.stop_id
+     LEFT JOIN stop_orders sb ON sb.buy_order_id = o.id
      WHERE o.uid = $1
        AND ($2::text IS NULL OR o.status = $2)
        AND ($3::timestamptz IS NULL OR o.executes_at >= $3)
@@ -134,6 +141,8 @@ export async function getTradeJournal(db: Pool, uid: string, q: JournalQuery): P
     [uid, q.filter === 'all' ? null : q.filter, since, q.before, q.limit + 1],
   );
 
+  const page = rows.slice(0, q.limit);
+  const closes = await activeStopCloses(db, page, now);
   return {
     clock: now ? liveClockView(now) : null,
     filter: q.filter,
@@ -141,10 +150,30 @@ export async function getTradeJournal(db: Pool, uid: string, q: JournalQuery): P
     stats: stats(s),
     counts: { all: s.all_count, pending: s.pending, executed: s.executed, rejected: s.rejected },
     reservedCash: Number(portfolio.rows[0].reserved_cash),
-    rows: rows.slice(0, q.limit).map(journalRow),
+    rows: page.map((r) => journalRow(r, closes)),
     hasMore: rows.length > q.limit,
     due: s.due > 0,
   };
+}
+
+// The latest close (its market's last closed day, as the trade screen shows it) of each stock on the page with an
+// active stop: a stop moved from the journal must be below it (D-041). One small query, only when there is one.
+async function activeStopCloses(db: Pool, rows: readonly OrderRow[], now: Now | null): Promise<Map<string, number>> {
+  const symbols = [...new Set(rows.filter((r) => r.stop_status === 'active').map((r) => r.symbol))];
+  if (symbols.length === 0) return new Map();
+  const { rows: found } = await db.query<{ symbol: string; close: number }>(
+    `SELECT s.symbol, px.close::float8 AS close
+     FROM securities s
+     CROSS JOIN LATERAL (
+       SELECT close FROM prices
+       WHERE symbol = s.symbol
+         AND ($2::date IS NULL OR day <= CASE WHEN s.market = 'TASE' THEN $2::date ELSE $3::date END)
+       ORDER BY day DESC LIMIT 1
+     ) px
+     WHERE s.symbol = ANY($1::text[])`,
+    [symbols, now?.closed.tase ?? null, now?.closed.us ?? null],
+  );
+  return new Map(found.map((r) => [r.symbol, r.close]));
 }
 
 function stats(s: StatsRow): TradeJournalStats {
@@ -161,7 +190,7 @@ function stats(s: StatsRow): TradeJournalStats {
   };
 }
 
-function journalRow(r: OrderRow): TradeJournalRow {
+function journalRow(r: OrderRow, closes: ReadonlyMap<string, number>): TradeJournalRow {
   return {
     id: r.id,
     symbol: r.symbol,
@@ -183,5 +212,14 @@ function journalRow(r: OrderRow): TradeJournalRow {
     reject: r.status === 'rejected' ? { code: r.reject_code, reason: r.reject_reason! } : null,
     origin: r.origin,
     stopPrice: r.stop_price,
+    stop:
+      r.stop_id === null
+        ? null
+        : {
+            id: r.stop_id,
+            price: r.stop_now!,
+            status: r.stop_status!,
+            lastClose: r.stop_status === 'active' ? (closes.get(r.symbol) ?? null) : null,
+          },
   };
 }

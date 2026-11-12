@@ -83,6 +83,13 @@ export async function getAdminMonitoring(db: Pool): Promise<AdminMonitoring> {
      WHERE created_at >= $3::date::timestamp AT TIME ZONE '${ISRAEL}'`,
     params,
   );
+  // Stop moves (D-041) per range, and the distinct players who made them (stop_moves_created_idx).
+  const moveRows = await db.query<MoveTotalsRow>(
+    `SELECT ${RANGES.map(moveColumns).join(', ')}
+     FROM stop_moves
+     WHERE created_at >= $3::date::timestamp AT TIME ZONE '${ISRAEL}'`,
+    params,
+  );
   // Right now, whatever the range: the active stops and the players who hold them (stop_orders_active_idx).
   const stopsNow = await db.query<{ active: number; players: number }>(
     `SELECT count(*)::int AS active, count(DISTINCT uid COLLATE "C")::int AS players FROM stop_orders WHERE status = 'active'`,
@@ -173,6 +180,7 @@ export async function getAdminMonitoring(db: Pool): Promise<AdminMonitoring> {
 
   const c = confirms.rows[0];
   const st = stopRows.rows[0];
+  const mv = moveRows.rows[0];
   const totals = {} as Record<MonitoringRange, MonitoringTotals>;
   for (const range of RANGES) {
     const count = (status: 'pending' | 'executed' | 'rejected') =>
@@ -194,6 +202,8 @@ export async function getAdminMonitoring(db: Pool): Promise<AdminMonitoring> {
         players: st[`players_${range}`],
         fired: st[`fired_${range}`],
         firedPnlIls: st[`pnl_${range}`],
+        moved: mv[`moved_${range}`],
+        movers: mv[`movers_${range}`],
       },
     };
   }
@@ -223,6 +233,17 @@ function stopColumns(range: MonitoringRange): string {
     `count(DISTINCT uid COLLATE "C") FILTER (WHERE ${buy} AND stop_price IS NOT NULL)::int AS players_${range}`,
     `count(*) FILTER (WHERE ${fired})::int AS fired_${range}`,
     `COALESCE(sum(realized_pnl_ils) FILTER (WHERE ${fired} AND status = 'executed'), 0)::float8 AS pnl_${range}`,
+  ].join(', ');
+}
+
+// One range's stop-move columns (D-041), over stop_moves by real created_at, like the stop columns above.
+type MoveTotalsRow = Record<`${'moved' | 'movers'}_${MonitoringRange}`, number>;
+
+function moveColumns(range: MonitoringRange): string {
+  const inRange = `created_at >= ${RANGE_PARAM[range]}::date::timestamp AT TIME ZONE '${ISRAEL}'`;
+  return [
+    `count(*) FILTER (WHERE ${inRange})::int AS moved_${range}`,
+    `count(DISTINCT uid COLLATE "C") FILTER (WHERE ${inRange})::int AS movers_${range}`,
   ].join(', ');
 }
 

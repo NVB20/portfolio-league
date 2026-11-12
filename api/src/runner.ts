@@ -309,6 +309,7 @@ async function markOrdersDone(client: PoolClient, eventId: string): Promise<void
 
 type StopSqlRow = {
   id: string; uid: string; symbol: string; position_id: string; stop_price: string; units: string; activation_price: string;
+  moved: boolean;
 };
 
 // The stops this event fires become pending sells due at this event (origin 'stop'); runOrderBatch then runs them
@@ -316,7 +317,9 @@ type StopSqlRow = {
 // (stopFires, game/stops.ts): checked only at the open and the close. Only stops activated by an EARLIER event: a
 // stop made at this event (its buy filled here) is first checked at the next one, also when this runs again after a
 // crash. A batch of `batch` stops per transaction; a fired or expired stop is no longer active, so a re-run never
-// fires it twice. Paged by id, so the stops that wait don't keep coming back. Returns how many stops fired.
+// fires it twice. Paged by id, so the stops that wait don't keep coming back. A stop the player moved (D-041) fires on
+// the event's price only. A move is refused while this event is 'pending' (stopMoves.ts), so no stop's price changes
+// under this step. Returns how many stops fired.
 //
 // The stops are planned once per event, before its orders: once an order batch of the event has committed, a re-run
 // (after a crash, a restart, a failed batch) skips this step. Planning again then would see positions those batches
@@ -339,18 +342,20 @@ export async function triggerStops(client: PoolClient, event: PricedEvent, batch
     const page = await inTransaction(client, async () => {
       const { rows } = await client.query<StopSqlRow>(
         `SELECT so.id::text AS id, so.uid, so.symbol, so.position_id::text AS position_id,
-                so.stop_price::text AS stop_price, so.units::text AS units, so.activation_price::text AS activation_price
+                so.stop_price::text AS stop_price, so.units::text AS units, so.activation_price::text AS activation_price,
+                so.moved_at IS NOT NULL AS moved
          FROM stop_orders so
          JOIN unnest($1::text[], $2::numeric[]) AS ep (symbol, price) ON ep.symbol = so.symbol
          WHERE so.status = 'active' AND so.activated_at < $3 AND so.id > $4::bigint
-           AND (ep.price <= so.stop_price OR so.activation_price <= so.stop_price)
+           AND (ep.price <= so.stop_price OR (so.moved_at IS NULL AND so.activation_price <= so.stop_price))
          ORDER BY so.id
          LIMIT $5
          FOR UPDATE OF so`,
         [symbols, prices, event.at, after, batch],
       );
       if (rows.length === 0) return { count: 0, last: after, sold: 0 };
-      const stops = rows.map(toActiveStop).filter((s) => stopFires(s.stopPrice, s.activationPrice, event.prices.get(s.symbol)));
+      const stops = rows.map(toActiveStop)
+        .filter((s) => stopFires(s.stopPrice, s.moved ? null : s.activationPrice, event.prices.get(s.symbol)));
 
       // The players first, in uid order, like runOrderBatch and order sending: their positions are about to change.
       const uids = [...new Set(stops.map((s) => s.uid))].sort();
@@ -424,6 +429,7 @@ function toActiveStop(r: StopSqlRow): ActiveStop {
     stopPrice: parse(r.stop_price, SCALE.PRICE),
     units: parse(r.units, SCALE.UNITS),
     activationPrice: parse(r.activation_price, SCALE.PRICE),
+    moved: r.moved,
   };
 }
 

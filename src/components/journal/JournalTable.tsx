@@ -2,32 +2,37 @@
 // The window width picks the columns (tableColumns): wide screens show every column; tablets put the side, size and
 // status detail under the stock; phones keep the stock and one outcome cell (the result of a sell, otherwise the
 // status). A row opens that stock on the trading screen.
+// A filled buy whose stop loss is still active (its position open, fully or partly) has a pencil beside its stop:
+// it opens the stop's editor on a line under the row (D-041).
 // Rows are a plain .map, not a FlatList: a vertical list inside the page's ScrollView warns and gains nothing at
 // 20 to 100 rows.
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import type { TradeJournalRow, TradeJournalView } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
-import { emptyLine, PAGE_SIZE, rowView, tableColumns, type Column, type RowView, type TableLayout } from '../../journal/journal';
+import { emptyLine, PAGE_SIZE, price, rowView, tableColumns, type Column, type RowView, type TableLayout } from '../../journal/journal';
 import type { MoreState } from '../../journal/useJournal';
 import { Button } from '../dashboard/Button';
 import { Chip } from '../dashboard/Chip';
 import { Empty } from '../dashboard/Card';
 import { useLayout } from '../dashboard/layout';
+import { StopEditButton, StopEditor } from '../trade/StopEditor';
 
 type Props = {
   journal: TradeJournalView;
   loading: boolean;   // a reload or a switch is on its way: the rows dim until it lands
   more: MoreState;
   onMore: () => void;
+  onStopMoved: () => void;   // load the journal again after a stop was moved
 };
 
-export function JournalTable({ journal, loading, more, onMore }: Props) {
+export function JournalTable({ journal, loading, more, onMore, onStopMoved }: Props) {
   const { colors } = useTheme();
   const { width } = useLayout();
   const layout = tableColumns(width);
+  const [editing, setEditing] = useState<string | null>(null);   // the row whose stop editor is open
 
   return (
     <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
@@ -39,9 +44,32 @@ export function JournalTable({ journal, loading, more, onMore }: Props) {
         <>
           <HeaderRow layout={layout} />
           <View style={loading && styles.dim}>
-            {journal.rows.map((r) => (
-              <Row key={r.id} row={r} view={rowView(r, journal.clock)} layout={layout} />
-            ))}
+            {journal.rows.map((r) => {
+              const stop = r.stop?.status === 'active' ? r.stop : null;
+              const open = stop !== null && editing === r.id;
+              return (
+                <Fragment key={r.id}>
+                  <Row
+                    row={r}
+                    view={rowView(r, journal.clock)}
+                    layout={layout}
+                    onEditStop={stop && !open ? () => setEditing(r.id) : null}
+                  />
+                  {open ? (
+                    <View style={[styles.editLine, { paddingHorizontal: layout.padX, borderBottomColor: colors.line }]}>
+                      <StopEditor
+                        stopId={stop.id}
+                        price={stop.price}
+                        lastClose={stop.lastClose}
+                        currency={r.currency}
+                        onMoved={onStopMoved}
+                        onClose={() => setEditing(null)}
+                      />
+                    </View>
+                  ) : null}
+                </Fragment>
+              );
+            })}
           </View>
           {journal.hasMore ? (
             <View style={[styles.foot, { paddingHorizontal: layout.padX }]}>
@@ -80,7 +108,8 @@ function HeaderRow({ layout }: { layout: TableLayout }) {
   );
 }
 
-function Row({ row, view, layout }: { row: TradeJournalRow; view: RowView; layout: TableLayout }) {
+// onEditStop: the row's stop can be moved and its editor is closed (null otherwise).
+function Row({ row, view, layout, onEditStop }: { row: TradeJournalRow; view: RowView; layout: TableLayout; onEditStop: (() => void) | null }) {
   const { colors } = useTheme();
   const [hovered, setHovered] = useState(false);
   return (
@@ -101,14 +130,31 @@ function Row({ row, view, layout }: { row: TradeJournalRow; view: RowView; layou
     >
       {layout.columns.map((c) => (
         <View key={c.key} style={cellBox(c)}>
-          <Cell column={c} row={row} view={view} subLine={layout.subLine} />
+          <Cell column={c} row={row} view={view} subLine={layout.subLine} onEditStop={onEditStop} />
         </View>
       ))}
     </Pressable>
   );
 }
 
-function Cell({ column, row, view, subLine }: { column: Column; row: TradeJournalRow; view: RowView; subLine: boolean }) {
+// The pencil goes where the row's detail (which names the stop) is: under the stock on phones and tablets, in the
+// status cell on wide screens.
+function StopPencil({ row, onEditStop }: { row: TradeJournalRow; onEditStop: (() => void) | null }) {
+  if (!onEditStop || !row.stop) return null;
+  return (
+    <View style={styles.pencil}>
+      <StopEditButton onPress={onEditStop} label={`הזזת סטופ ${price(row.stop.price, row.currency)} של ${row.symbol}`} />
+    </View>
+  );
+}
+
+function Cell({ column, row, view, subLine, onEditStop }: {
+  column: Column;
+  row: TradeJournalRow;
+  view: RowView;
+  subLine: boolean;
+  onEditStop: (() => void) | null;
+}) {
   const { colors } = useTheme();
   const sideColor = row.side === 'buy' ? colors.accent : colors.fg;
   switch (column.key) {
@@ -137,6 +183,7 @@ function Cell({ column, row, view, subLine }: { column: Column; row: TradeJourna
                 ) : null}
               </View>
               <Text style={[styles.sub, { color: row.status === 'rejected' ? colors.neg : colors.faint }]}>{view.detail}</Text>
+              <StopPencil row={row} onEditStop={onEditStop} />
             </>
           ) : null}
         </View>
@@ -151,6 +198,7 @@ function Cell({ column, row, view, subLine }: { column: Column; row: TradeJourna
           <Chip variant={view.tone}>{view.status}</Chip>
           {/* On tablets the detail is already under the stock. */}
           {subLine ? null : <Text style={[styles.detail, { color: row.status === 'rejected' ? colors.neg : colors.faint }]}>{view.detail}</Text>}
+          {subLine ? null : <StopPencil row={row} onEditStop={onEditStop} />}
         </View>
       );
     case 'price':
@@ -213,6 +261,8 @@ const styles = StyleSheet.create({
   cellText: { fontSize: 13.5, alignSelf: 'flex-start' },
   detail: { fontSize: 11.5, marginTop: 4 },
   start: { alignItems: 'flex-start' },
+  pencil: { alignItems: 'flex-start', marginTop: 4 },
+  editLine: { paddingBottom: 12, borderBottomWidth: 1 },
   foot: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: 10, paddingVertical: 14 },
   footLabel: { fontSize: 12.5 },
 });

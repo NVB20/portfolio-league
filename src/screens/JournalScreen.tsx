@@ -154,7 +154,7 @@ function JournalPage({ journal, name, filter, setFilter, period, setPeriod, load
                 }
               >
                 {error && !loading ? <ReloadError text={error} onRetry={reload} /> : null}
-                <JournalTable journal={journal} loading={loading} more={more} onMore={loadMore} />
+                <JournalTable journal={journal} loading={loading} more={more} onMore={loadMore} onStopMoved={reload} />
               </TableSection>
             </OffsetProvider>
             <Text style={[styles.footer, { color: colors.faint, borderTopColor: colors.line }]}>

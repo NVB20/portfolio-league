@@ -255,7 +255,7 @@ const emptyTotals = {
   pages: [],
   ms: 0,
   players: 0,
-  stops: { buys: 0, withStop: 0, buyers: 0, players: 0, fired: 0, firedPnlIls: 0 },
+  stops: { buys: 0, withStop: 0, buyers: 0, players: 0, fired: 0, firedPnlIls: 0, moved: 0, movers: 0 },
 };
 
 describe('GET /admin/monitoring, nothing measured yet', () => {

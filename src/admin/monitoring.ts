@@ -259,11 +259,11 @@ export function confirmNote(c: MonitoringTotals['confirms'], sent: number, range
   return base;
 }
 
-// ---------- the stop-loss card (D-037) ----------
+// ---------- the stop-loss card (D-037, D-041) ----------
 
 // Under the stop-loss numbers: where they come from, and what the stops that fired in the range did.
 export function stopNote(s: MonitoringTotals['stops'], range: MonitoringRange): string {
-  const base = 'מטבלת הפקודות, לפי זמן השליחה האמיתי. "הופעלו" = מכירות שסטופ יצר כשהמחיר הגיע אליו בפתיחה או בסגירה.';
+  const base = 'מטבלת הפקודות, לפי זמן השליחה האמיתי. "הופעלו" = מכירות שסטופ יצר כשהמחיר הגיע אליו בפתיחה או בסגירה. "הזזות" = שינויי מחיר של סטופ פעיל, מהכרטיסים ומהיומן.';
   if (s.fired === 0) return base;
   const result = s.firedPnlIls < 0 ? `בהפסד של ${ils(-s.firedPnlIls)}` : `ברווח של ${ils(s.firedPnlIls)}`;
   return `${base} המכירות שלהם ${RANGE_TEXT[range]} נסגרו ${result} בסך הכול.`;
