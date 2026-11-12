@@ -16,7 +16,7 @@ import type { AdminMonitoring, Dashboard, TradeJournalView, TradeView } from '..
 import { eventsBetween } from '../src/game/clock.js';
 import { NO_CLOSURES } from '../src/game/marketHours.js';
 import { getAdminMonitoring } from '../src/monitoring.js';
-import { ledgerMismatches, loadEventPrices, runEvent, runUntil, startEvent, triggerStops } from '../src/runner.js';
+import { ledgerMismatches, loadEventPrices, runEvent, runOrderBatch, runUntil, startEvent, triggerStops } from '../src/runner.js';
 import { makeTestKeys, PROJECT_ID, signToken } from './helpers.js';
 
 const DATABASE_URL =
@@ -379,5 +379,178 @@ describe('the database keeps stops consistent', () => {
     await expect(insert('sell', null, '1', null, 'stop')).rejects.toThrow(/orders_stop_sell_check/);
     await expect(insert('buy', '100', null, null, 'stop')).rejects.toThrow(/orders_stop_sell_check/);
     await expect(insert('buy', '100', null, null, 'robot')).rejects.toThrow(/orders_origin_check/);
+  });
+});
+
+// ---------- a closed position takes its stops with it ----------
+
+// Active stops left on a closed position: always 0 (the triggers in 20261111215659598_stop-loss-closes-with-position).
+async function activeOnClosed(): Promise<number> {
+  const { rows } = await db.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM stop_orders so JOIN positions p ON p.id = so.position_id
+     WHERE so.status = 'active' AND p.status = 'closed'`,
+  );
+  return rows[0].n;
+}
+
+describe('a closed position takes all its stops with it', () => {
+  beforeEach(async () => {
+    await signUp('alice');
+  });
+
+  it('a hand sale that closes the position expires every stop on it, and a new position starts clean', async () => {
+    await price('TEVA', WED, '100.0000', '100.0000');
+    await price('TEVA', THU, '100.0000', '80.0000');
+    await price('TEVA', FRI, '100.0000', '100.0000');
+    await buyWithStop('alice', '95');
+    await buyWithStop('alice', '90');
+    await runTo(WED_TASE_CLOSE);
+    expect(await stopsOf('alice')).toMatchObject([{ status: 'active' }, { status: 'active' }]);
+    expect(await positionsOf('alice')).toMatchObject([{ status: 'open', units: '200.00000000' }]);
+
+    expect((await send('alice', { symbol: 'TEVA', side: 'sell', units: '200' })).status).toBe(201);
+    await runTo(THU_TASE_OPEN);
+    const open = await eventId('open', THU);
+    expect(await stopsOf('alice')).toMatchObject([
+      { status: 'expired', ended_at: THU_TASE_OPEN, event_id: open, sell_order_id: null },
+      { status: 'expired', ended_at: THU_TASE_OPEN, event_id: open, sell_order_id: null },
+    ]);
+    expect(await activeOnClosed()).toBe(0);
+
+    await runTo(THU_TASE_CLOSE);   // ₪80 would have fired both
+    expect(await stopSells('alice')).toEqual([]);
+
+    // A new position in the same stock carries only the new buy's stop.
+    expect((await send('alice', { symbol: 'TEVA', side: 'buy', amountIls: '10000.00', stopPrice: '70' })).status).toBe(201);
+    await runTo(FRI_TASE_OPEN);
+    const [, , fresh] = await stopsOf('alice');
+    expect(fresh).toMatchObject({ status: 'active', stop_price: '70.0000' });
+    const positions = await positionsOf('alice');
+    expect(positions).toMatchObject([{ status: 'closed' }, { status: 'open' }]);
+    expect(await ledgerMismatches(db, ['alice'])).toEqual([]);
+  });
+
+  it("a stop's own sale that closes the position expires the other stop on it", async () => {
+    await price('TEVA', WED, '100.0000', '100.0000');
+    await price('TEVA', THU, '100.0000', '93.0000');
+    await buyWithStop('alice', '95');
+    await buyWithStop('alice', '90');
+    await runTo(WED_TASE_CLOSE);
+
+    // 100 of the 200 units sold by hand at Thursday's open (₪100, above both stops).
+    expect((await send('alice', { symbol: 'TEVA', side: 'sell', units: '100' })).status).toBe(201);
+    await runTo(THU_TASE_OPEN);
+    expect(await stopsOf('alice')).toMatchObject([{ status: 'active' }, { status: 'active' }]);
+
+    // ₪93 reaches the ₪95 stop only. It sells the 100 units left, which closes the position: the ₪90 stop goes too.
+    await runTo(THU_TASE_CLOSE);
+    const [sell] = await stopSells('alice');
+    expect(sell).toMatchObject({ status: 'executed', units: '100.00000000', fill_price: '93.0000' });
+    const close = await eventId('close', THU);
+    expect(await stopsOf('alice')).toMatchObject([
+      { stop_price: '95.0000', status: 'triggered', sell_order_id: sell.id, event_id: close },
+      { stop_price: '90.0000', status: 'expired', sell_order_id: null, ended_at: THU_TASE_CLOSE, event_id: close },
+    ]);
+    expect(await positionsOf('alice')).toMatchObject([{ status: 'closed' }]);
+    expect(await activeOnClosed()).toBe(0);
+    expect(await ledgerMismatches(db, ['alice'])).toEqual([]);
+  });
+
+  it('the database keeps the rule whatever closes the position, even SQL by hand', async () => {
+    await price('TEVA', WED, '100.0000', '100.0000');
+    const buy = await buyWithStop('alice', '95');
+    await runTo(WED_TASE_CLOSE);
+    const [position] = await positionsOf('alice');
+
+    // Closed by hand at a moment no open or close ran: the stop expires then, with no event.
+    const at = '2026-11-12T03:00:00.000Z';
+    await db.query(
+      `UPDATE positions SET status = 'closed', units = 0, reserved_units = 0, closed_at = $2 WHERE id = $1`,
+      [position.id, at],
+    );
+    expect(await stopsOf('alice')).toMatchObject([{ status: 'expired', ended_at: at, event_id: null }]);
+
+    // A stop written as active on that closed position is stored expired.
+    const { rows } = await db.query<{ id: string }>(
+      `INSERT INTO orders (uid, symbol, side, amount_ils, placed_at, executes_at, price_type)
+       VALUES ('alice', 'TEVA', 'buy', 100, now(), now(), 'open') RETURNING id::text AS id`,
+    );
+    await db.query(
+      `INSERT INTO stop_orders (uid, symbol, buy_order_id, position_id, stop_price, units, activated_at, activation_price)
+       VALUES ('alice', 'TEVA', $1, $2, 90, 1, now(), 100)`,
+      [rows[0].id, position.id],
+    );
+    expect((await stopsOf('alice')).map((s) => s.status)).toEqual(['expired', 'expired']);
+    expect(await activeOnClosed()).toBe(0);
+    expect(buy).toBeTruthy();
+  });
+
+  it('a stop the price reached but that had to wait expires when the hand sale closes the position in a later batch', async () => {
+    await price('TEVA', WED, '100.0000', '100.0000');
+    await price('TEVA', THU, '90.0000', '80.0000');   // the open reaches the ₪95 stop
+    await buyWithStop('alice', '95');
+    await runTo(WED_TASE_CLOSE);
+    // Sent after the close: every unit is in this sell, for Thursday's open.
+    expect((await send('alice', { symbol: 'TEVA', side: 'sell', units: '100' })).status).toBe(201);
+    await runTo(WED_US_CLOSE);
+
+    const c = await db.connect();
+    try {
+      const row = await startEvent(c, thursdayOpen());
+      const priced = await loadEventPrices(c, row);
+      expect(await triggerStops(c, priced, 1)).toBe(0);   // reached, but no free unit: it waits
+      expect((await stopsOf('alice'))[0].status).toBe('active');
+      await runEvent(c, row, { orderBatch: 1 });          // the hand sale closes the position in its own batch
+    } finally {
+      c.release();
+    }
+    expect(await stopsOf('alice')).toMatchObject([
+      { status: 'expired', ended_at: THU_TASE_OPEN, event_id: await eventId('open', THU), sell_order_id: null },
+    ]);
+    expect(await activeOnClosed()).toBe(0);
+    expect((await getAdminMonitoring(db)).stopsNow).toEqual({ active: 0, players: 0 });
+
+    await runTo(THU_TASE_CLOSE);   // ₪80: nothing left to fire
+    expect(await stopSells('alice')).toEqual([]);
+  });
+});
+
+// Thursday's TASE open as the runner lists it.
+function thursdayOpen() {
+  return eventsBetween(new Date(WED_US_CLOSE), new Date(THU_TASE_CLOSE), NO_CLOSURES)
+    .find((e) => e.market === 'TASE' && e.kind === 'open')!;
+}
+
+describe('a re-run after a committed order batch plans no stops again (D-021)', () => {
+  beforeEach(async () => {
+    await signUp('alice');
+  });
+
+  it('gives the same result as a run that was never interrupted', async () => {
+    await price('TEVA', WED, '100.0000', '100.0000');
+    await price('TEVA', THU, '90.0000', '98.0000');
+    await buyWithStop('alice', '95');
+    await runTo(WED_TASE_CLOSE);
+    // For Thursday's open: a buy first (lower id), then a hand sell of the 100 units held. At ₪90 the stop is reached
+    // but has no free unit when the stops are planned, so it waits; the buy then adds units before the sale.
+    expect((await send('alice', { symbol: 'TEVA', side: 'buy', amountIls: '10000.00' })).status).toBe(201);
+    expect((await send('alice', { symbol: 'TEVA', side: 'sell', units: '100' })).status).toBe(201);
+    await runTo(WED_US_CLOSE);
+
+    const c = await db.connect();
+    try {
+      const row = await startEvent(c, thursdayOpen());
+      const priced = await loadEventPrices(c, row);
+      expect(await triggerStops(c, priced, 1)).toBe(0);           // the first attempt: it waits
+      expect((await runOrderBatch(c, priced, 1)).done).toBe(false);   // one batch commits (the buy), then a "crash"
+      await runEvent(c, row, { orderBatch: 1 });                   // the re-run must not plan the stops again
+    } finally {
+      c.release();
+    }
+    // As without the crash: the stop never fired; the position holds the buy's units.
+    expect(await stopSells('alice')).toEqual([]);
+    expect(await stopsOf('alice')).toMatchObject([{ status: 'active' }]);
+    expect(await positionsOf('alice')).toMatchObject([{ status: 'open', units: '111.11111111', reserved_units: '0.00000000' }]);
+    expect(await ledgerMismatches(db, ['alice'])).toEqual([]);
   });
 });
