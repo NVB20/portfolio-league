@@ -2,6 +2,7 @@
 // The inverse card of section 1 (DD-04). Gauge, the two ranks, and the score at the end of each day.
 
 import { StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import Svg, { Circle, Path } from 'react-native-svg';
 import type { StandingView } from '../../../api/src/contract';
 import { fixed } from '../../theme';
@@ -13,6 +14,9 @@ import { Chip } from './Chip';
 import { InfoTip } from './InfoTip';
 import { ltr } from './layout';
 import { useSpring } from './motion';
+
+// The rules page, scrolled to its stability section.
+const toStability = () => router.navigate('/how-to-play?section=stability');
 
 // The gauge springs in after the score card itself has appeared in the load sequence (DD-06).
 const GAUGE_DELAY = 1700;
@@ -43,7 +47,7 @@ export function ScoreCard({ standing, todayWeekday, finalWeek = null }: {
           </View>
           <DailyScores days={standing.days} todayWeekday={todayWeekday} />
           <View style={styles.cta}>
-            <Button label="איך משפרים את היציבות ←" variant="ink" disabled hint="יחובר כשמסך ההסבר ייבנה" />
+            <Button label="איך משפרים את היציבות ←" variant="ink" onPress={toStability} />
           </View>
         </>
       ) : (

@@ -75,7 +75,7 @@ export function UserMenu({ open, onClose, name, rankLine, top, side = 'player' }
               }}
             />
           ) : null}
-          {/* "How to play" reopens the player walkthrough; admins also get the admin one, on the admin side. */}
+          {/* On the admin side, "how to manage" reopens the admin walkthrough. */}
           {side === 'admin' ? (
             <MenuItem
               icon="school-outline"
@@ -86,12 +86,13 @@ export function UserMenu({ open, onClose, name, rankLine, top, side = 'player' }
               }}
             />
           ) : null}
+          {/* The rules page (/how-to-play): every rule on one scroll. Its first section reopens the player walkthrough. */}
           <MenuItem
             icon="help-circle-outline"
             label="איך משחקים"
             onPress={() => {
               onClose();
-              router.navigate('/onboarding');
+              router.navigate('/how-to-play');
             }}
           />
           <View style={[styles.hr, { backgroundColor: colors.line }]} />

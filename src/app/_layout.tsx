@@ -57,8 +57,11 @@ function GuardedStack() {
 
       {/* Logged IN only: everything else. Logged-out visitors go to /login. */}
       <Stack.Protected guard={user !== null} redirectTo="/login">
-        {/* The player walkthrough: always open to a logged-in user, also after it was seen (the menu reopens it). */}
+        {/* The player walkthrough: always open to a logged-in user, also after it was seen (the rules page reopens it). */}
         <Stack.Screen name="onboarding" />
+
+        {/* The rules page, from "איך משחקים" in the avatar menu. Open to anyone logged in, like the walkthrough. */}
+        <Stack.Screen name="how-to-play" />
 
         {/* The player pages. Until the player has seen the walkthrough they are sent to it. markOnboardingSeen
             updates `me` at once, so this guard passes the moment they finish: no loop. */}

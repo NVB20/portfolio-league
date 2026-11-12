@@ -50,7 +50,7 @@ type Props = {
   clock: LiveClockView | null;
   name: string;
   rankLine: string | null;
-  active?: Page;          // the player tab that is on (side 'player')
+  active?: Page | null;   // the player tab that is on (side 'player'); null: none (the rules page isn't a tab)
   side?: Side;
   adminTab?: AdminTab;    // the admin tab that is on (side 'admin')
 };
