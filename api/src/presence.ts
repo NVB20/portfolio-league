@@ -42,7 +42,11 @@ export async function recordSeen(db: Pool, uid: string): Promise<{ newVisit: boo
     const { fresh, new_visit } = rows[0];   // fresh is NULL (= not fresh) when the user was never seen
     const newVisit = !fresh && new_visit;
     if (!fresh) {
-      await client.query('UPDATE users SET last_seen_at = now() WHERE uid = $1', [uid]);
+      // users.visits (D-044) moves with the app_opens row, in this transaction, so the two always agree.
+      await client.query(
+        'UPDATE users SET last_seen_at = now(), visits = visits + CASE WHEN $2 THEN 1 ELSE 0 END WHERE uid = $1',
+        [uid, newVisit],
+      );
       if (newVisit) await client.query('INSERT INTO app_opens (uid) VALUES ($1)', [uid]);
     }
     await countToday(client, uid, rows[0]);   // writes only on the first check-in of the day

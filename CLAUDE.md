@@ -20,7 +20,7 @@ See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript, 
 
 - **Firebase knows who the user is; the API and Postgres decide what they may do.** Firebase handles login and the JWT. The API checks that token on every request.
 - **The app never talks to Postgres directly.** Every read and write goes through the API (`src/api.ts` → `api/`).
-- **The API is the permission layer.** Every endpoint checks the token and the user's roles. Players can never write cash, holdings, prices, the clock, scores or roles. Roles are changed with SQL, except the home-assignment demo password (`POST /me/admin`, `123456`, D-043), which only adds `admin`.
+- **The API is the permission layer.** Every endpoint checks the token and the user's roles. Players can never write cash, holdings, prices, the clock, scores or roles. Roles are changed by admins on the users page (`PATCH /admin/users/:uid`, D-044: never their own, logged in `admin_actions`), by SQL, and by the home-assignment demo password (`POST /me/admin`, `123456`, D-043), which only adds `admin`.
 - **Trusted game logic (order execution, scoring) runs in the API** (D-001), in batched transactions that are safe to retry (D-021).
 - **Money is double-entry (D-019).** Every cash event is a journal whose ledger entries sum to 0. Balances are stored columns, updated in the same transaction. Screens never add money up.
 - **Game logic is pure TypeScript** with no database or framework imports, so it can be unit tested.
@@ -36,7 +36,7 @@ See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript, 
 | `src/screens/` | The actual screen components the routes render |
 | `src/auth/` | `AuthProvider` (current user + roles), sign-in errors, `POST /me` after login |
 | `src/components/` | Shared UI (`dashboard/`, `trade/`, `journal/`, `leaderboard/`, `admin/`, `howToPlay/`, `onboarding/`). `BigChart.web.tsx` is the web-only full chart |
-| `src/dashboard/`, `src/trade/`, `src/journal/`, `src/leaderboard/`, `src/admin/`, `src/howToPlay/`, `src/onboarding/` | Data hooks, copy and pure helpers per screen (`trade/orderCheck.ts`: the order rules for the preview; `journal/journal.ts` and `leaderboard/board.ts`: each table's columns, sentences and paging; `admin/monitoring.ts`: the monitoring page's numbers and copy; `howToPlay/content.ts`: the rules page's copy, `/how-to-play`; `onboarding/steps.ts`: the two first-login walkthroughs, D-040) |
+| `src/dashboard/`, `src/trade/`, `src/journal/`, `src/leaderboard/`, `src/admin/`, `src/howToPlay/`, `src/onboarding/` | Data hooks, copy and pure helpers per screen (`trade/orderCheck.ts`: the order rules for the preview; `journal/journal.ts` and `leaderboard/board.ts`: each table's columns, sentences and paging; `admin/monitoring.ts`: the monitoring page's numbers and copy; `admin/users.ts`: the users page's copy and paging, D-044; `howToPlay/content.ts`: the rules page's copy, `/how-to-play`; `onboarding/steps.ts`: the two first-login walkthroughs, D-040) |
 | `src/usage/` | The usage tracker (D-036): time and views per page and the confirm-popup funnel, sent with the once-a-minute check-in (`src/auth/usePresence.ts`) |
 | `src/types/` | Shared TypeScript types |
 | `src/firebase.ts` | Firebase app and Auth setup (no database) |

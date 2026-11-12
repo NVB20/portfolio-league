@@ -505,7 +505,8 @@ export type AdminRunView = {
   finishedAt: string | null;       // real time, ISO
 };
 
-export type AdminAction = 'clock_to_close' | 'clock_to_open' | 'clock_start' | 'clock_stop';
+// role_grant / role_revoke: the users page (D-044); their detail is { target, email }.
+export type AdminAction = 'clock_to_close' | 'clock_to_open' | 'clock_start' | 'clock_stop' | 'role_grant' | 'role_revoke';
 
 export type AdminActionView = {
   at: string;                      // real time, ISO
@@ -548,6 +549,42 @@ export type AdminPlayer = {
 };
 
 export type AdminPlayers = { players: AdminPlayer[]; limit: number };
+
+// ---------- GET /admin/users and PATCH /admin/users/:uid: the users page (D-044) ----------
+// Every user, a page at a time, and the admin role given or taken away. Admins only, like every /admin route.
+
+// Each order is one way, the way an admin looks first: most visits, seen most recently, newest. uid breaks ties.
+export type AdminUsersSort = 'visits' | 'lastSeen' | 'joined';
+
+export type AdminUser = {
+  uid: string;
+  email: string;
+  name: string | null;             // display name; null = signed up with email and no name
+  isAdmin: boolean;
+  visits: number;                  // since signing up (D-026): opening the app after 30+ minutes away
+  lastSeenAt: string | null;       // real time, ISO; null = never checked in
+  joinedAt: string;                // real time, ISO
+};
+
+export type AdminUsers = {
+  users: AdminUser[];
+  total: number;                   // users that match the search and the filter, across every page
+  page: number;                    // from 1; a page past the end has no users, and `total` still counts them
+  pageSize: number;
+};
+
+// PATCH /admin/users/:uid body: true gives the admin role, false takes it away.
+export type AdminRoleBody = { admin: boolean };
+
+// 200: the user as they are now. changed: false = they already had that role; nothing was written or logged.
+export type AdminRoleResult = { user: AdminUser; changed: boolean };
+
+export type AdminRoleErrorCode =
+  | 'SELF_DEMOTE'                  // 409: an admin can't take their own admin role away
+  | 'USER_NOT_FOUND';              // 404: no user with that uid
+
+// `error` is English, `reason` the Hebrew the users page shows.
+export type AdminRoleError = { error: string; code: AdminRoleErrorCode; reason: string };
 
 // ---------- Usage monitoring (D-036): POST /me/seen's body, GET /admin/monitoring, GET /admin/db ----------
 // Real time and real Israel dates, like presence (D-026): it measures people, not the game.

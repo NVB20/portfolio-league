@@ -867,3 +867,26 @@ The balances afterwards: cash_free 1,100, stock_cost 0, realized_pnl −100 (sho
 - **The password is in the code,** in the API and in the app.
 - **No rate limit on the route.** Not needed while the password is public.
 - **Becoming an admin isn't logged** in `admin_actions`, so the admin log doesn't say who made themselves admin, or when.
+
+## D-044: An admin users page: every user with their visits, and admins give or take the admin role
+
+**Status:** Active (12.11.2026). Updates D-001 and D-043: an admin can now give the admin role to any user and take it from any user except themselves. Built (API): `GET /admin/users` and `PATCH /admin/users/:uid` in [api/src/adminUsers.ts](../api/src/adminUsers.ts), the stored `users.visits` (migration `20261112143448793_admin-users`, written by [api/src/presence.ts](../api/src/presence.ts)), tested in [api/test/admin-users.test.ts](../api/test/admin-users.test.ts). Built (app): `/admin-users`, the "משתמשים" admin tab ([src/screens/AdminUsersScreen.tsx](../src/screens/AdminUsersScreen.tsx), [src/admin/useAdminUsers.ts](../src/admin/useAdminUsers.ts), [src/admin/users.ts](../src/admin/users.ts), tested in [api/test/app-admin-users.test.ts](../api/test/app-admin-users.test.ts)).
+
+**Decision:**
+- **One table of every user,** 50 a page: name and email, role, visits ("כניסות"), last seen, joined, and the role button. Search by name or email, three orders (newest first, the default; most visits; seen most recently), and an "admins only" filter. Each order goes one way only, with `uid` breaking ties.
+- **"Logins" are visits (D-026),** not Firebase sign-ins. Firebase keeps a player signed in, so a sign-in count would read 1 for almost everyone. A visit is decided by the server (a check-in after 30+ minutes away), so a client can't inflate it, and it is the same number the retention measure uses (D-027).
+- **Visits are stored, in `users.visits`.** The check-in that starts a visit adds 1 in the same transaction as its `app_opens` row, on the row it already locks, so the two always agree. The migration filled it from `app_opens`. Counting `app_opens` per user instead would read every visit ever made to sort one page: its only index starts with time.
+- **No index for the three orders.** The check-in updates `last_seen_at` once a minute for every player online, and that column is indexed, so every such update writes a new entry into every index on `users` (it is never a HOT update). Three more indexes would slow the busiest write in the game to speed up a page only admins open. The page also needs an exact total, which reads every matching row anyway. Measured on 1,000,000 users (a scratch database, 12.11): the total 40 ms and a page 65 to 70 ms, so about 110 ms per load; page 200 about 110 ms; a search about 0.5 s (total plus page). The next step, if a search gets slow: a `pg_trgm` GIN index on email and name.
+- **Grant and revoke, guarded.** `PATCH /admin/users/:uid` with `{ "admin": true | false }`, admins only. In one transaction it locks the caller's row and the target's, in uid order (`FOR NO KEY UPDATE`, as the check-in), checks again that the caller is still an admin, writes `roles` and writes one `admin_actions` row (`role_grant` / `role_revoke`, detail `{ target, email }`, D-027). Revoking keeps at least `{user}` (the CHECK forbids an empty list). Nothing to change = 200 `changed: false`, and nothing is written or logged.
+- **An admin can't take their own role** (409 `SELF_DEMOTE`; the app shows "זה החשבון שלך" instead of a button). With the re-check under both locks, two admins taking each other's role at the same moment run one after the other, and the second is refused: **there is always at least one admin.**
+- **A confirm popup first,** in the trade screen's look. Taking the role away also says that the demo password (D-043) still lets anyone back in.
+- **The request decides nothing about the target but the one boolean.** The body can't carry a list of roles; any other field is ignored.
+
+**Why:** the brief asks for production readiness with the owner on vacation. Until now, removing an admin took a database shell, and with D-043 anyone can become an admin, so the other admins need a way to see who is one and take it away, with a record of who did it.
+
+**Known weaknesses:**
+- **Revoking doesn't keep anyone out while D-043 is on:** a player can type `123456` again. The two belong together: when the demo route goes, this page is how roles are given.
+- **The demo password's grants still aren't logged** (D-043). Role changes made on this page are.
+- **A demoted admin's open admin page keeps its old roles** until it reloads. Every admin request is refused at once (the role is read from Postgres per request); only the app's guard is late.
+- **Deep pages use an offset,** so page 20,000 of a million users reads the 999,950 rows before it. Nobody pages that far; the search is the way to find someone.
+- **Two statements, not one snapshot:** a user who signs up between the total and the page can shift a row. The next load shows it.

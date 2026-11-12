@@ -82,6 +82,7 @@ function GuardedStack() {
           <Stack.Protected guard={!adminOnboardingDue} redirectTo="/admin-onboarding">
             <Stack.Screen name="admin-dashboard" />
             <Stack.Screen name="admin-monitoring" />
+            <Stack.Screen name="admin-users" />
           </Stack.Protected>
         </Stack.Protected>
       </Stack.Protected>

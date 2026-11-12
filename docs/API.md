@@ -21,16 +21,17 @@ Only these write to the database. Everything else is read-only.
 | `PATCH /me/chart-settings` | the full chart's settings | `users.chart_settings` (JSONB, known keys only) | Yes, only that column |
 | `POST /me/orders` | a new `pending` order, and what it sets aside: a buy's cash, a sell's units. A buy may carry a stop loss (`orders.stop_price`, D-037) | `orders` (one row). Buy: a `reserve` journal (`journals` + 2 `ledger_entries`) and `portfolios.reserved_cash`. Sell: `positions.reserved_units` | Only by sending an order the rules allow (D-028). Never cash, units, prices or the clock directly. An order can't be changed or cancelled; its stop loss can be moved once the buy fills (below). A stop's sell is made by the runner, never by a request |
 | `PATCH /me/stops/:id` | moves one of the player's active stop losses (D-041) | `stop_orders.stop_price` and `moved_at` of that stop, and one `stop_moves` row | Only the price of their own active stop, below the latest close, at most 5 times a minute. Never its units, never while its market's open or close waits for the runner, and never money |
-| `POST /me/seen` | the check-in (D-026) and its optional usage report (D-036) | `users.last_seen_at`, one `app_opens` row when a visit starts; the daily streak (`users.streak_*`, D-039) on the first check-in of a real day; today's `usage_pages_daily` and `usage_confirms_daily` rows (added to) | Only their own rows. The server decides what is a visit and what day it is; a usage report is capped per request (120 s of time, 50 per count) |
+| `POST /me/seen` | the check-in (D-026) and its optional usage report (D-036) | `users.last_seen_at`, one `app_opens` row and `users.visits` + 1 when a visit starts (D-044); the daily streak (`users.streak_*`, D-039) on the first check-in of a real day; today's `usage_pages_daily` and `usage_confirms_daily` rows (added to) | Only their own rows. The server decides what is a visit and what day it is; a usage report is capped per request (120 s of time, 50 per count) |
 | `POST /me/rejections/seen` | the rejection toasts the app showed (D-023) | `orders.notified_at` of the player's own rejected orders | Only that column, only on their own rejected orders |
 | `GET /me/dashboard`, `GET /me/trade` (the catch-up before reading, D-025) | the player's value at the latest open or close whose orders have run, when the runner's batch hasn't reached them yet | that player's `portfolios` totals and week columns, and the marks of their `positions` | No. The runner's own update, for this one player (D-031) |
 | `GET /me/dashboard` (the streak count before reading, D-039) | today's real Israel date, when the check-in hasn't counted it yet | that player's `users.streak_*` | No. The server's own count, once per real day, the same as the check-in's |
 | `POST /admin/clock/advance`, `/start`, `/stop` (admins only) | the clock move; advance and stop first run every open and close they pass (the runner, D-021, D-029) | The run: `market_events`, executed/rejected `orders`, `journals` + `ledger_entries`, `positions`, `portfolios`, `portfolio_snapshots`, `world_clock.events_through`. Then one transaction: `world_clock` (`now_at`, `real_at`, `running`) + one `admin_actions` row | No. Admins only (D-017, D-030) |
+| `PATCH /admin/users/:uid` (admins only) | gives or takes away the admin role (D-044) | that user's `users.roles` (adds or removes `admin`, always keeps at least `user`) + one `admin_actions` row, in one transaction | No. Admins only, never their own role |
 | The ticker (inside the API process, every minute) | the heartbeat, and the opens and closes the running clock passes (the runner) | `world_clock.last_tick_at`, and the same run as above. Never moves `now_at` or `running` | No. Nobody calls it (D-030) |
 | `npm run seed:world` (script, not an endpoint) | the 40 securities, their daily open/close, the USD/ILS rate, the clock's start | `securities`, `prices`, `usd_ils`, `world_clock` | No. Run by a developer with the database URL |
 | SQL by hand | player roles (`admin`), and removing them | `users.roles` | Only through `POST /me/admin` above, which can only add `admin` |
 
-Players can never write cash, holdings, prices, the clock, scores or roles (D-001). The one exception is the demo password, which gives the admin role (D-043).
+Players can never write cash, holdings, prices, the clock, scores or roles (D-001). The one exception is the demo password, which gives the admin role (D-043). Admins change other users' roles on the users page (D-044).
 
 ## Routes
 
@@ -257,7 +258,7 @@ The response:
 
 ### Admin routes
 
-Everything under `/admin` needs a valid token **and** `'admin'` in the caller's `users.roles`, read from Postgres on every request (403 otherwise, including before `POST /me`). Removing the role with SQL takes effect on the next request. The `GET` routes are read-only; the `POST /admin/clock/*` routes move the clock.
+Everything under `/admin` needs a valid token **and** `'admin'` in the caller's `users.roles`, read from Postgres on every request (403 otherwise, including before `POST /me`). Removing the role (with SQL or on the users page, D-044) takes effect on the next request. The `GET` routes are read-only; the `POST /admin/clock/*` routes move the clock; `PATCH /admin/users/:uid` changes a role.
 
 ### `GET /admin/overview`
 The admin page's numbers, in one request. Returns `AdminOverview`:
@@ -270,7 +271,7 @@ The admin page's numbers, in one request. Returns `AdminOverview`:
 
 - `lastRun`: the latest open or close the engine started (`market_events`): market, kind, world time, status, orders executed and rejected, players updated, duration, whether the ledger balanced. null = none yet
 - `eventsBehind`: opens and closes already due in world time that aren't `done` (the engine is behind or stuck)
-- `recentActions`: the newest 5 rows of `admin_actions` (admin name, action, world time before and after, detail)
+- `recentActions`: the newest 5 rows of `admin_actions` (admin name, action, world time before and after, detail). A role change (`role_grant` / `role_revoke`, D-044) has no world times and `detail = { target, email }`
 
 ### `GET /admin/activity?days=`
 Active players, visits and sign-ups per real Israel day, and day-1 / day-7 return (D-027). `days` is 7 to 90, default 30 (400 otherwise). Returns `{ days: [{ date, activePlayers, visits, signups }], retention: { d1, d7 } }`, each rate `{ cohort, returned, pct }` (`pct` null = nobody old enough to measure).
@@ -283,6 +284,21 @@ Up to 5 players, by rank on the board the players see (D-032: the latest scored 
 - `q` (optional) filters by display name or email, case-insensitive. `%` and `_` match themselves.
 - `q` longer than 100 characters: 400.
 - `totalValue` is the stored `portfolios.equity` the runner keeps current after every event (D-019, D-024), the same number the player's dashboard shows. Nothing is added up on read (D-031).
+
+### `GET /admin/users?q=&sort=&role=&page=`
+The users page (D-044, [api/src/adminUsers.ts](../api/src/adminUsers.ts)): every user, 50 a page. Returns `AdminUsers`: `{ users, total, page, pageSize }`; each user (`AdminUser`) has `uid`, `email`, `name` (null = no display name), `isAdmin`, `visits`, `lastSeenAt` (null = never checked in) and `joinedAt`. Real time.
+
+- `visits` is the stored `users.visits`: visits since signing up (D-026), the same visits `app_opens` records. Nothing is counted on read.
+- `q` (optional) filters by display name or email, case-insensitive; `%` and `_` match themselves. `role=admin` (optional) shows admins only.
+- `sort`: `joined` (default, newest first), `visits` (most first) or `lastSeen` (most recent first, never seen last). `uid` breaks ties, so the pages never repeat or skip a user.
+- `page` from 1. `total` counts every user that matches, on every page; a page past the end has no users.
+- 400 for any other `sort` or `role`, a `page` that isn't a whole number from 1 to 9,999,999, or `q` longer than 100 characters.
+
+### `PATCH /admin/users/:uid`
+Gives or takes away the admin role (D-044). Body `{ "admin": true | false }` (`AdminRoleBody`); other fields are ignored, so the body can't set a list of roles. Returns `AdminRoleResult`: `{ user, changed }`, the user as they are now (`changed: false` = they already had that role: nothing is written or logged).
+
+- One transaction: it locks the caller's row and the target's in uid order, checks again that the caller is still an admin, writes `roles` (grant puts `admin` first; revoke removes it and keeps at least `user`) and one `admin_actions` row (`role_grant` / `role_revoke`, detail `{ target, email }`). Two admins taking each other's role at the same moment run one after the other, and the second gets 403: there is always an admin left.
+- 400 when `admin` isn't `true` or `false`, the body isn't JSON, or the uid is empty or longer than 128 characters. 403 `admins only` when the caller isn't (or is no longer) an admin. 404 `{ code: "USER_NOT_FOUND" }`. 409 `{ code: "SELF_DEMOTE" }` for `admin: false` on the caller's own uid: nothing is written. Errors carry `reason`, the Hebrew the page shows (`AdminRoleError`).
 
 ### `GET /admin/monitoring`
 The monitoring page (D-036, [api/src/monitoring.ts](../api/src/monitoring.ts)): how players use the app. Real time and real Israel dates; the world clock plays no part. Returns `AdminMonitoring`:

@@ -14,10 +14,11 @@ type Props = {
   body?: string;
   toolbar?: ReactNode;
   onTop?: (y: number) => void;   // where the section starts inside the scroll, for "to the table" buttons
+  first?: boolean;               // the page's first section (/admin-users): no divider above it, as Section's `first`
   children: ReactNode;
 };
 
-export function TableSection({ eyebrow, title, body, toolbar, onTop, children }: Props) {
+export function TableSection({ eyebrow, title, body, toolbar, onTop, first = false, children }: Props) {
   const { colors } = useTheme();
   const { width } = useLayout();
   const size = Math.round(Math.min(44, Math.max(28, width * 0.034)));   // clamp(28px, 3.4vw, 44px), the mock-up's h2
@@ -29,7 +30,7 @@ export function TableSection({ eyebrow, title, body, toolbar, onTop, children }:
   }, [onTop, stage.abs, stage.measured]);
 
   return (
-    <View onLayout={stage.onLayout} style={[styles.stage, { borderTopColor: colors.line }]}>
+    <View onLayout={stage.onLayout} style={[styles.stage, { borderTopColor: colors.line, borderTopWidth: first ? 0 : 1 }]}>
       <View onLayout={head.onLayout}>
         <ScrollReveal abs={head.abs} h={head.h} measured={head.measured}>
           <View style={styles.head}>

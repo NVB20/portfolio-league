@@ -1,6 +1,6 @@
 // Words and numbers for the admin page. Pure functions, no React, so every card says things the same way.
 
-import type { AdminActionView, AdminOverview, AdminRunView, ClockView } from '../../api/src/contract';
+import type { AdminAction, AdminActionView, AdminOverview, AdminRunView, ClockView } from '../../api/src/contract';
 import type { ClockOutcome } from './useAdmin';
 
 // 1234 → "1,234"
@@ -52,14 +52,19 @@ export const RUN_STATUS: Record<AdminRunView['status'], string> = {
   done: 'הסתיים',
 };
 
-// What an admin did, in the log's words. Detail numbers are added when the action has them.
+// What an admin did, in the log's words. Detail numbers are added when the action has them. A role change
+// (D-044) names the account it changed, from its detail.
 export function actionLabel(a: AdminActionView): string {
-  const base = {
+  const email = typeof a.detail.email === 'string' ? a.detail.email : 'משתמש';
+  const labels: Record<AdminAction, string> = {
     clock_to_close: 'קידם לסגירה',
     clock_to_open: 'קידם לפתיחה הבאה',
     clock_start: 'הפעיל את השעון',
     clock_stop: 'עצר את השעון',
-  }[a.action];
+    role_grant: `נתן הרשאת ניהול ל־${email}`,
+    role_revoke: `הסיר את הרשאת הניהול של ${email}`,
+  };
+  const base = labels[a.action];
   const executed = typeof a.detail.ordersExecuted === 'number' ? a.detail.ordersExecuted : null;
   return executed !== null ? `${base} · ${count(executed)} פקודות בוצעו` : base;
 }

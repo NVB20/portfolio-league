@@ -460,6 +460,13 @@ async function writeRealTime(
   try {
     await c.query('BEGIN');
     await c.query('INSERT INTO app_opens (uid, at) SELECT * FROM unnest($1::text[], $2::timestamptz[])', [opens.uid, opens.at]);
+    // users.visits (D-044) counts those visits, as the check-in does for a real player.
+    await c.query(
+      `UPDATE users u SET visits = o.n
+       FROM (SELECT uid, count(*)::int AS n FROM app_opens WHERE uid = ANY($1::text[]) GROUP BY uid) o
+       WHERE u.uid = o.uid`,
+      [SAMPLES],
+    );
     await c.query(
       `INSERT INTO usage_pages_daily (day, page, uid, views, ms)
        SELECT * FROM unnest($1::date[], $2::text[], $3::text[], $4::int[], $5::bigint[])`,

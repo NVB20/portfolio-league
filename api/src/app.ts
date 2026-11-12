@@ -14,6 +14,7 @@ import { getTradeJournal, parseJournalQuery } from './tradeJournal.js';
 import { cachedDaily, fetchYahooDaily, getChart, type FetchDaily } from './chart.js';
 import { pickChartSettings } from './chartSettings.js';
 import { ACTIVITY_DAYS, getAdminActivity, getAdminOverview, getAdminPlayers, requireAdmin } from './admin.js';
+import { getAdminUsers, isUid, parseAdminUsersQuery, parseRoleBody, setAdminRole } from './adminUsers.js';
 import { recordSeen } from './presence.js';
 import { hasUsage, parseUsageText, recordUsage } from './usage.js';
 import { getAdminMonitoring, getDbHealth, oneAtATime } from './monitoring.js';
@@ -229,7 +230,7 @@ export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDai
   app.route('/me', me);
 
   // Everything under /admin needs a valid token AND the admin role in Postgres (403 otherwise).
-  // Read-only, except the clock moves (POST /admin/clock/*).
+  // Read-only, except the clock moves (POST /admin/clock/*) and the admin role (PATCH /admin/users/:uid).
   const admin = new Hono<AppEnv>();
   admin.use(requireAuth(verifyToken), requireAdmin(db));
 
@@ -241,6 +242,31 @@ export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDai
     const q = (c.req.query('q') ?? '').trim();
     if (q.length > MAX_SEARCH) return c.json({ error: `q must be at most ${MAX_SEARCH} characters` }, 400);
     return c.json(await getAdminPlayers(db, q === '' ? null : q));
+  });
+
+  // The users page (D-044): every user, 50 a page. ?q= name or email, ?sort=visits|lastSeen|joined (default joined),
+  // ?role=admin (admins only), ?page= from 1.
+  admin.get('/users', async (c) => {
+    const q = parseAdminUsersQuery({
+      q: c.req.query('q'),
+      sort: c.req.query('sort'),
+      role: c.req.query('role'),
+      page: c.req.query('page'),
+    });
+    if (!q.ok) return c.json({ error: q.error }, 400);
+    return c.json(await getAdminUsers(db, q.query));
+  });
+
+  // Gives or takes away the admin role (D-044). Body: { "admin": true | false }; other fields are ignored. 200 with the
+  // user as they are now (changed: false = nothing to do, nothing logged). 409 SELF_DEMOTE for your own role,
+  // 404 USER_NOT_FOUND. A change is logged in admin_actions in the same transaction.
+  admin.patch('/users/:uid', async (c) => {
+    const uid = c.req.param('uid');
+    if (!isUid(uid)) return c.json({ error: 'bad uid' }, 400);
+    const body = parseRoleBody(await c.req.json().catch(() => null));
+    if (!body.ok) return c.json({ error: body.error }, 400);
+    const out = await setAdminRole(db, c.get('user').uid, uid, body.admin);
+    return c.json(out.body, out.status);
   });
 
   // Active players, visits and sign-ups per day, and next-day / 7-day return. ?days= 7 to 90 (default 30).

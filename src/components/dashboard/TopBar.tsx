@@ -2,8 +2,8 @@
 // Next to the clock, two chips: ת״א and ניו יורק, each open (pulsing dot) or closed, in words too (D-022).
 // While the admin runs the clock, the time and the chips move on by themselves between loads, like the world
 // time panel (liveClock.ts, D-017), so the two never disagree on one screen.
-// On the admin side (side="admin") two admin tabs replace the player tabs: "לוח ניהול" (/admin-dashboard) and
-// "ניטור" (/admin-monitoring, D-036). A button leads back to the player side.
+// On the admin side (side="admin") three admin tabs replace the player tabs: "לוח ניהול" (/admin-dashboard),
+// "ניטור" (/admin-monitoring, D-036) and "משתמשים" (/admin-users, D-044). A button leads back to the player side.
 // It lies OVER the scrolling page (absolute), so the cards slide underneath it like in the mock-up.
 // Web: see-through page color + blur, no border. Phones: solid page color (no blur on native).
 // Four tabs: "סקירה" (/dashboard), "מסחר" (/trade), "יומן" (/journal, D-035) and "טבלה" (/leaderboard). The old
@@ -40,10 +40,11 @@ const LOGO_RATIO = 577 / 624;   // assets/logo.png
 // side 'admin': the admin pages. Their own two tabs replace the player tabs, and a button leads back.
 export type Side = 'player' | 'admin';
 
-export type AdminTab = 'admin-dashboard' | 'admin-monitoring';
+export type AdminTab = 'admin-dashboard' | 'admin-monitoring' | 'admin-users';
 const ADMIN_TABS: { label: string; page: AdminTab }[] = [
   { label: 'לוח ניהול', page: 'admin-dashboard' },
   { label: 'ניטור', page: 'admin-monitoring' },
+  { label: 'משתמשים', page: 'admin-users' },
 ];
 
 type Props = {

@@ -80,12 +80,13 @@ One row per player. Firebase Auth owns the login; this row owns the app data.
 |-------|------|------|---------|-------|
 | `uid` | TEXT | no | | **PK.** The Firebase Auth uid (the JWT's `sub`) |
 | `email` | TEXT | no | | Copied from the verified token on every login |
-| `roles` | TEXT[] | no | `'{user}'` | Non-empty, only `admin` / `user`. Changed with SQL, and by `POST /me/admin`, which only adds `admin` for the demo password (D-043) |
+| `roles` | TEXT[] | no | `'{user}'` | Non-empty, only `admin` / `user`. Changed by an admin with `PATCH /admin/users/:uid` (D-044: never their own; logged in `admin_actions`), with SQL, and by `POST /me/admin`, which only adds `admin` for the demo password (D-043) |
 | `theme` | TEXT | no | `'dark'` | `dark` or `light` (D-007) |
 | `created_at` | TIMESTAMPTZ | no | `now()` | |
 | `display_name` | TEXT | yes | | Shown on the leaderboard. Never the email |
 | `chart_settings` | JSONB | no | `'{}'` | Chart type, colors, indicators. Written only by `PATCH /me/chart-settings` |
 | `last_seen_at` | TIMESTAMPTZ | yes | | Real time of the app's last check-in (D-026). Online = within 2 minutes. NULL = never checked in. Written only by `POST /me/seen` |
+| `visits` | INTEGER | no | `0` | Visits since signing up (D-044): ≥ 0, always the player's number of `app_opens` rows. `POST /me/seen` adds 1 in the same transaction as the visit's `app_opens` row; the migration filled it from `app_opens`. No index on purpose (D-044). The sample game (D-038) sets it from the visits it writes |
 | `onboarded_at` | TIMESTAMPTZ | yes | | Real time the player walkthrough was finished or skipped (D-040). NULL = not seen yet, so the app shows it. Written only by `POST /me/onboarding/seen`, which keeps the first time |
 | `admin_onboarded_at` | TIMESTAMPTZ | yes | | The same for the admin walkthrough (D-040). Set only for a user with the `admin` role |
 | `streak_days` | INTEGER | no | `0` | The daily streak (D-039): real Israel days in a row on which the player was in the app, up to `streak_last_day`. ≥ 0. A read shows 0 once `streak_last_day` is before yesterday; nothing resets it at midnight |
@@ -127,16 +128,16 @@ The trade screen's confirm popup per player per real Israel day (D-036): how oft
 | `backed` | INT | no | `0` | ≥ 0. Closed without a send by the player's choice. At most 50 per report. Can be above `opened` on a day: a popup opened before midnight can be backed out of after it |
 
 ### `admin_actions`
-The admin action log (D-027). One row per admin clock action, written in the same transaction as the action, so a row exists exactly when the action happened. Append-only.
+The admin action log (D-027). One row per admin clock action or role change (D-044), written in the same transaction as the action, so a row exists exactly when the action happened. Append-only.
 
 | Field | Type | Null | Default | Notes |
 |-------|------|------|---------|-------|
 | `id` | BIGINT | no | identity | **PK** |
 | `uid` | TEXT | no | | FK → `users.uid`. The admin who did it |
-| `action` | TEXT | no | | `clock_to_close`, `clock_to_open`, `clock_start` or `clock_stop` |
+| `action` | TEXT | no | | `clock_to_close`, `clock_to_open`, `clock_start`, `clock_stop`, or `role_grant` / `role_revoke` (D-044, no world times) |
 | `world_from` | TIMESTAMPTZ | yes | | World time before the action |
 | `world_to` | TIMESTAMPTZ | yes | | World time after it |
-| `detail` | JSONB | no | `'{}'` | For example `{"events": 2, "ordersExecuted": 14}` |
+| `detail` | JSONB | no | `'{}'` | For example `{"events": 2, "ordersExecuted": 14}`; a role change: `{"target": "<uid>", "email": "…"}` |
 | `at` | TIMESTAMPTZ | no | `now()` | Real time |
 
 ### `securities`

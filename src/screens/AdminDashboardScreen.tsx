@@ -106,7 +106,7 @@ function AdminView({ data, name, reload }: { data: AdminOverview; name: string; 
               <PlayersSection total={data.players.total} />
               <SystemSection d={data} />
             </OffsetProvider>
-            <AdminFooter>צד הניהול · רק מנהלים רואים את העמוד הזה, וכל בקשה נבדקת שוב בשרת. תפקידים משתנים רק ב־SQL.</AdminFooter>
+            <AdminFooter>צד הניהול · רק מנהלים רואים את העמוד הזה, וכל בקשה נבדקת שוב בשרת. הרשאות ניהול משתנות בעמוד המשתמשים, וכל שינוי נרשם ביומן.</AdminFooter>
           </View>
         </Animated.ScrollView>
 

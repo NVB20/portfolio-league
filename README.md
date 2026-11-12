@@ -17,7 +17,7 @@ A weekly stock-trading game. Every player gets a virtual ₪1,000,000, buys and 
 - **The game:** sign up (email or Google), a dashboard, a trading screen with a full chart, one shared world clock.
 - **The engine:** fills orders at every open and close, by the brief's rules. 486+ tests.
 - **The leaderboard:** the weekly table, scored at every open and close.
-- **The admin side:** the clock, the engine's health, players online, day-1 and day-7 return.
+- **The admin side:** the clock, the engine's health, players online, day-1 and day-7 return, and every user with their visits and role.
 - **Production:** tests on every pull request, a Docker image on every merge, an engine that is safe to retry.
 
 **Why this shape:** the worst bug a trading game can have is one that creates or loses money. So most of the work went into an engine that can't create money, can't run an order twice, and keeps running when nobody is watching.
@@ -46,7 +46,7 @@ Everyone shares one world clock, in Israel time. An admin moves it from the admi
 
 Every open and close on the way runs first, in order. A move never skips one.
 
-**To become an admin:** avatar menu → "מעבר לצד הניהול" → enter the password shown there, `123456` (D-043). It is on the screen on purpose, so you can see the admin side without running SQL. In a real launch this route would be removed and admin rights given only with SQL:
+**To become an admin:** avatar menu → "מעבר לצד הניהול" → enter the password shown there, `123456` (D-043). It is on the screen on purpose, so you can see the admin side without running SQL. An admin can give or take the admin role from the "משתמשים" tab (D-044). In a real launch the password route would be removed, and roles given there or with SQL:
 
 ```bash
 docker compose exec db psql -U hof -d portfolio -c "UPDATE users SET roles = '{admin,user}' WHERE email = 'you@example.com'"
