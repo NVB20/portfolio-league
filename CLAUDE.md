@@ -92,5 +92,5 @@ At the end of every reply that changed code, show a table of the changed files, 
 
 ## Git
 
-- Work in a branch per feature or phase (for example `phase-2-world`), not per screen.
+- Work in a branch per feature or phase (for example `phase-2-world`), 
 - Never commit without the user's explicit yes.
