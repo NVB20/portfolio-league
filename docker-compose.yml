@@ -63,10 +63,11 @@ services:
       db:
         condition: service_healthy
 
-  # One-off: the game's tables. The same command production runs, from the same image as the API.
+  # One-off: the game's tables. The same command production runs, from the same image as the API. It is
+  # `npm run migrate` without npm, which the API image doesn't have (api/Dockerfile).
   migrate:
     build: ./api
-    command: ["npm", "run", "migrate"]
+    command: ["node_modules/.bin/node-pg-migrate", "up", "--migrations-dir", "migrations"]
     environment:
       DATABASE_URL: postgres://hof:hof_dev@db:5432/portfolio
     depends_on:
