@@ -4,7 +4,7 @@ GitHub Actions for this repo. GitHub reads only the `.yml` files here, so this R
 
 | Workflow | File | Runs on | Publishes anything? |
 |----------|------|---------|---------------------|
-| CI | [ci.yml](ci.yml) | Every PR into `main`, every push to `main` | Yes, the API image, only on push to `main` |
+| CI | [ci.yml](ci.yml) | Every PR into `main`, every push to `main` | Yes, the API image, only on push to `main` and only if its Trivy scan is clean |
 | CodeQL | [codeql.yml](codeql.yml) | Every PR into `main`, every push to `main`, Mondays 03:00 UTC | No, findings go to the Security tab |
 
 Both cancel a run that is still going when a newer push lands on the same branch.
@@ -15,7 +15,7 @@ Three jobs. `test` and `app` run in parallel. `image` runs only after both have 
 
 ```
 PR or push ──┬── test  (API) ──┐
-             └── app   (Expo) ─┴── image (push to main only)
+             └── app   (Expo) ─┴── image: build → Trivy scan → publish (push to main only)
 ```
 
 ### `test`: Type check and test the API
@@ -43,13 +43,23 @@ Runs at the repo root.
 | Web build | `npx expo export --platform web` | Metro errors that `tsc` can't see: bad imports, missing `.web.tsx` files. No `EXPO_PUBLIC_*` values are needed for this |
 | Audit | `npm audit --omit=dev --audit-level=critical` | A critical advisory. Critical only, because firebase pulls in `@grpc/grpc-js` (high, Node-only, never loaded in the browser) and npm's only "fix" is downgrading firebase to v9 |
 
-### `image`: Build and publish the API image
+### `image`: Build, scan and publish the API image
 
-Runs only on a push to `main` (a merged PR) and only when `test` and `app` have both passed. Nothing is published from a PR.
+Runs on every PR and push, only when `test` and `app` have both passed. A PR builds and scans the image; only a push to `main` (a merged PR) publishes it.
 
-- Builds `api/Dockerfile` with Buildx, using the GitHub Actions cache.
-- Pushes to `ghcr.io/<owner>/<repo>-api` with two tags: `latest` and the short commit sha.
+- Builds `api/Dockerfile` with Buildx, using the GitHub Actions cache, into the runner's Docker.
+- Scans that image with [Trivy](https://trivy.dev): Alpine's packages and every npm package inside the image. A **high or critical** vulnerability **that already has a fix** fails the job, so nothing is published. Ones with no fix yet are reported in the log but don't fail it (nothing to do about them but wait).
+- On a push to `main`: pushes the same build to `ghcr.io/<owner>/<repo>-api` with two tags, `latest` and the short commit sha. Every layer comes from the scanned build, so nothing is rebuilt.
 - Logs in with the built-in `GITHUB_TOKEN`, so there are no secrets to set up.
+
+When Trivy fails the job:
+
+1. Read the table in the step's log: which package, which path, which fixed version.
+2. In `app/node_modules/`: update that dependency (or the one that pulls it in) in `api/package.json`.
+3. In Alpine's packages: a newer `node:22-alpine` usually has it. Re-run the job; Buildx pulls the base image again when it changed.
+4. Not reachable and no fix you can take: add the CVE id to an `api/.trivyignore` with a comment saying why and until when, and pass it with `trivyignores`. Don't lower the severity or turn `exit-code` off.
+
+The image has no package manager: npm, npx, corepack and yarn are removed in the last stage of `api/Dockerfile`. The server never runs them, and Trivy's first run found high CVEs only in npm's own bundled packages. Migrations run `node_modules/.bin/node-pg-migrate` directly.
 
 ## CodeQL (`codeql.yml`)
 
@@ -82,6 +92,7 @@ npm ci && npm run typecheck && npm run lint && npx expo export --platform web
 ## Changing a workflow
 
 - Pin actions to a major version (`@v5`), as the files already do. Every action runs on Node 24; when GitHub warns that one targets an older Node, move it to the major that runs on 24.
+- The exception is `aquasecurity/trivy-action`: pinned to a full commit sha with the version in a comment, and the Trivy binary pinned with `version:`. Its tags were hijacked in March 2026 ([GHSA-69fq-xp46-6x23](https://github.com/aquasecurity/trivy/security/advisories/GHSA-69fq-xp46-6x23)), so a tag can't be trusted to stay the code we checked. To update it, take the sha of the new release's tag (`git ls-remote https://github.com/aquasecurity/trivy-action refs/tags/vX.Y.Z^{}`).
 - Jobs run on `ubuntu-24.04`, not `ubuntu-latest`, so the runner image changes only when we change it here (`ubuntu-latest` moves to Ubuntu 26 from October 2026). Move all four jobs together, in a PR of their own.
 - New job permissions go on the job, not the workflow. The workflow default is `contents: read`.
 - If a job's name changes and branch protection is later turned on, update the required checks to match.
