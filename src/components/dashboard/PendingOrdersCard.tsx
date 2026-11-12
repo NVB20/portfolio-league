@@ -1,14 +1,19 @@
 // Pending orders (rule 3): an order runs at today's close (sent while open) or the next open (sent
-// while closed), and can't be cancelled. Shows the 2 that run first, plus how many more (DD-07).
+// while closed), and can't be cancelled. Shows the 2 that run first, plus how many more (DD-07). A buy that
+// carries a stop loss says so (D-037).
 
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import type { Dashboard, OrderView } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
 import { dayLabel, orderSize } from '../../dashboard/format';
+import { stopText } from '../../trade/copy';
 import { Card, Empty } from './Card';
 import { Chip } from './Chip';
 
 type Props = { orders: Dashboard['pendingOrders']; today: string | null };
+
+const toJournal = () => router.navigate('/journal?filter=pending');
 
 export function PendingOrdersCard({ orders, today }: Props) {
   const { colors } = useTheme();
@@ -32,10 +37,10 @@ export function PendingOrdersCard({ orders, today }: Props) {
             <Text style={[styles.more, { color: colors.faint }]}>
               {more === 0 ? '' : more === 1 ? 'עוד פקודה אחת ממתינה' : `עוד ${more} פקודות ממתינות`}
             </Text>
-            {/* Opens the orders page once it exists. */}
-            <Text style={[styles.link, { color: colors.accent }]} accessibilityRole="link" accessibilityState={{ disabled: true }}>
-              כל הפקודות ←
-            </Text>
+            {/* The journal, on its waiting orders (D-035). */}
+            <Pressable onPress={toJournal} accessibilityRole="link" hitSlop={8}>
+              <Text style={[styles.link, { color: colors.accent }]}>ליומן ←</Text>
+            </Pressable>
           </View>
         </>
       )}
@@ -59,7 +64,7 @@ function OrderRow({ order, today }: { order: OrderView; today: string | null }) 
       </View>
       <View style={styles.what}>
         <Text style={[styles.title, { color: colors.fg }]}>
-          {`${buy ? 'קנייה' : 'מכירה'} ${order.symbol}${size ? ` · ${size}` : ''}`}
+          {`${buy ? 'קנייה' : 'מכירה'} ${order.symbol}${size ? ` · ${size}` : ''}${order.stopPrice !== null ? ` · ${stopText(order.stopPrice, order.market === 'US' ? 'USD' : 'ILS')}` : ''}`}
         </Text>
         <Text style={[styles.detail, { color: colors.faint }]}>{`${how} · ${city}`}</Text>
       </View>
@@ -78,5 +83,5 @@ const styles = StyleSheet.create({
   detail: { fontSize: 11.5 },
   footer: { marginTop: 'auto', paddingTop: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   more: { fontSize: 12.5 },
-  link: { fontSize: 12.5, fontWeight: '600', opacity: 0.6 },
+  link: { fontSize: 12.5, fontWeight: '600' },
 });

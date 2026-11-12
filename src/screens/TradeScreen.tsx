@@ -1,6 +1,6 @@
 // The trading screen (/trade), from the design artifact. One long scroll with three sections:
-//   1. The order: the selected security, buy/sell + amount + send, the 10-day chart, the preview card
-//      against the rules, your holding, cash, and all 40 securities to pick from
+//   1. The order: the selected security, buy/sell + amount + an optional stop loss on a buy (D-037) + send, the
+//      10-day chart, the preview card against the rules, your holding, cash, and all 40 securities to pick from
 //   2. The chart: the full Lightweight Charts chart (real Yahoo OHLC) with the order center beside it
 //   3. After sending: pending orders and how an order executes
 //
@@ -15,15 +15,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { router, useLocalSearchParams } from 'expo-router';
 import type { SecurityView, TradeView } from '../../api/src/contract';
 import { useAuth } from '../auth/AuthProvider';
 import { useTheme } from '../useTheme';
 import { ilsExact, pct } from '../dashboard/format';
 import { marketsChanged } from '../dashboard/markets';
 import { useElapsed } from '../dashboard/useElapsed';
-import { checkChip, EXCHANGE, executionShort, GAME_OVER_LINE, marketLine, money, sentToast } from '../trade/copy';
+import { checkChip, EXCHANGE, executionShort, GAME_OVER_LINE, marketLine, money, sentToast, stopBlocked, stopConfirmLine } from '../trade/copy';
 import { orderBody } from '../trade/orderBody';
-import { checkOrder, clampLevel, defaultLevels, pendingBuysIls, pendingListCut, type Levels, type Side } from '../trade/orderCheck';
+import { checkOrder, checkStop, clampLevel, defaultLevels, pendingBuysIls, pendingListCut, type Levels, type Side } from '../trade/orderCheck';
 import { useSendOrder } from '../trade/useSendOrder';
 import { useChart, useChartSettings, useTrade } from '../trade/useTrade';
 import { ConfirmFunnel, usage } from '../usage/tracker';
@@ -39,7 +40,7 @@ import { BAR_HEIGHT, TopBar } from '../components/dashboard/TopBar';
 import { BigChart } from '../components/trade/BigChart';
 import type { ChartPalette } from '../components/trade/BigChart.types';
 import { LevelInputs, PositionToggle, RiskReward, StatsStrip, type Measurement } from '../components/trade/OrderCenter';
-import { AmountField, AmountSlider, ConfirmOrder, SendBox, SideToggle, Toast } from '../components/trade/OrderTicket';
+import { AmountField, AmountSlider, ConfirmOrder, SendBox, SideToggle, StopLossField, Toast } from '../components/trade/OrderTicket';
 import { PickerCard } from '../components/trade/PickerCard';
 import { TenDayChartCard } from '../components/trade/TenDayChart';
 import { CashCard, PositionCard, PreviewCard, RulesCard } from '../components/trade/TradeCards';
@@ -94,12 +95,25 @@ function TradeView({ data, name, uid, loading, reload }: {
   const scroll = useRef<{ scrollTo: (o: { y: number; animated?: boolean }) => void } | null>(null);
 
   // ---------- what the player is doing ----------
-  const first = data.securities.find((s) => s.holding)?.symbol ?? data.securities.find((s) => s.symbol === DEFAULT_SYMBOL)?.symbol ?? data.securities[0]?.symbol ?? null;
+  // ?symbol=TEVA (a row of the journal) opens on that security, also when this screen was already open.
+  const asked = useLocalSearchParams<{ symbol?: string }>().symbol;
+  const askedSymbol = data.securities.some((s) => s.symbol === asked) ? (asked as string) : null;
+  const first = askedSymbol ?? data.securities.find((s) => s.holding)?.symbol ?? data.securities.find((s) => s.symbol === DEFAULT_SYMBOL)?.symbol ?? data.securities[0]?.symbol ?? null;
   const [symbol, setSymbol] = useState<string | null>(first);
   const [side, setSide] = useState<Side>('buy');
   const [amountText, setAmountText] = useState(DEFAULT_AMOUNT);
   const [posOn, setPosOn] = useState(true);
+  const [stopOn, setStopOn] = useState(false);   // the optional stop loss on a buy (D-037)
   const [measurement, setMeasurement] = useState<Measurement | null>(null);
+  // A new ?symbol= while the screen is open: switch to it during render (React's "adjust state when a value changes").
+  const [lastAsked, setLastAsked] = useState(askedSymbol);
+  if (askedSymbol !== lastAsked) {
+    setLastAsked(askedSymbol);
+    if (askedSymbol) {
+      setSymbol(askedSymbol);
+      setMeasurement(null);
+    }
+  }
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -124,12 +138,22 @@ function TradeView({ data, name, uid, loading, reload }: {
   const today = data.clock?.date ?? null;
   const session = sec && data.clock ? data.clock.markets[sec.market === 'TASE' ? 'tase' : 'us'] : null;
 
-  // The position tool starts at the latest price, +8% target and −4% stop.
+  // The position tool starts at the latest price, +8% target and −4% stop. Its stop is the order's stop loss when
+  // the player turns that on (D-037). A new price (a market event) starts the tool again, but not while the stop
+  // loss is on: that would move a stop the player chose without telling them. A new security always does.
   const [levels, setLevels] = useState<Levels>(() => defaultLevels(sec?.price ?? 1));
-  useEffect(() => {
-    if (sec?.price) setLevels(defaultLevels(sec.price));
-  }, [sec?.symbol, sec?.price]);
+  // Adjusted during render when the security or its price changes (React's "adjust state when a value changes").
+  const [levelsFor, setLevelsFor] = useState({ symbol: sec?.symbol, price: sec?.price });
+  if (levelsFor.symbol !== sec?.symbol || levelsFor.price !== sec?.price) {
+    const newSymbol = levelsFor.symbol !== sec?.symbol;
+    setLevelsFor({ symbol: sec?.symbol, price: sec?.price });
+    if (sec?.price && (newSymbol || !stopOn)) setLevels(defaultLevels(sec.price));
+  }
   const onLevel = useCallback((k: keyof Levels, v: number) => setLevels((l) => clampLevel(l, k, v)), []);
+  const onStop = useCallback((v: number) => setLevels((l) => clampLevel(l, 'stop', v)), []);
+  // A sell has no stop loss; the server would refuse one (D-037).
+  const stop = checkStop(side === 'buy' && stopOn ? levels.stop : null, sec?.price ?? null, amount);
+  const canSend = check.ok && stop.ok;
 
   // ---------- chart data + settings ----------
   const { settings, change, savedAt } = useChartSettings(data.chartSettings);
@@ -184,8 +208,8 @@ function TradeView({ data, name, uid, loading, reload }: {
   // ---------- sending ----------
   const { busy, prepare, send } = useSendOrder(uid);
   const updating = loading || moved;   // the preview may be out of date: nothing is sent against it
-  const body = sec && check.ok ? orderBody({ symbol: sec.symbol, side, amount, sell: check.sell }) : null;
-  const orderKey = `${symbol}:${side}:${amountText}`;
+  const body = sec && canSend ? orderBody({ symbol: sec.symbol, side, amount, sell: check.sell, stop: stop.stop }) : null;
+  const orderKey = `${symbol}:${side}:${amountText}:${stop.stop ?? ''}`;
 
   // One confirm popup for both send buttons (the ticket and the order center).
   // Any change to the order (side, amount, security) closes it.
@@ -250,7 +274,7 @@ function TradeView({ data, name, uid, loading, reload }: {
       : sec.execution.gameOver
         ? GAME_OVER_LINE
         : `${executionShort(sec.execution, today)} · ${EXCHANGE[sec.exchange]}`;
-  const sendBox = <SendBox side={side} ok={check.ok} sending={busy} updating={updating} onOpen={openConfirm} />;
+  const sendBox = <SendBox side={side} ok={canSend} sending={busy} updating={updating} onOpen={openConfirm} />;
 
   if (!sec) {
     return (
@@ -266,6 +290,10 @@ function TradeView({ data, name, uid, loading, reload }: {
   }
 
   const us = sec.currency === 'USD';
+  // One stop-loss field, shown in the ticket and in the order center; both edit the same stop.
+  const stopField = side === 'buy' ? (
+    <StopLossField on={stopOn} onToggle={() => setStopOn((o) => !o)} stop={levels.stop} currency={sec.currency} check={stop} onStop={onStop} disabled={busy} />
+  ) : null;
   const ticket = (
     <View style={styles.ticket}>
       <SideToggle side={side} onChange={setSide} disabled={busy} />
@@ -273,6 +301,7 @@ function TradeView({ data, name, uid, loading, reload }: {
         <AmountField value={amountText} onChange={setAmountText} disabled={busy} />
         <AmountSlider side={side} value={amount} max={check.maxIls} onPick={(v) => setAmountText(String(v))} disabled={busy} />
       </View>
+      {stopField}
       {sendBox}
     </View>
   );
@@ -319,6 +348,7 @@ function TradeView({ data, name, uid, loading, reload }: {
                     side={side}
                     amount={amount}
                     check={check}
+                    stop={stop}
                     availableCash={data.availableCash}
                     pendingBuysIls={pending}
                     usdRate={usdRate}
@@ -344,7 +374,7 @@ function TradeView({ data, name, uid, loading, reload }: {
                     <Accent>ואז שלח.</Accent>
                   </>
                 }
-                body="כלי הפוזיציה מצייר כניסה, יעד וסטופ לסכום הפקודה. גרור את התוויות על הגרף או הקלד מחירים כאן."
+                body="כלי הפוזיציה מצייר כניסה, יעד וסטופ לסכום הפקודה. גרור את התוויות על הגרף או הקלד מחירים כאן. הסטופ יכול לצאת עם הפקודה כסטופ לוס."
                 actions={
                   <View style={styles.center2}>
                     <SideToggle side={side} onChange={setSide} disabled={busy} />
@@ -352,8 +382,11 @@ function TradeView({ data, name, uid, loading, reload }: {
                     <PositionToggle on={posOn} onToggle={() => setPosOn((o) => !o)} />
                     <LevelInputs levels={levels} currency={sec.currency} onChange={onLevel} />
                     <RiskReward amount={amount} levels={levels} currency={sec.currency} entryIls={levels.entry * toIls} />
+                    {stopField}
                     <Text style={[styles.note, { color: colors.faint }]}>
-                      {side === 'sell' ? 'כלי הפוזיציה מתכנן קנייה (לונג). במשחק אין שורט.' : 'במשחק אין פקודות סטופ ויעד. הכלי עוזר לתכנן; הפקודה מתבצעת בשער הבא.'}
+                      {side === 'sell'
+                        ? 'כלי הפוזיציה מתכנן קנייה (לונג). במשחק אין שורט.'
+                        : 'היעד לתכנון בלבד. הסטופ נשלח עם הפקודה כשהסטופ לוס מופעל, ונבדק רק בשער הפתיחה והסגירה.'}
                     </Text>
                     {sendBox}
                   </View>
@@ -398,7 +431,7 @@ function TradeView({ data, name, uid, loading, reload }: {
                   </>
                 }
                 body="אתה לא קובע מחיר. פקודה שנשלחה כשהשוק פתוח מתבצעת בשער הסגירה של היום. כשהשוק סגור, בשער הפתיחה של יום המסחר הבא."
-                actions={<Button label="לכל הפקודות" disabled hint="יחובר כשמסך הפקודות ייבנה" />}
+                actions={<Button label="ליומן המסחר" onPress={() => router.navigate('/journal?filter=pending')} hint="כל הפקודות ששלחת ומה קרה להן" />}
               >
                 <CardRow>
                   <PendingOrdersCard orders={{ total: data.pendingOrders.length, next: data.pendingOrders }} today={today} />
@@ -422,8 +455,9 @@ function TradeView({ data, name, uid, loading, reload }: {
           amount={amount}
           units={check.units}
           execLine={execLine}
-          ok={check.ok}
-          blocked={check.ok ? null : checkChip(check).label}
+          stopLine={stopConfirmLine(stop, sec.currency)}
+          ok={canSend}
+          blocked={check.ok ? stopBlocked(stop) : checkChip(check).label}
           error={confirmError}
           sending={busy}
           updating={updating}

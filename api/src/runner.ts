@@ -5,7 +5,8 @@
 // Postgres is the queue. One runner at a time (a session advisory lock). Every step is a short transaction
 // that can be re-run after a crash at any point and changes nothing twice:
 //   start   the market_events row exists; world_clock.events_through moves up to the event
-//   step 1  orders, while the event is 'pending': due orders in batches through the pure engine; their money,
+//   step 1  orders, while the event is 'pending': first the stops this event's price reached become sells due
+//           now (D-037, triggerStops); then due orders in batches through the pure engine; their money,
 //           positions and status change in one transaction, so a re-run never finds them pending again; each
 //           batch checks its own players' ledger in that transaction
 //   step 2  affected players, while 'orders_done': re-mark and fold into the week, online players first;
@@ -30,6 +31,7 @@ import {
 import { format, parse, RATE_ONE, SCALE } from './game/fixed.js';
 import { type Calendar, makeCalendar, type Market, type MarketEvent } from './game/marketHours.js';
 import { isLastEventOfWeek } from './game/score.js';
+import { type ActiveStop, planStops, stopFires, type StopPosition } from './game/stops.js';
 import { addDays, ISRAEL, zonedToInstant } from './game/time.js';
 import { applyEvent, markPositions, median, startWeek, totals, type WeekState, weekOf } from './game/week.js';
 import { ONLINE_MINUTES } from './presence.js';
@@ -182,6 +184,8 @@ export async function runEvent(
   const event = await loadEventPrices(client, row);
 
   if (event.status === 'pending') {
+    // Stops first (D-037): a stop this event's price reached becomes a sell due now, which the batches below run.
+    await triggerStops(client, event, orderBatch);
     for (;;) {
       const r = await runOrderBatch(client, event, orderBatch);
       summary.ordersExecuted += r.executed;
@@ -233,7 +237,7 @@ export async function runOrderBatch(
   return inTransaction(client, async () => {
     const due = await client.query<OrderSqlRow>(
       `SELECT o.id::text AS id, o.uid, o.symbol, s.market, o.side, o.amount_ils::text AS amount_ils,
-              o.units::text AS units, o.executes_at
+              o.units::text AS units, o.executes_at, o.stop_price::text AS stop_price
        FROM orders o JOIN securities s ON s.symbol = o.symbol
        WHERE o.status = 'pending' AND o.executes_at <= $1 AND s.market = $2
        ORDER BY o.executes_at, o.id
@@ -272,6 +276,8 @@ export async function runOrderBatch(
     await writeJournals(client, event, out);
     const positionIds = await writePositions(client, out, held);
     await writeOrders(client, event, out.results, positionIds);
+    await writeStops(client, event, out.results, stopPrices(due.rows), positionIds);
+    await expireStops(client, event, out.closed);
     await writeTradedPortfolios(client, out, weeks);
 
     // The ledger check (D-019, D-029) for this batch's players, in its transaction: their rows are locked, so
@@ -296,6 +302,117 @@ export async function runOrderBatch(
 
 async function markOrdersDone(client: PoolClient, eventId: string): Promise<void> {
   await client.query(`UPDATE market_events SET status = 'orders_done' WHERE id = $1 AND status = 'pending'`, [eventId]);
+}
+
+// ---------- step 1, first: stops (D-037) ----------
+
+type StopSqlRow = {
+  id: string; uid: string; symbol: string; position_id: string; stop_price: string; units: string; activation_price: string;
+};
+
+// The stops this event fires become pending sells due at this event (origin 'stop'); runOrderBatch then runs them
+// at this event's price like any other sell. A stop fires when this event's open or close is at or below it
+// (stopFires, game/stops.ts): checked only at the open and the close. Only stops activated by an EARLIER event: a
+// stop made at this event (its buy filled here) is first checked at the next one, also when this runs again after a
+// crash. A batch of `batch` stops per transaction; a fired or expired stop is no longer active, so a re-run never
+// fires it twice, and a stop that waits gets the same answer again. Paged by id, so the stops that wait don't keep
+// coming back. Returns how many stops fired.
+export async function triggerStops(client: PoolClient, event: PricedEvent, batch: number): Promise<number> {
+  if (event.prices.size === 0) return 0;   // no prices (a US day with no rate): nothing to compare
+  const symbols = [...event.prices.keys()];
+  const prices = symbols.map((s) => format(event.prices.get(s)!, SCALE.PRICE));
+  let after = '0';
+  let fired = 0;
+  for (;;) {
+    const page = await inTransaction(client, async () => {
+      const { rows } = await client.query<StopSqlRow>(
+        `SELECT so.id::text AS id, so.uid, so.symbol, so.position_id::text AS position_id,
+                so.stop_price::text AS stop_price, so.units::text AS units, so.activation_price::text AS activation_price
+         FROM stop_orders so
+         JOIN unnest($1::text[], $2::numeric[]) AS ep (symbol, price) ON ep.symbol = so.symbol
+         WHERE so.status = 'active' AND so.activated_at < $3 AND so.id > $4::bigint
+           AND (ep.price <= so.stop_price OR so.activation_price <= so.stop_price)
+         ORDER BY so.id
+         LIMIT $5
+         FOR UPDATE OF so`,
+        [symbols, prices, event.at, after, batch],
+      );
+      if (rows.length === 0) return { count: 0, last: after, sold: 0 };
+      const stops = rows.map(toActiveStop).filter((s) => stopFires(s.stopPrice, s.activationPrice, event.prices.get(s.symbol)));
+
+      // The players first, in uid order, like runOrderBatch and order sending: their positions are about to change.
+      const uids = [...new Set(stops.map((s) => s.uid))].sort();
+      await client.query('SELECT 1 FROM portfolios WHERE uid = ANY($1) ORDER BY uid FOR UPDATE', [uids]);
+      const held = await client.query<{ id: string; status: 'open' | 'closed'; units: string; reserved_units: string }>(
+        `SELECT id::text AS id, status, units::text AS units, reserved_units::text AS reserved_units
+         FROM positions WHERE id = ANY($1::bigint[]) ORDER BY id FOR UPDATE`,
+        [[...new Set(stops.map((s) => s.positionId))]],
+      );
+      const positions = new Map<string, StopPosition>(held.rows.map((r) => [
+        r.id,
+        { status: r.status, units: parse(r.units, SCALE.UNITS), reservedUnits: parse(r.reserved_units, SCALE.UNITS) },
+      ]));
+
+      const plans = planStops(stops, positions);
+      const byId = new Map(stops.map((s) => [s.id, s]));
+      const sells = plans.flatMap((p) => (p.action === 'sell' ? [{ stop: byId.get(p.stopId)!, units: p.units }] : []));
+      const expired = plans.flatMap((p) => (p.action === 'expire' ? [p.stopId] : []));
+
+      if (sells.length > 0) {
+        const made = await client.query<{ id: string; stop_id: string }>(
+          `INSERT INTO orders (uid, symbol, side, units, placed_at, executes_at, price_type, origin, stop_id)
+           SELECT t.uid, t.symbol, 'sell', t.units, $5, $5, $6, 'stop', t.stop_id
+           FROM unnest($1::text[], $2::text[], $3::numeric[], $4::bigint[]) AS t (uid, symbol, units, stop_id)
+           RETURNING id::text AS id, stop_id::text AS stop_id`,
+          [
+            sells.map((s) => s.stop.uid),
+            sells.map((s) => s.stop.symbol),
+            sells.map((s) => format(s.units, SCALE.UNITS)),
+            sells.map((s) => s.stop.id),
+            event.at,
+            event.kind,
+          ],
+        );
+        // The sold units are locked like a hand sell's (orders.ts): no selling them twice.
+        const lock = new Map<string, bigint>();
+        for (const s of sells) lock.set(s.stop.positionId, (lock.get(s.stop.positionId) ?? 0n) + s.units);
+        await client.query(
+          `UPDATE positions p SET reserved_units = p.reserved_units + t.units
+           FROM unnest($1::bigint[], $2::numeric[]) AS t (id, units) WHERE p.id = t.id`,
+          [[...lock.keys()], [...lock.values()].map((u) => format(u, SCALE.UNITS))],
+        );
+        const res = await client.query(
+          `UPDATE stop_orders so SET status = 'triggered', sell_order_id = t.order_id, ended_at = $3, event_id = $4
+           FROM unnest($1::bigint[], $2::bigint[]) AS t (id, order_id)
+           WHERE so.id = t.id AND so.status = 'active'`,
+          [made.rows.map((r) => r.stop_id), made.rows.map((r) => r.id), event.at, event.id],
+        );
+        if (res.rowCount !== sells.length) throw new Error(`expected ${sells.length} active stops to fire, found ${res.rowCount}`);
+      }
+      if (expired.length > 0) {
+        await client.query(
+          `UPDATE stop_orders SET status = 'expired', ended_at = $2, event_id = $3 WHERE id = ANY($1::bigint[]) AND status = 'active'`,
+          [expired, event.at, event.id],
+        );
+      }
+      return { count: rows.length, last: rows[rows.length - 1].id, sold: sells.length };
+    });
+    fired += page.sold;
+    after = page.last;
+    if (page.count < batch) return fired;
+  }
+}
+
+function toActiveStop(r: StopSqlRow): ActiveStop {
+  return {
+    id: r.id,
+    uid: r.uid,
+    symbol: r.symbol,
+    positionId: r.position_id,
+    stopPrice: parse(r.stop_price, SCALE.PRICE),
+    units: parse(r.units, SCALE.UNITS),
+    activationPrice: parse(r.activation_price, SCALE.PRICE),
+  };
 }
 
 // One INSERT for the journals and their entries, joined by order id (the runner writes at most one journal per
@@ -470,6 +587,53 @@ async function writeOrders(
     );
     if (res.rowCount !== rejected.length) throw new Error(`expected ${rejected.length} pending orders to reject, found ${res.rowCount}`);
   }
+}
+
+// D-037: a filled buy that carried a stop makes the stop, for the units it got, active from the next event on.
+// A rejected buy makes none. In the batch's transaction, so a re-run never finds the buy pending again.
+async function writeStops(
+  client: PoolClient,
+  event: EventRow,
+  results: readonly OrderResult[],
+  stops: ReadonlyMap<string, string>,   // buy order id → its stop_price, as stored
+  positionIds: Map<string, string>,
+): Promise<void> {
+  const made = results.filter((r): r is Extract<OrderResult, { status: 'executed' }> =>
+    r.status === 'executed' && r.side === 'buy' && stops.has(r.orderId) && r.filledUnits > 0n);
+  if (made.length === 0) return;
+  await client.query(
+    `INSERT INTO stop_orders (uid, symbol, buy_order_id, position_id, stop_price, units, activation_price, activated_at)
+     SELECT t.uid, t.symbol, t.buy_order_id, t.position_id, t.stop_price, t.units, t.activation_price, $8
+     FROM unnest($1::text[], $2::text[], $3::bigint[], $4::bigint[], $5::numeric[], $6::numeric[], $7::numeric[])
+       AS t (uid, symbol, buy_order_id, position_id, stop_price, units, activation_price)
+     ON CONFLICT (buy_order_id) DO NOTHING`,
+    [
+      made.map((r) => r.uid),
+      made.map((r) => r.symbol),
+      made.map((r) => r.orderId),
+      made.map((r) => positionIds.get(r.orderId)!),
+      made.map((r) => stops.get(r.orderId)!),
+      made.map((r) => format(r.filledUnits, SCALE.UNITS)),
+      made.map((r) => format(r.fillPrice, SCALE.PRICE)),
+      event.at,
+    ],
+  );
+}
+
+// D-037: a position that closed in this batch (sold by hand, or by another of its stops) leaves its other stops
+// nothing to sell, so they expire now instead of staying active on a closed position.
+async function expireStops(client: PoolClient, event: EventRow, closed: readonly PositionState[]): Promise<void> {
+  const ids = closed.flatMap((p) => (p.id === null ? [] : [p.id]));
+  if (ids.length === 0) return;
+  await client.query(
+    `UPDATE stop_orders SET status = 'expired', ended_at = $2, event_id = $3
+     WHERE position_id = ANY($1::bigint[]) AND status = 'active'`,
+    [ids, event.at, event.id],
+  );
+}
+
+function stopPrices(rows: readonly OrderSqlRow[]): Map<string, string> {
+  return new Map(rows.flatMap((r): [string, string][] => (r.side === 'buy' && r.stop_price !== null ? [[r.id, r.stop_price]] : [])));
 }
 
 // Cash, reserved cash, realized gain, the totals of the new open positions and the started week. Not
@@ -990,6 +1154,7 @@ type OrderSqlRow = {
   amount_ils: string | null;
   units: string | null;
   executes_at: Date;
+  stop_price: string | null;   // a buy's stop (D-037); not part of the engine's input
 };
 
 function toDueOrder(r: OrderSqlRow): DueOrder {

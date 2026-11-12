@@ -2,7 +2,8 @@
 
 import type { ExecutionView, MarketSession, SecurityView, SendOrderResult, WorldTime } from '../../api/src/contract';
 import { dayLabel, ils, ilsExact } from '../dashboard/format';
-import type { Check } from './orderCheck';
+import type { Tip } from '../leaderboard/board';
+import type { Check, StopCheck } from './orderCheck';
 import { MIN_ORDER_ILS, shortfallIls } from './orderCheck';
 
 export const CITY: Record<SecurityView['market'], string> = { TASE: 'תל אביב', US: 'ניו יורק' };
@@ -89,3 +90,54 @@ export function checkNote(c: Check, side: 'buy' | 'sell', amount: number, availa
       return c.sell?.all ? 'מוכר את כל היחידות הפנויות' : `נשאר בתיק ${ils(c.leftIls)}`;
   }
 }
+
+// ---------- the stop loss (D-037) ----------
+
+// What the ⓘ beside the stop-loss switch says BEFORE the player turns it on: the game trades only at the open and
+// the close, so that is also when the stop is checked.
+export const STOP_TIP: Tip = {
+  title: 'סטופ לוס במשחק: רק בפתיחה ובסגירה',
+  lines: [
+    'המשחק סוחר רק בשער הפתיחה ובשער הסגירה של כל יום מסחר. גם הסטופ נבדק רק בשני הרגעים האלה.',
+    'אם שער הפתיחה או הסגירה שווה לסטופ או נמוך ממנו, היחידות שקנית בפקודה הזו נמכרות באותו שער.',
+    'ירידה באמצע היום שמתאוששת עד הסגירה לא תפעיל את הסטופ.',
+    'פער: אם המניה נפתחת מתחת לסטופ, המכירה תהיה בשער הפתיחה, נמוך מהסטופ.',
+    'אחרי השליחה אי אפשר לבטל או להזיז את הסטופ. מכירה ידנית של היחידות מבטלת אותו.',
+  ],
+  sum: 'סטופ ₪95 · נפתחה ב־₪90 ← נמכרה ב־₪90',
+};
+
+// Always under the switch, so the rule is seen even without opening the ⓘ.
+export const STOP_HINT = 'נבדק רק בשער הפתיחה והסגירה';
+
+// "−4.0% מהמחיר · הפסד משוער ₪400" under the stop's price field, or why it can't be sent.
+export function stopLine(c: StopCheck): string {
+  switch (c.status) {
+    case 'ok': return `−${c.belowPct.toFixed(1)}% מהמחיר · הפסד משוער ${ils(c.lossIls)}`;
+    case 'notBelow': return 'הסטופ חייב להיות נמוך מהמחיר האחרון';
+    case 'noPrice': return 'אין עדיין מחיר למניה';
+    case 'empty': return 'הזן מחיר לסטופ';
+    case 'off': return '';
+  }
+}
+
+// The send button's blocked label when the order is fine but the stop isn't.
+export function stopBlocked(c: StopCheck): string | null {
+  switch (c.status) {
+    case 'notBelow': return 'הסטופ מעל המחיר';
+    case 'noPrice': return 'אין מחיר לסטופ';
+    case 'empty': return 'הזן מחיר סטופ';
+    default: return null;
+  }
+}
+
+// "סטופ ₪95.00" for the pending card, the holding and the journal.
+export function stopText(price: number, currency: 'ILS' | 'USD'): string {
+  return `סטופ ${money(price, currency)}`;
+}
+
+// The confirm popup's row: "₪95.00 (−4.0%) · נבדק בפתיחה ובסגירה".
+export function stopConfirmLine(c: StopCheck, currency: 'ILS' | 'USD'): string {
+  return c.stop === null ? '' : `${money(c.stop, currency)} (−${c.belowPct.toFixed(1)}%) · נבדק בפתיחה ובסגירה`;
+}
+

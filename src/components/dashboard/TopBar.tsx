@@ -6,9 +6,10 @@
 // "ניטור" (/admin-monitoring, D-036). A button leads back to the player side.
 // It lies OVER the scrolling page (absolute), so the cards slide underneath it like in the mock-up.
 // Web: see-through page color + blur, no border. Phones: solid page color (no blur on native).
-// "סקירה" (/dashboard), "מסחר" (/trade) and "טבלה" (/leaderboard) exist; the other tabs are shown disabled until
-// their screens are built. On phones those are left out, so the three that work fit without scrolling (the tab
-// strip always opens at its first tab, which would hide an active tab further along).
+// Four tabs: "סקירה" (/dashboard), "מסחר" (/trade), "יומן" (/journal, D-035) and "טבלה" (/leaderboard). The old
+// "היסטוריה" tab is gone: the journal shows every past order. A tab with no screen (page: null) would show disabled,
+// and be left out on phones, so the ones that work fit without scrolling (the tab strip always opens at its first
+// tab, which would hide an active tab further along).
 
 import { useState } from 'react';
 import { Animated, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -25,13 +26,12 @@ import { useLoop } from './motion';
 import { UserMenu } from './UserMenu';
 import { Button } from './Button';
 
-export type Page = 'dashboard' | 'trade' | 'leaderboard';
+export type Page = 'dashboard' | 'trade' | 'journal' | 'leaderboard';
 const TABS: { label: string; page: Page | null }[] = [
   { label: 'סקירה', page: 'dashboard' },
   { label: 'מסחר', page: 'trade' },
-  { label: 'פקודות', page: null },
+  { label: 'יומן', page: 'journal' },
   { label: 'טבלה', page: 'leaderboard' },
-  { label: 'היסטוריה', page: null },
 ];
 export const BAR_HEIGHT = 68;
 const LOGO_HEIGHT = 40;
@@ -181,7 +181,7 @@ const styles = StyleSheet.create({
   tabsContent: { padding: 4 },
   tabs: { flexDirection: 'row', gap: 4 },
   tab: { paddingVertical: 9, paddingHorizontal: 18, borderRadius: 999 },
-  tabPhone: { paddingHorizontal: 14 },
+  tabPhone: { paddingHorizontal: 11 },   // four tabs between the logo and the avatar on a 360px phone
   tabText: { fontSize: 13.5, fontWeight: '500' },
   clock: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderRadius: 999, padding: 4 },
   dot: { width: 7, height: 7, borderRadius: 4 },

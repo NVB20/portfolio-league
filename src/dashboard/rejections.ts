@@ -1,8 +1,9 @@
 // The rejection toasts (D-023, D-031): the orders the runner refused at an open or close since the player
-// last looked, each with what it was and why. Pure: the screen shows these, then reports the ids it showed.
+// last looked, each with what it was and why. The stop-loss toasts (D-037) are the same kind of notice: the sales
+// a stop loss made since the player last looked. Pure: the screen shows these, then reports the ids it showed.
 
-import type { HoldingView, RejectionCode, RejectionView } from '../../api/src/contract';
-import { dayLabel, orderSize } from './format';
+import type { HoldingView, RejectionCode, RejectionView, StopSaleView } from '../../api/src/contract';
+import { dayLabel, ilsExact, orderSize } from './format';
 
 export type RejectionNotice = {
   id: string;        // the order id: what POST /me/rejections/seen gets back once it was on screen
@@ -47,3 +48,29 @@ export function rejectionsHeading(count: number): string {
 export function idsToMark(shown: string[], sent: ReadonlySet<string>): string[] {
   return [...new Set(shown)].filter((id) => !sent.has(id)).slice(0, MAX_SEEN_IDS);
 }
+
+// ---------- the stop-loss toasts (D-037) ----------
+
+// A price in its own currency, two decimals: ₪94.00 / $180.50.
+function price(value: number, currency: 'ILS' | 'USD'): string {
+  return `${currency === 'USD' ? '$' : '₪'}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// One notice per sale, in the API's order (newest first): what was sold, at which price against the stop (a gap
+// sells below it), the ₪ received and the result, and the open or close that sold it.
+export function stopSaleNotices(sales: StopSaleView[]): RejectionNotice[] {
+  return sales.map((s) => {
+    const result = s.realizedPnlIls < 0 ? `הפסד ${ilsExact(-s.realizedPnlIls)}` : `רווח ${ilsExact(s.realizedPnlIls)}`;
+    return {
+      id: s.id,
+      title: `${s.symbol} · נמכרו ${s.units.toLocaleString('en-US', { maximumFractionDigits: 4 })} יח׳`,
+      reason: `בשער ${price(s.fillPrice, s.currency)} (הסטופ: ${price(s.stopPrice, s.currency)}) · ${ilsExact(s.ils)} · ${result}`,
+      when: `${dayLabel(s.at.weekday)} ${s.at.time}`,
+    };
+  });
+}
+
+export function stopSalesHeading(count: number): string {
+  return count === 1 ? 'הסטופ לוס הופעל' : `${count} סטופ לוס הופעלו`;
+}
+

@@ -8,19 +8,23 @@
 import type { SendOrderBody } from '../../api/src/contract.js';
 import type { SellPlan, Side } from './orderCheck.js';
 
-export type OrderDraft = { symbol: string; side: Side; amount: number; sell: SellPlan | null };
+// stop: a buy's stop loss in the security's currency (D-037), already at 2 decimals (stopSent); null or absent = none.
+export type OrderDraft = { symbol: string; side: Side; amount: number; sell: SellPlan | null; stop?: number | null };
 
 // The body without its clientOrderId (useSendOrder adds that). null = nothing to send.
 export type OrderBody = Omit<SendOrderBody, 'clientOrderId'>;
 
-export function orderBody({ symbol, side, amount, sell }: OrderDraft): OrderBody | null {
-  if (side === 'buy') return amount > 0 ? { symbol, side, amountIls: amount.toFixed(2) } : null;
+export function orderBody({ symbol, side, amount, sell, stop }: OrderDraft): OrderBody | null {
+  if (side === 'buy') {
+    if (!(amount > 0)) return null;
+    return stop != null ? { symbol, side, amountIls: amount.toFixed(2), stopPrice: stop.toFixed(2) } : { symbol, side, amountIls: amount.toFixed(2) };
+  }
   return sell ? { symbol, side, units: sell.units } : null;
 }
 
 // One key per distinct order: a retry of the same order keeps its clientOrderId, any change gets a new one.
 export function bodyKey(b: OrderBody): string {
-  return [b.symbol, b.side, b.amountIls ?? '', b.units ?? ''].join('|');
+  return [b.symbol, b.side, b.amountIls ?? '', b.units ?? '', b.stopPrice ?? ''].join('|');
 }
 
 // A fresh clientOrderId (^[A-Za-z0-9_-]{1,64}$). crypto.randomUUID where the engine has it (it is missing

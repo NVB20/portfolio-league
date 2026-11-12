@@ -10,6 +10,7 @@ import { setTheme, upsertUser } from './users.js';
 import { getDashboard, markRejectionsSeen, parseSeenIds } from './dashboard.js';
 import { getLeaderboard } from './leaderboard.js';
 import { getTrade, saveChartSettings } from './trade.js';
+import { getTradeJournal, parseJournalQuery } from './tradeJournal.js';
 import { cachedDaily, fetchYahooDaily, getChart, type FetchDaily } from './chart.js';
 import { pickChartSettings } from './chartSettings.js';
 import { ACTIVITY_DAYS, getAdminActivity, getAdminOverview, getAdminPlayers, requireAdmin } from './admin.js';
@@ -120,6 +121,21 @@ export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDai
     const trade = await getTrade(db, c.get('user').uid);
     if (!trade) return c.json({ error: 'user not found, call POST /me first' }, 404);
     return c.json(trade);
+  });
+
+  // The trade journal (D-035): every order I sent, newest first, and the period's wins, losses and realized gain.
+  // ?filter=all|pending|executed|rejected, ?period=week|all, ?before=<order id> (next page), ?limit=1..100.
+  me.get('/journal', async (c) => {
+    const q = parseJournalQuery({
+      filter: c.req.query('filter'),
+      period: c.req.query('period'),
+      before: c.req.query('before'),
+      limit: c.req.query('limit'),
+    });
+    if (!q.ok) return c.json({ error: q.error }, 400);
+    const journal = await getTradeJournal(db, c.get('user').uid, q.query);
+    if (!journal) return c.json({ error: 'user not found, call POST /me first' }, 404);
+    return c.json(journal);
   });
 
   // Real OHLC + volume for the full chart, cut at the world clock. ?tf=D (default) or W.

@@ -255,6 +255,7 @@ const emptyTotals = {
   pages: [],
   ms: 0,
   players: 0,
+  stops: { buys: 0, withStop: 0, buyers: 0, players: 0, fired: 0, firedPnlIls: 0 },
 };
 
 describe('GET /admin/monitoring, nothing measured yet', () => {
@@ -264,6 +265,7 @@ describe('GET /admin/monitoring, nothing measured yet', () => {
     expect(m.today).toBe(today);
     expect(m.since).toBeNull();
     expect(m.totals).toEqual({ today: emptyTotals, d7: emptyTotals, d30: emptyTotals });
+    expect(m.stopsNow).toEqual({ active: 0, players: 0 });
 
     expect(m.daily).toHaveLength(30);
     expect(m.daily.map((b) => b.start)).toEqual(Array.from({ length: 30 }, (_, i) => addDays(today, i - 29)));

@@ -4,7 +4,7 @@ The current Postgres schema of the app's database: every table, its fields, its 
 
 - **Source of truth:** the migrations in [api/migrations/](../api/migrations/). This file describes the schema after all of them have run.
 - **Keep it in sync:** every new migration updates this file in the same commit.
-- **Last migration covered:** `20261111190015612_usage.sql`
+- **Last migration covered:** `20261111203926573_stop-loss.sql`
 
 ## Relationships
 
@@ -24,6 +24,9 @@ erDiagram
     portfolios ||--o{ portfolio_snapshots : "valued over time"
     orders |o--o{ journals : "moves cash"
     orders }o--o| positions : "fills into"
+    orders ||--o| stop_orders : "a buy sets"
+    stop_orders |o--o| orders : "fires as a sell"
+    positions ||--o{ stop_orders : "protected by"
     market_events |o--o{ orders : "executed or rejected"
     securities ||--o{ positions : "held as"
     securities ||--o{ orders : "traded in"
@@ -46,6 +49,13 @@ erDiagram
 | `orders.symbol` | `securities.symbol` | many to 1 | blocked |
 | `orders.position_id` | `positions.id` | many to 1 | blocked |
 | `orders.event_id` | `market_events.id` | many to 1 | blocked |
+| `orders.stop_id` | `stop_orders.id` | 1 to 1 | blocked. A stop's sell names its stop (D-037) |
+| `stop_orders.uid` | `users.uid` | many to 1 | CASCADE |
+| `stop_orders.symbol` | `securities.symbol` | many to 1 | blocked |
+| `stop_orders.buy_order_id` | `orders.id` | 1 to 1 | CASCADE |
+| `stop_orders.position_id` | `positions.id` | many to 1 | CASCADE |
+| `stop_orders.sell_order_id` | `orders.id` | 1 to 1 | blocked |
+| `stop_orders.event_id` | `market_events.id` | many to 1 | blocked |
 | `portfolio_snapshots.uid` | `portfolios.uid` | many to 1 | CASCADE |
 | `standings.uid` | `users.uid` | many to 1 | CASCADE |
 | `weekly_scores.uid` | `users.uid` | many to 1 | CASCADE |
@@ -55,7 +65,7 @@ erDiagram
 | `admin_actions.uid` | `users.uid` | many to 1 | CASCADE |
 | `prices.symbol` | `securities.symbol` | many to 1 | blocked |
 
-Deleting a user removes their portfolio, positions, ledger, orders, snapshots, standings, weekly scores, visits and usage totals (the ledger allows a delete only as part of that cascade). A security can't be deleted while anything still refers to it, and neither can a market event that orders point to.
+Deleting a user removes their portfolio, positions, ledger, orders, stop losses, snapshots, standings, weekly scores, visits and usage totals (the ledger allows a delete only as part of that cascade). A security can't be deleted while anything still refers to it, and neither can a market event that orders point to.
 
 ## Tables
 
@@ -74,7 +84,7 @@ One row per player. Firebase Auth owns the login; this row owns the app data.
 | `last_seen_at` | TIMESTAMPTZ | yes | | Real time of the app's last check-in (D-026). Online = within 2 minutes. NULL = never checked in. Written only by `POST /me/seen` |
 
 ### `app_opens`
-One row per visit (D-026). A check-in after more than 30 minutes away, or the very first one, starts a visit. The server decides, never the app. Real time.
+One row per visit (D-026). A check-in after more than 30 minutes away, or the very first one, starts a visit. The server decides, never the app. Real time. The dev-only sample game (`npm run seed:sample-game`, D-038) writes its players' visits directly.
 
 | Field | Type | Null | Default | Notes |
 |-------|------|------|---------|-------|
@@ -83,7 +93,7 @@ One row per visit (D-026). A check-in after more than 30 minutes away, or the ve
 | `at` | TIMESTAMPTZ | no | `now()` | When the visit started |
 
 ### `usage_pages_daily`
-Time and views per player per page per real Israel day (D-036), for the admin monitoring page. Written only by `POST /me/seen`: the check-in's optional usage report is capped by the server and added to the day's row (`INSERT … ON CONFLICT … DO UPDATE SET views = views + …, ms = ms + …`). Daily totals, not an event log: it grows with players × pages per day, never with clicks. A row exists only when the player had a view or some time on that page that day.
+Time and views per player per page per real Israel day (D-036), for the admin monitoring page. Written only by `POST /me/seen`: the check-in's optional usage report is capped by the server and added to the day's row (`INSERT … ON CONFLICT … DO UPDATE SET views = views + …, ms = ms + …`). Daily totals, not an event log: it grows with players × pages per day, never with clicks. The dev-only sample game (D-038) writes its players' days directly. A row exists only when the player had a view or some time on that page that day.
 
 | Field | Type | Null | Default | Notes |
 |-------|------|------|---------|-------|
@@ -94,7 +104,7 @@ Time and views per player per page per real Israel day (D-036), for the admin mo
 | `ms` | BIGINT | no | `0` | ≥ 0. Time on the page while the app was visible and someone used it in the last 5 minutes. At most 120,000 per report, all pages together |
 
 ### `usage_confirms_daily`
-The trade screen's confirm popup per player per real Israel day (D-036): how often it opened, and how often it closed without sending (backed out). Written only by `POST /me/seen`, like `usage_pages_daily`. Orders actually sent are counted from `orders`, never from here.
+The trade screen's confirm popup per player per real Israel day (D-036): how often it opened, and how often it closed without sending (backed out). Written only by `POST /me/seen`, like `usage_pages_daily` (and by the dev-only sample game, D-038). Orders actually sent are counted from `orders`, never from here.
 
 | Field | Type | Null | Default | Notes |
 |-------|------|------|---------|-------|
@@ -268,7 +278,30 @@ Every order ever sent, for all players (D-004).
 | `executed_at` | TIMESTAMPTZ | yes | | World time. A CHECK requires all fill columns exactly when `status = 'executed'` |
 | `reject_code` | TEXT | yes | | Why the runner rejected it, so the app can show English: `NO_PRICE`, `INSUFFICIENT_CASH`, `OVER_LIMIT` or `INSUFFICIENT_UNITS`. Only on a rejected order (CHECK). Refusals when sending are answered with an error and never stored |
 | `event_id` | BIGINT | yes | | FK → `market_events.id`: the event that executed or rejected it. A CHECK makes it NULL exactly while `status = 'pending'` |
-| `notified_at` | TIMESTAMPTZ | yes | | Real time the player saw the rejection toast (D-023). Only on a rejected order (CHECK). NULL = not seen yet |
+| `notified_at` | TIMESTAMPTZ | yes | | Real time the player saw the toast (D-023). Only on a rejected order, or on an executed sell a stop loss made (D-037) (CHECK `orders_notified_check`). NULL = not seen yet |
+| `stop_price` | NUMERIC(14,4) | yes | | A buy's stop loss, in the security's currency (D-037). NULL = no stop. Only on a player's buy, > 0 (CHECK `orders_stop_price_check`) |
+| `origin` | TEXT | no | `'player'` | `player` (sent through `POST /me/orders`) or `stop` (a sell the runner made when a stop fired, D-037). The rate limit and the monitoring page's "sent" count only `player` |
+| `stop_id` | BIGINT | yes | | FK → `stop_orders.id`: the stop this sell came from. Set exactly when `origin = 'stop'`, and such an order is always a sell (CHECK `orders_stop_sell_check`) |
+
+### `stop_orders`
+A stop loss a buy set (D-037): made when the buy fills, for the units it got. The runner checks every active stop at each open and close of its market (never at the event its buy filled at) and turns one the event's price reached (at or below the stop) into a sell order at that event.
+
+| Field | Type | Null | Default | Notes |
+|-------|------|------|---------|-------|
+| `id` | BIGINT | no | identity | **PK** |
+| `uid` | TEXT | no | | FK → `users.uid` |
+| `symbol` | TEXT | no | | FK → `securities.symbol` |
+| `buy_order_id` | BIGINT | no | | FK → `orders.id`, unique: the buy that set it |
+| `position_id` | BIGINT | no | | FK → `positions.id`: the position the buy filled into. A later position in the same stock is a new row, so it never inherits this stop |
+| `stop_price` | NUMERIC(14,4) | no | | > 0, in the security's currency |
+| `units` | NUMERIC(24,8) | no | | > 0: the units the buy got. It sells at most the position's free units |
+| `activated_at` | TIMESTAMPTZ | no | | World time of the buy's fill. Only events after it check the stop |
+| `activation_price` | NUMERIC(14,4) | no | | > 0: the buy's fill price. At or below `stop_price` = the stop fires at the first check, whatever the price |
+| `status` | TEXT | no | `'active'` | `active`, `triggered` (became `sell_order_id`) or `expired` (its position closed first) |
+| `ended_at` | TIMESTAMPTZ | yes | | World time it fired or expired |
+| `event_id` | BIGINT | yes | | FK → `market_events.id`: the event it fired or expired at. A CHECK makes `ended_at` and `event_id` NULL exactly while `active` |
+| `sell_order_id` | BIGINT | yes | | FK → `orders.id`, unique: the sell it became. Set exactly when `triggered` (CHECK) |
+| `created_at` | TIMESTAMPTZ | no | `now()` | Real time |
 
 ### `market_events`
 The runner's event log (D-021): one row per open or close it processes. Status goes `pending` → `orders_done` (the event's prices are in effect) → `done`. The admin page reads the counts.
@@ -399,6 +432,12 @@ Every primary key and UNIQUE column has its own index. The other indexes exist f
 | `orders` | `orders_created_idx` | `created_at` | | The monitoring page's orders sent in the last 30 real days (all players): a range of the index, not the whole table (D-036) |
 | `orders` | `orders_event_idx` | `event_id` WHERE `event_id IS NOT NULL` | partial | The orders an event executed or rejected (affected players, the ledger check) |
 | `orders` | `orders_unseen_rejections_idx` | `uid` WHERE `status = 'rejected' AND notified_at IS NULL` | partial | A player's rejection toasts not seen yet (D-023) |
+| `orders` | `orders_unseen_stop_sales_idx` | `uid` WHERE `origin = 'stop' AND status = 'executed' AND notified_at IS NULL` | partial | A player's stop-sale toasts not seen yet (D-037) |
+| `stop_orders` | `stop_orders_pkey` | `id` | PK | |
+| `stop_orders` | `stop_orders_buy_order_id_key` | `buy_order_id` | unique | One stop per buy; the runner's insert skips one already made |
+| `stop_orders` | `stop_orders_sell_order_id_key` | `sell_order_id` | unique | A stop fires once |
+| `stop_orders` | `stop_orders_active_idx` | `symbol, stop_price` WHERE `status = 'active'` | partial | The runner's check at every event (an event's stocks, the stops its prices reached), and the monitoring page's "active now". Only active stops: a row leaves it once it ends |
+| `stop_orders` | `stop_orders_position_idx` | `position_id` WHERE `status = 'active'` | partial | A player's active stops from their open positions (the holding cards), and expiring a closed position's stops |
 | `market_events` | `market_events_pkey` | `id` | PK | |
 | `market_events` | `market_events_market_kind_day_key` | `market, kind, day` | unique | One row per open or close |
 | `market_events` | `market_events_at_idx` | `at` | | The latest events, the admin page. The leaderboard's `scoredAt` (the latest `done` event) and the events since the runner's last start (`behind`) |

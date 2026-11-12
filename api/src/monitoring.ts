@@ -1,6 +1,6 @@
 // The admin monitoring page (D-036): GET /admin/monitoring and GET /admin/db. Read-only, admins only.
-// Usage comes from the daily totals that POST /me/seen writes (usage.ts); "sent" orders come from the orders table,
-// never from the app. Real time and real Israel dates, like presence (D-026): the world clock plays no part.
+// Usage comes from the daily totals that POST /me/seen writes (usage.ts); "sent" orders and the stop loss (D-037)
+// come from the orders table, never from the app. Real time and real Israel dates, like presence (D-026): the world clock plays no part.
 // Every query is sequential, like the rest of the admin code: one request holds at most one pool connection.
 
 import type { Pool } from 'pg';
@@ -61,17 +61,31 @@ export async function getAdminMonitoring(db: Pool): Promise<AdminMonitoring> {
   const first = { today, d7: addDays(today, -6), d30: addDays(today, -(DAILY_BUCKETS - 1)) };
   const params = [first.today, first.d7, first.d30];
 
-  // Orders sent in each range, by their status now. The 30-day range reads orders_created_idx; the shorter ranges
-  // are FILTERs over the same rows, so the 3 ranges cost one pass. A range starts at midnight Israel time.
+  // Orders players sent in each range, by their status now. The 30-day range reads orders_created_idx; the shorter
+  // ranges are FILTERs over the same rows, so the 3 ranges cost one pass. A range starts at midnight Israel time.
+  // A sell a stop loss made (D-037) isn't one a player sent: it is counted with the stops below.
   const orders = await db.query<{ status: 'pending' | 'executed' | 'rejected'; today: number; d7: number; d30: number }>(
     `SELECT status,
             count(*) FILTER (WHERE created_at >= $1::date::timestamp AT TIME ZONE '${ISRAEL}')::int AS today,
             count(*) FILTER (WHERE created_at >= $2::date::timestamp AT TIME ZONE '${ISRAEL}')::int AS d7,
             count(*)::int AS d30
      FROM orders
-     WHERE created_at >= $3::date::timestamp AT TIME ZONE '${ISRAEL}'
+     WHERE created_at >= $3::date::timestamp AT TIME ZONE '${ISRAEL}' AND origin = 'player'
      GROUP BY status`,
     params,
+  );
+
+  // The stop loss (D-037), per range, over the same rows: the buys players sent and how many carried a stop, the
+  // distinct players behind each, and the sells the stops made with their result. One pass, like the orders.
+  const stopRows = await db.query<StopTotalsRow>(
+    `SELECT ${RANGES.map(stopColumns).join(', ')}
+     FROM orders
+     WHERE created_at >= $3::date::timestamp AT TIME ZONE '${ISRAEL}'`,
+    params,
+  );
+  // Right now, whatever the range: the active stops and the players who hold them (stop_orders_active_idx).
+  const stopsNow = await db.query<{ active: number; players: number }>(
+    `SELECT count(*)::int AS active, count(DISTINCT uid COLLATE "C")::int AS players FROM stop_orders WHERE status = 'active'`,
   );
 
   // The confirm popup: opened and backed out, per range. One row per player per day, so this is a small range scan.
@@ -158,6 +172,7 @@ export async function getAdminMonitoring(db: Pool): Promise<AdminMonitoring> {
   );
 
   const c = confirms.rows[0];
+  const st = stopRows.rows[0];
   const totals = {} as Record<MonitoringRange, MonitoringTotals>;
   for (const range of RANGES) {
     const count = (status: 'pending' | 'executed' | 'rejected') =>
@@ -172,6 +187,14 @@ export async function getAdminMonitoring(db: Pool): Promise<AdminMonitoring> {
       pages: pageRows(pages.rows, range),
       ms: all?.[`ms_${range}` as const] ?? 0,
       players: all?.[`players_${range}` as const] ?? 0,
+      stops: {
+        buys: st[`buys_${range}`],
+        withStop: st[`with_stop_${range}`],
+        buyers: st[`buyers_${range}`],
+        players: st[`players_${range}`],
+        fired: st[`fired_${range}`],
+        firedPnlIls: st[`pnl_${range}`],
+      },
     };
   }
 
@@ -181,7 +204,26 @@ export async function getAdminMonitoring(db: Pool): Promise<AdminMonitoring> {
     totals,
     daily: fillBuckets(time.rows, dayPlayers.rows, first.d30, DAILY_BUCKETS, 'day'),
     weekly: fillBuckets(time.rows, weekPlayers.rows, firstMonday, WEEKLY_BUCKETS, 'week'),
+    stopsNow: stopsNow.rows[0],
   };
+}
+
+// One range's stop-loss columns (D-037). $1, $2, $3 are the ranges' first days (today, d7, d30), as above.
+type StopTotalsRow = Record<`${'buys' | 'with_stop' | 'buyers' | 'players' | 'fired' | 'pnl'}_${MonitoringRange}`, number>;
+const RANGE_PARAM: Record<MonitoringRange, string> = { today: '$1', d7: '$2', d30: '$3' };
+
+function stopColumns(range: MonitoringRange): string {
+  const inRange = `created_at >= ${RANGE_PARAM[range]}::date::timestamp AT TIME ZONE '${ISRAEL}'`;
+  const buy = `origin = 'player' AND side = 'buy' AND ${inRange}`;
+  const fired = `origin = 'stop' AND ${inRange}`;
+  return [
+    `count(*) FILTER (WHERE ${buy})::int AS buys_${range}`,
+    `count(*) FILTER (WHERE ${buy} AND stop_price IS NOT NULL)::int AS with_stop_${range}`,
+    `count(DISTINCT uid COLLATE "C") FILTER (WHERE ${buy})::int AS buyers_${range}`,
+    `count(DISTINCT uid COLLATE "C") FILTER (WHERE ${buy} AND stop_price IS NOT NULL)::int AS players_${range}`,
+    `count(*) FILTER (WHERE ${fired})::int AS fired_${range}`,
+    `COALESCE(sum(realized_pnl_ils) FILTER (WHERE ${fired} AND status = 'executed'), 0)::float8 AS pnl_${range}`,
+  ].join(', ');
 }
 
 // One range's page rows: most time first, then most views, then by name so equal rows keep a fixed order.

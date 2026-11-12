@@ -40,8 +40,8 @@ function Placed({ me, players, final, onMyRow }: { me: LeaderboardMe; players: n
           </View>
         </View>
         <View style={styles.tiles}>
-          <RankTile value={me.returnRank} label="דירוג תשואה · × 0.85" dot="ink" />
-          <RankTile value={me.stabilityRank} label="דירוג יציבות · × 0.15" dot="accent" />
+          <RankTile value={me.returnRank} kind="return" />
+          <RankTile value={me.stabilityRank} kind="stability" />
         </View>
         <Text style={[styles.next, { color: p.fg }]}>{placeLine(me, final)}</Text>
       </View>

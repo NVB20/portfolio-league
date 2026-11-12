@@ -79,7 +79,8 @@ The brief leaves gaps on purpose. These are the ones I filled.
 | Sent while closed → next open | The next open of *that security's* market, skipping its holidays | The brief's rule, read per market |
 | Can't cancel | The order is stored as pending; its cash (buy) or units (sell) are set aside when sent (D-019) | You can't spend the same shekel twice while an order waits |
 | No short selling, no leverage | Checked when sent (free cash, free units) and again at execution (D-028) | Refuse what is certain immediately, instead of in a toast after the close |
-| 20% "at the moment of purchase" | Checked when sent (counting your other pending buys of the same stock) **and again at the execution price**. Portfolio value includes reserved cash. A holding that grows past 20% by rising is allowed; we never sell for you (D-020, D-028) | "The moment of purchase" is the execution, not the send: a stock at 19% when sent can be 21% at the close |
+| 20% "at the moment of purchase" | Checked when sent (counting your other pending buys of the same stock) **and again at the execution price**. Portfolio value includes reserved cash. A holding that grows past 20% by rising is allowed; we never sell for you, except a stop loss you set (D-020, D-028) | "The moment of purchase" is the execution, not the send: a stock at 19% when sent can be 21% at the close |
+| Stop loss (not in the brief) | Optional on a buy: a price below the latest close. It is checked **only at the open and the close**, like every trade: the first open or close at or below it sells the units that buy got, at that price (a gap sells below the stop). It can't be cancelled or moved; selling by hand makes it expire. The ⓘ beside the switch says this before you turn it on (D-037) | The first risk tool real traders learn. One rule for every trade, and no intraday prices we don't have (D-012) |
 | US stocks in dollars | Converted at the open rate at an open, the close rate at a close. A missing rate day uses the latest earlier close (D-029) | "The rate at the moment of execution", with the data we have |
 | No price for a stock that day | The order is rejected (`NO_PRICE`) and its cash or units come back (D-029) | No price, no trade. The player sees why in a toast (D-023) |
 | Early-close days (holiday eves, US half days) | Use the normal hours (D-016) | We have one open and one close per day; there is no 13:00 price to fill at |
@@ -170,6 +171,7 @@ npm install
 npm run migrate:dev                 # create the tables
 npm run seed:world                  # copy the 40 securities, prices, USD/ILS and the clock start
 npm run seed:sample-board           # dev only: a made-up leaderboard before any real trades (D-033); -- --clear removes it
+npm run seed:sample-game            # dev only: restarts the world; 40 players trade its first month (D-038); -- --clear removes them
 npm run dev                         # the API on :3000 (reads api/.env)
 npm test                            # the API tests
 

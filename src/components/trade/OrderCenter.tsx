@@ -1,6 +1,7 @@
 // Stage 2's headline column: the order controls again (same state as the ticket), plus the position tool's
 // entry / target / stop as numbers. Typing a level moves it on the chart; dragging on the chart updates these.
-// The game has no stop or target orders: the tool helps plan, the order runs at the next price (rule 3).
+// The target is for planning only. The stop is the order's stop loss when the player turns it on (D-037): it is
+// checked only at the open and the close, like every trade (rule 3).
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';

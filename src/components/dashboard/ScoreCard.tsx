@@ -6,10 +6,11 @@ import Svg, { Circle, Path } from 'react-native-svg';
 import type { StandingView } from '../../../api/src/contract';
 import { fixed } from '../../theme';
 import { score, WEEKDAY_LETTERS } from '../../dashboard/format';
-import { noScoreLine, rankChangeText, rankText } from '../../leaderboard/board';
+import { noScoreLine, rankChangeText, rankText, rankTip } from '../../leaderboard/board';
 import { Card, Empty, usePalette } from './Card';
 import { Button } from './Button';
 import { Chip } from './Chip';
+import { InfoTip } from './InfoTip';
 import { ltr } from './layout';
 import { useSpring } from './motion';
 
@@ -37,8 +38,8 @@ export function ScoreCard({ standing, todayWeekday, finalWeek = null }: {
         <>
           <Gauge value={standing.score} rank={standing.rank} players={standing.players} />
           <View style={styles.tiles}>
-            <RankTile value={standing.returnRank} label="דירוג תשואה · × 0.85" dot="ink" />
-            <RankTile value={standing.stabilityRank} label="דירוג יציבות · × 0.15" dot="accent" />
+            <RankTile value={standing.returnRank} kind="return" />
+            <RankTile value={standing.stabilityRank} kind="stability" />
           </View>
           <DailyScores days={standing.days} todayWeekday={todayWeekday} />
           <View style={styles.cta}>
@@ -84,17 +85,19 @@ function Gauge({ value, rank, players }: { value: number; rank: number; players:
   );
 }
 
-// One of the two rank tiles (return / stability) with its ink or accent dot. Also on the leaderboard's "your place".
-export function RankTile({ value, label, dot }: { value: number; label: string; dot: 'ink' | 'accent' }) {
+// One of the two rank tiles: return with an ink dot, stability with an accent dot. Also on the leaderboard's
+// "your place". A tap explains the rank right beside the tile (rankTip).
+export function RankTile({ value, kind }: { value: number; kind: 'return' | 'stability' }) {
   const p = usePalette();
+  const label = kind === 'return' ? 'דירוג תשואה · 85%' : 'דירוג יציבות · 15%';
   return (
-    <View style={[styles.tile, { backgroundColor: p.tile }]}>
+    <InfoTip tip={rankTip(kind, value)} label={`${label}: ${rankText(value)}`} style={[styles.tile, { backgroundColor: p.tile }]}>
       <View style={styles.tileTop}>
-        <View style={[styles.dot, { backgroundColor: dot === 'ink' ? p.fg : fixed.inverseAccent }]} />
+        <View style={[styles.dot, { backgroundColor: kind === 'return' ? p.fg : fixed.inverseAccent }]} />
         <Text style={[styles.tileValue, { color: p.fg }]}>{rankText(value)}</Text>
       </View>
       <Text style={[styles.tileLabel, { color: p.sub }]}>{label}</Text>
-    </View>
+    </InfoTip>
   );
 }
 

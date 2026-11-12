@@ -7,8 +7,8 @@ import { Ionicons } from '@expo/vector-icons';
 import type { SecurityView, UsdIlsView } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
 import { ils, ilsExact, pct } from '../../dashboard/format';
-import { checkChip, checkNote } from '../../trade/copy';
-import { CAP, type Check, type Side } from '../../trade/orderCheck';
+import { checkChip, checkNote, money, stopBlocked, stopText } from '../../trade/copy';
+import { CAP, type Check, type Side, type StopCheck } from '../../trade/orderCheck';
 import { Button } from '../dashboard/Button';
 import { Card, Empty, usePalette } from '../dashboard/Card';
 import { Chip } from '../dashboard/Chip';
@@ -34,18 +34,20 @@ export function WeightBar({ weightPct, tone }: { weightPct: number; tone: 'ok' |
 // "Before you send": what the order would do, by the latest price. The send button scrolls up to the ticket.
 // A buy's weight counts this player's pending buys of the same security too, like the server's 20% check (D-028).
 // A sell shows the exact units it sends (D-018). When the API's pending list was cut, the pending buys shown are
-// only those it sent, so the row says 'at least'.
-export function PreviewCard({ security, side, amount, check, availableCash, pendingBuysIls, usdRate, onSend }: {
+// only those it sent, so the row says 'at least'. A stop loss the player turned on (D-037) gets its own row.
+export function PreviewCard({ security, side, amount, check, stop, availableCash, pendingBuysIls, usdRate, onSend }: {
   security: SecurityView;
   side: Side;
   amount: number;
   check: Check;
+  stop: StopCheck;
   availableCash: number;
   pendingBuysIls: number;
   usdRate: number | null;
   onSend: () => void;
 }) {
-  const chip = checkChip(check);
+  const stopBad = check.ok ? stopBlocked(stop) : null;   // the order is fine, its stop isn't
+  const chip = stopBad ? { label: stopBad, variant: 'down' as const } : checkChip(check);
   const bad = !check.ok && check.status !== 'empty';
   const usd = security.currency === 'USD' && usdRate ? ` · $${(amount / usdRate).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '';
   const units = check.units.toLocaleString('en-US', { maximumFractionDigits: side === 'sell' ? 8 : 3 });
@@ -57,11 +59,18 @@ export function PreviewCard({ security, side, amount, check, availableCash, pend
         {side === 'buy' && pendingBuysIls > 0 ? <PRow label={check.capExact ? 'קניות ממתינות בנייר' : 'קניות ממתינות בנייר (לפחות)'} value={ilsExact(pendingBuysIls)} /> : null}
         <PRow label="מזומן זמין אחרי" value={ils(check.cashAfter)} bad={check.status === 'noCash'} />
         <PRow label="משקל בתיק אחרי" value={pct(check.weightAfterPct, { digits: 1, signed: false })} bad={check.status === 'overCap'} />
+        {side === 'buy' && stop.status !== 'off' ? (
+          <PRow
+            label="סטופ לוס · נבדק בפתיחה ובסגירה"
+            value={stop.ok && stop.stop !== null ? `${money(stop.stop, security.currency)} · −${stop.belowPct.toFixed(1)}%` : (stopBad ?? '')}
+            bad={!stop.ok}
+          />
+        ) : null}
       </View>
       <WeightBar weightPct={check.weightAfterPct} tone={bad ? 'bad' : check.weightAfterPct >= NEAR_CAP_PCT ? 'warn' : 'ok'} />
       <Note left={side === 'buy' ? 'תקרה 20% ברגע הקנייה' : 'אין מכירה בחסר'} right={checkNote(check, side, amount, availableCash, security.symbol)} hot={bad} />
       <View style={styles.cardBtn}>
-        <Button label={side === 'buy' ? 'שלח פקודת קנייה' : 'שלח פקודת מכירה'} variant="ink" disabled={!check.ok} onPress={onSend} />
+        <Button label={side === 'buy' ? 'שלח פקודת קנייה' : 'שלח פקודת מכירה'} variant="ink" disabled={!check.ok || !stop.ok} onPress={onSend} />
       </View>
     </Card>
   );
@@ -90,8 +99,9 @@ function Note({ left, right, hot = false }: { left: string; right: string; hot?:
 }
 
 // Your holding in the selected security: value and weight against the cap. Units already in a pending sell
-// are locked, so the line says how many are free.
+// are locked, so the line says how many are free. Its active stop losses (D-037) are listed under it.
 export function PositionCard({ security }: { security: SecurityView }) {
+  const { colors } = useTheme();
   const p = usePalette();
   const h = security.holding;
   const value = h?.valueIls ?? 0;
@@ -108,6 +118,14 @@ export function PositionCard({ security }: { security: SecurityView }) {
       <Text style={[styles.kv, { color: p.fg }]}>{ils(value)}</Text>
       <WeightBar weightPct={weight} tone={near ? 'warn' : 'ok'} />
       <Note left={`${pct(weight, { digits: 1, signed: false })} מהתיק`} right={`תקרה ${CAP * 100}% ברגע הקנייה`} />
+      {h?.stops.map((s, i) => (
+        <View key={i} style={styles.stopRow}>
+          <Ionicons name="shield-checkmark" size={12} color={colors.neg} />
+          <Text style={[styles.noteText, { color: p.sub }]}>
+            {`${stopText(s.price, security.currency)} · ${n(s.units)} יחידות${security.price ? ` · −${((1 - s.price / security.price) * 100).toFixed(1)}% מהמחיר` : ''}`}
+          </Text>
+        </View>
+      ))}
     </Card>
   );
 }
@@ -187,6 +205,7 @@ export function EmptyCard({ title, sub, children }: { title: string; sub?: strin
 }
 
 const styles = StyleSheet.create({
+  stopRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 },
   bar: { height: 4, borderRadius: 2, marginTop: 12, position: 'relative' },
   barFill: { height: '100%', borderRadius: 2 },
   capMark: { position: 'absolute', top: -4, bottom: -4, left: '80%', width: 1 },

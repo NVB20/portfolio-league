@@ -98,8 +98,9 @@ export function DashboardView({ data, isAdmin, name, rankLine }: { data: Dashboa
           <Button label="+ פקודה חדשה" variant="primary" onPress={toTrade} />
         </View>
 
-        {/* Orders the runner rejected since the last visit, under the bar; reported as seen once shown (D-031). */}
-        <RejectionToasts rejections={data.rejections} holdings={data.holdings} />
+        {/* Orders the runner rejected and sales a stop loss made since the last visit, under the bar; reported as
+            seen once shown (D-031, D-037). */}
+        <RejectionToasts rejections={data.rejections} stopSales={data.stopSales} holdings={data.holdings} />
 
         {/* Last, so it draws on top: the bar floats over the scrolling page. */}
         <TopBar clock={data.clock} name={name} rankLine={rankLine} active="dashboard" />

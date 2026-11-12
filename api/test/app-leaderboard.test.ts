@@ -8,7 +8,7 @@ import {
   avatarSlot, BEHIND_RETRY_MS, behindRetryMs, bestLine, boardEyebrow, boardFooter, boardPath, count, dailyBars, dayIndex,
   finishHeight, gameEnded, headline, initial, isoWeek, MAX_BEHIND_TRIES, mondayOf,
   mergePage, nextFrom, noScoreLine, pct, placeLine, playersText, podiumLine, podiumOrder, points, pointsGap, pointsToNext, rankChangeText,
-  rankDelta, rankLine, rankText, rowLabel, sameBoard, scoreEquation, shownRange, tableColumns, tableHeadline, TABLE_FULL,
+  rankDelta, rankLine, rankText, rankTip, rowLabel, sameBoard, scoreEquation, scoreTip, shownRange, tableColumns, tableHeadline, TABLE_FULL,
   TABLE_MID, topLine, topPercent, unrankedLine, weekColumns,
 } from '../../src/leaderboard/board.js';
 
@@ -100,6 +100,21 @@ describe('numbers', () => {
     expect(scoreEquation(82.47, 58.53, 78.88)).toBe('0.85 × 82.5 + 0.15 × 58.5 = 78.9');
     // ...and ones that don't: 0.85 × 82.04 + 0.15 × 58.17 = 78.46 (shown 78.5), but 82 and 58.2 give 78.43 (78.4).
     expect(scoreEquation(82.04, 58.17, 78.46)).toBe('0.85 × 82 + 0.15 × 58.2 ≈ 78.5');
+  });
+
+  it('rankTip: the weight in the title, and the player\'s own rank read as a share of the others', () => {
+    const r = rankTip('return', 82.47);
+    expect(r.title).toBe('דירוג תשואה · 85% מהציון');
+    expect(r.lines.at(-1)).toBe('אצלך 82.5: 82.5% מהשחקנים הרווחו כמוך או פחות.');
+    expect(r.sum).toBeUndefined();
+    const s = rankTip('stability', 12.5);
+    expect(s.title).toBe('דירוג יציבות · 15% מהציון');
+    expect(s.lines.at(-1)).toBe('אצלך 12.5: 12.5% מהשחקנים ירדו כמוך או יותר.');
+  });
+
+  it('scoreTip: the sum is the card\'s own equation', () => {
+    expect(scoreTip(25, 12.5, 23.13).sum).toBe(scoreEquation(25, 12.5, 23.13));
+    expect(scoreTip(25, 12.5, 23.13).sum).toBe('0.85 × 25 + 0.15 × 12.5 = 23.1');   // 21.25 + 1.875 = 23.125
   });
 });
 

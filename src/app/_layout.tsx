@@ -52,6 +52,7 @@ function GuardedStack() {
         <Stack.Screen name="index" />
         <Stack.Screen name="dashboard" />
         <Stack.Screen name="trade" />
+        <Stack.Screen name="journal" />
         <Stack.Screen name="leaderboard" />
 
         {/* Admins only. Everyone else goes back to their dashboard.

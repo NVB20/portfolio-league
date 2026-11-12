@@ -72,6 +72,7 @@ describe('GET /me/dashboard, empty world', () => {
       holdings: [],
       pendingOrders: { total: 0, next: [] },
       rejections: [],
+      stopSales: [],
       usdIls: null,
       standing: null,
       leaderboard: { players: 0, week: null, top: [] },
@@ -281,6 +282,7 @@ describe('GET /me/dashboard, seeded world', () => {
         dayChangePct: 25,                 // the day change still follows the closes: Monday 40 -> Tuesday 50
         weightPct: 20.3046,               // 204,000.00 / 1,004,700.00, exact to 4 decimals
         nearCap: true,
+        stops: [],
       },
       {
         symbol: 'NVDA', nameHe: 'אנבידיה', exchange: 'NASDAQ', currency: 'USD',
@@ -289,6 +291,7 @@ describe('GET /me/dashboard, seeded world', () => {
         dayChangePct: 10,
         weightPct: 4.051,
         nearCap: false,
+        stops: [],
       },
     ]);
   });

@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  CAP, checkOrder, cleanAmount, groupAmount, MIN_ORDER_ILS, SLIDER_STEP, sliderAmount, sliderRange, sliderRatio, PENDING_LIST_MAX, pendingBuysIls, pendingListCut, sellPlan, shortfallIls, shownFreeIls,
+  CAP, checkOrder, checkStop, cleanAmount, groupAmount, MIN_ORDER_ILS, SLIDER_STEP, sliderAmount, sliderRange, sliderRatio, PENDING_LIST_MAX, pendingBuysIls, pendingListCut, sellPlan, shortfallIls, shownFreeIls,
   type CheckInput, type CheckStatus, type HoldingInput,
 } from '../../src/trade/orderCheck.js';
 import { bodyKey, memoryFor, newClientOrderId, orderBody, SendMemory, type OrderBody } from '../../src/trade/orderBody.js';
@@ -316,6 +316,43 @@ describe('orderBody (the POST /me/orders body)', () => {
     expect(bodyKey(a)).not.toBe(bodyKey({ ...a, amountIls: '10001.00' }));
     expect(bodyKey(a)).not.toBe(bodyKey({ ...a, symbol: 'AAPL' }));
     expect(bodyKey({ symbol: 'NVDA', side: 'sell', units: '1.00000000' })).not.toBe(bodyKey({ symbol: 'NVDA', side: 'sell', units: '1.00000001' }));
+  });
+
+  it('a buy with a stop loss sends it with 2 decimals; the stop is part of the key (D-037)', () => {
+    const a = orderBody({ symbol: 'TEVA', side: 'buy', amount: 10_000, sell: null, stop: 95.5 })!;
+    expect(a).toEqual({ symbol: 'TEVA', side: 'buy', amountIls: '10000.00', stopPrice: '95.50' });
+    expect(orderBody({ symbol: 'TEVA', side: 'buy', amount: 10_000, sell: null, stop: null })).toEqual({ symbol: 'TEVA', side: 'buy', amountIls: '10000.00' });
+    expect(bodyKey(a)).not.toBe(bodyKey({ ...a, stopPrice: '95.51' }));
+    expect(bodyKey(a)).not.toBe(bodyKey({ symbol: 'TEVA', side: 'buy', amountIls: '10000.00' }));
+  });
+
+  it('a sell never carries a stop', () => {
+    expect(orderBody({ symbol: 'TEVA', side: 'sell', amount: 250, sell: sellPlan(250, tenUnits), stop: 95 })).toEqual({ symbol: 'TEVA', side: 'sell', units: '2.50000000' });
+  });
+});
+
+describe('checkStop (the stop loss in the preview, D-037)', () => {
+  it('off: nothing to check', () => {
+    expect(checkStop(null, 100, 10_000)).toEqual({ ok: true, status: 'off', stop: null, belowPct: 0, lossIls: 0 });
+  });
+
+  it('below the latest close: how far, and the loss if it sold exactly at the stop', () => {
+    const c = checkStop(96, 100, 10_000);
+    expect(c).toMatchObject({ ok: true, status: 'ok', stop: 96 });
+    expect(c.belowPct).toBeCloseTo(4, 10);
+    expect(c.lossIls).toBeCloseTo(400, 10);
+  });
+
+  it('judges the stop as it will be sent, with 2 decimals', () => {
+    expect(checkStop(99.996, 100, 10_000)).toMatchObject({ ok: false, status: 'notBelow', stop: 100 });
+    expect(checkStop(95.678, 100, 10_000).stop).toBe(95.68);
+  });
+
+  it('refuses a stop at or above the close, with no close, or at 0', () => {
+    expect(checkStop(100, 100, 10_000)).toMatchObject({ ok: false, status: 'notBelow' });
+    expect(checkStop(120, 100, 10_000)).toMatchObject({ ok: false, status: 'notBelow' });
+    expect(checkStop(95, null, 10_000)).toMatchObject({ ok: false, status: 'noPrice' });
+    expect(checkStop(0.001, 100, 10_000)).toMatchObject({ ok: false, status: 'empty' });
   });
 });
 

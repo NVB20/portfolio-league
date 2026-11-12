@@ -3,7 +3,7 @@
 // Usage counts real time and real Israel dates, like presence (D-026): the world clock plays no part here.
 
 import type { AdminDbHealth, MonitoringRange, MonitoringTotals, UsageBucket, UsagePage } from '../../api/src/contract';
-import { WEEKDAY_LETTERS } from '../dashboard/format';
+import { ils, WEEKDAY_LETTERS } from '../dashboard/format';
 import { count, dateHe, playersWord } from './copy';
 
 // The four player pages, in the top bar's order. The chart stacks them in this order from the baseline up and
@@ -257,6 +257,16 @@ export function confirmNote(c: MonitoringTotals['confirms'], sent: number, range
   if (sent > c.opened) return `${base} יש יותר פקודות מפתיחות: חלקן נשלחו לפני שהמדידה התחילה, או מגרסה ישנה של האפליקציה.`;
   if (c.opened === 0) return `אף אחד לא פתח את החלון ${RANGE_TEXT[range]}. ${base}`;
   return base;
+}
+
+// ---------- the stop-loss card (D-037) ----------
+
+// Under the stop-loss numbers: where they come from, and what the stops that fired in the range did.
+export function stopNote(s: MonitoringTotals['stops'], range: MonitoringRange): string {
+  const base = 'מטבלת הפקודות, לפי זמן השליחה האמיתי. "הופעלו" = מכירות שסטופ יצר כשהמחיר הגיע אליו בפתיחה או בסגירה.';
+  if (s.fired === 0) return base;
+  const result = s.firedPnlIls < 0 ? `בהפסד של ${ils(-s.firedPnlIls)}` : `ברווח של ${ils(s.firedPnlIls)}`;
+  return `${base} המכירות שלהם ${RANGE_TEXT[range]} נסגרו ${result} בסך הכול.`;
 }
 
 // ---------- the database card ----------

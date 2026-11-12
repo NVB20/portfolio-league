@@ -4,7 +4,8 @@
 //
 // Same look as /admin-dashboard: scrolling sections with a headline and rows of cards, one inverse card per
 // section where there are two. Design: assignment/admin-monitoring-design.md.
-//   1. Orders and the confirm popup, for the range picked in the headline (today / 7 days / 30 days)
+//   1. Orders, the confirm popup and the stop loss (D-037), for the range picked in the headline (today / 7 days /
+//      30 days)
 //   2. Pages: which player page gets the most time, views and players, in the same range
 //   3. Usage time: one bar per day (30) or per week (12), stacked by page, so a bar's height is all the time in
 //      the app and its parts are the time per page
@@ -54,6 +55,7 @@ import {
   share,
   shortDate,
   stack,
+  stopNote,
   totalMs,
   UNIT_WINDOW,
   UNITS,
@@ -162,13 +164,43 @@ function Header({ d, range, onRange }: { d: AdminMonitoring; range: MonitoringRa
         </>
       }
       body={usageSummary(t, d.since, range)}
-      actions={<Segmented options={RANGES} value={range} onChange={onRange} label="טווח הזמן של הפקודות, חלון האישור והעמודים" />}
+      actions={<Segmented options={RANGES} value={range} onChange={onRange} label="טווח הזמן של הפקודות, חלון האישור, הסטופ לוס והעמודים" />}
     >
       <CardRow>
         <OrdersCard o={t.orders} />
         <ConfirmCard confirms={t.confirms} sent={t.orders.sent} since={d.since} range={range} />
       </CardRow>
+      <CardRow>
+        <StopLossCard s={t.stops} now={d.stopsNow} range={range} />
+      </CardRow>
     </Section>
+  );
+}
+
+// The stop loss (D-037): how many players used it in the range, out of those who bought, how many buys carried
+// one, and how many fired. Straight from the orders table, like the orders card. "Active now" doesn't follow the
+// range: it is the stops waiting right now.
+function StopLossCard({ s, now, range }: { s: MonitoringTotals['stops']; now: AdminMonitoring['stopsNow']; range: MonitoringRange }) {
+  const p = usePalette();
+  const used = share(s.players, s.buyers);
+  const withStop = share(s.withStop, s.buys);
+  return (
+    <Card
+      title="סטופ לוס"
+      sub="כמה שחקנים שמים סטופ לוס על הקניות שלהם"
+      end={used !== null ? <Chip>{`${percent(used)} מהקונים`}</Chip> : null}
+    >
+      <BigNumber value={count(s.players)} unit={`${playersWord(s.players)} השתמשו בסטופ לוס`} />
+      <Tiles
+        items={[
+          { value: count(s.withStop), label: `קניות עם סטופ · ${percent(withStop)} מהקניות` },
+          { value: count(s.fired), label: 'סטופים שהופעלו' },
+          { value: count(now.active), label: `פעילים עכשיו · ${count(now.players)} ${playersWord(now.players)}`, solid: true },
+        ]}
+      />
+      <Meter label="קניות עם סטופ לוס, מתוך כל הקניות" value={percent(withStop)} part={withStop} color={p.accentFill} />
+      <SubText>{stopNote(s, range)}</SubText>
+    </Card>
   );
 }
 

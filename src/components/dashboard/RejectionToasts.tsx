@@ -1,34 +1,67 @@
 // The rejection toast (D-023): the orders the runner refused since the player last looked, all on one card
 // that floats under the top bar, newest first, each with what it was, why, and when. It stays until closed.
+// The stop-loss toast (D-037) is a second card above it, the same way: the sales a stop loss made for the player.
 // Only once it has fully appeared, in a tab the player is looking at, does it report those ids as seen (D-031), so it
 // never marks one the player didn't see.
 
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import type { HoldingView, RejectionView } from '../../../api/src/contract';
+import type { HoldingView, RejectionView, StopSaleView } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
-import { rejectionsHeading, type RejectionNotice } from '../../dashboard/rejections';
-import { useRejectionToasts } from '../../dashboard/useRejectionToasts';
+import { rejectionsHeading, stopSalesHeading, type RejectionNotice } from '../../dashboard/rejections';
+import { useRejectionToasts, useStopSaleToasts } from '../../dashboard/useRejectionToasts';
 import { MAX_WIDTH } from './layout';
 import { useReduce } from './motion';
 import { BAR_HEIGHT } from './TopBar';
 
 const TOAST_WIDTH = 400;
 
-export function RejectionToasts({ rejections, holdings }: { rejections: RejectionView[]; holdings: HoldingView[] }) {
-  const { notices, markShown, close } = useRejectionToasts(rejections, holdings);
-  if (notices.length === 0) return null;
+export function RejectionToasts({ rejections, stopSales, holdings }: {
+  rejections: RejectionView[];
+  stopSales: StopSaleView[];
+  holdings: HoldingView[];
+}) {
+  const { colors } = useTheme();
+  const rejected = useRejectionToasts(rejections, holdings);
+  const stopped = useStopSaleToasts(stopSales);
+  if (rejected.notices.length === 0 && stopped.notices.length === 0) return null;
   return (
     // box-none: taps outside the card reach the page underneath.
     <View style={styles.layer} pointerEvents="box-none">
       <View style={styles.column} pointerEvents="box-none">
-        <Toast notices={notices} onShown={markShown} onClose={close} />
+        {stopped.notices.length > 0 ? (
+          <Toast
+            notices={stopped.notices}
+            heading={stopSalesHeading(stopped.notices.length)}
+            sub="נמכר אוטומטית בשער הפתיחה או הסגירה שהגיע לסטופ."
+            dot={colors.warn}
+            onShown={stopped.markShown}
+            onClose={stopped.close}
+          />
+        ) : null}
+        {rejected.notices.length > 0 ? (
+          <Toast
+            notices={rejected.notices}
+            heading={rejectionsHeading(rejected.notices.length)}
+            sub="הכסף או היחידות שנשמרו חזרו לתיק."
+            dot={colors.neg}
+            onShown={rejected.markShown}
+            onClose={rejected.close}
+          />
+        ) : null}
       </View>
     </View>
   );
 }
 
-function Toast({ notices, onShown, onClose }: { notices: RejectionNotice[]; onShown: (ids: string[]) => void; onClose: () => void }) {
+function Toast({ notices, heading, sub, dot, onShown, onClose }: {
+  notices: RejectionNotice[];
+  heading: string;
+  sub: string;
+  dot: string;
+  onShown: (ids: string[]) => void;
+  onClose: () => void;
+}) {
   const { colors } = useTheme();
   const reduce = useReduce();
   const show = useRef(new Animated.Value(reduce ? 1 : 0)).current;
@@ -64,10 +97,10 @@ function Toast({ notices, onShown, onClose }: { notices: RejectionNotice[]; onSh
       ]}
     >
       <View style={styles.head}>
-        <View style={[styles.dot, { backgroundColor: colors.neg }]} />
+        <View style={[styles.dot, { backgroundColor: dot }]} />
         <View style={styles.headText}>
-          <Text style={[styles.heading, { color: colors.fg }]}>{rejectionsHeading(notices.length)}</Text>
-          <Text style={[styles.sub, { color: colors.faint }]}>הכסף או היחידות שנשמרו חזרו לתיק.</Text>
+          <Text style={[styles.heading, { color: colors.fg }]}>{heading}</Text>
+          <Text style={[styles.sub, { color: colors.faint }]}>{sub}</Text>
         </View>
         <Pressable
           onPress={onClose}
@@ -111,7 +144,7 @@ function usePageVisible(): boolean {
 const styles = StyleSheet.create({
   // Under the floating top bar, in the page's content column, starting on the right like the page.
   layer: { position: 'absolute', top: BAR_HEIGHT + 8, left: 0, right: 0, zIndex: 8 },
-  column: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', paddingHorizontal: 16, alignItems: 'flex-start' },
+  column: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', paddingHorizontal: 16, alignItems: 'flex-start', gap: 10 },
   toast: {
     width: '100%',
     maxWidth: TOAST_WIDTH,
