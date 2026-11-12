@@ -16,6 +16,7 @@ import type {
 } from './contract.js';
 import { clockView, loadNow, worldTime, type Now } from './dashboard.js';
 import { addDays, ISRAEL, zonedParts, zonedToInstant } from './game/time.js';
+import { loadBoard } from './leaderboard.js';
 import { ONLINE_MINUTES } from './presence.js';
 
 export const PLAYERS_LIMIT = 5;   // the admin page shows the top few; the full table is the leaderboard
@@ -300,7 +301,9 @@ type PlayerRow = {
   visits_today: number;
 };
 
-// The first PLAYERS_LIMIT players by this week's rank, then by value. `q` filters by name or email.
+// The first PLAYERS_LIMIT players by rank on the board the players see, then by value. `q` filters by name or
+// email. The board is loadBoard's (D-032): the latest scored day up to today, so on Monday before the first open
+// it is last week's final board, not blank.
 // The rank and what makes it (score, return, drawdown and the two percentile ranks) come from one standings
 // row, so they always agree. The rank follows the weekly score, not the value: the value is since the game
 // began, so #1 can hold less than #2.
@@ -309,6 +312,7 @@ type PlayerRow = {
 // Fine for an admin page; at a million players this would read the engine's stored values instead.
 export async function getAdminPlayers(db: Pool, q: string | null): Promise<AdminPlayers> {
   const now = await loadNow(db);
+  const shown = now ? await loadBoard(db, now) : null;
   // ILIKE treats % and _ as wildcards; escape them (and the escape character) so they match themselves.
   const pattern = q ? `%${q.replace(/[\\%_]/g, '\\$&')}%` : null;
   const { rows } = await db.query<PlayerRow>(
@@ -317,11 +321,11 @@ export async function getAdminPlayers(db: Pool, q: string | null): Promise<Admin
               max_drawdown_pct::float8 AS max_drawdown_pct, return_rank::float8 AS return_rank,
               stability_rank::float8 AS stability_rank
        FROM standings
-       WHERE day = (SELECT max(day) FROM standings WHERE day BETWEEN $1::date AND $2::date)
+       WHERE day = $1::date
      ), pend AS (
        SELECT uid, count(*)::int AS n FROM orders WHERE status = 'pending' GROUP BY uid
      ), vis AS (
-       SELECT uid, count(*)::int AS n FROM app_opens WHERE at >= $5 GROUP BY uid
+       SELECT uid, count(*)::int AS n FROM app_opens WHERE at >= $4 GROUP BY uid
      )
      SELECT u.uid, u.display_name, u.email, 'admin' = ANY(u.roles) AS is_admin, u.created_at,
             p.equity::float8 AS total_value,
@@ -333,10 +337,10 @@ export async function getAdminPlayers(db: Pool, q: string | null): Promise<Admin
      LEFT JOIN board ON board.uid = u.uid
      LEFT JOIN pend ON pend.uid = u.uid
      LEFT JOIN vis ON vis.uid = u.uid
-     WHERE $3::text IS NULL OR u.display_name ILIKE $3 OR u.email ILIKE $3
+     WHERE $2::text IS NULL OR u.display_name ILIKE $2 OR u.email ILIKE $2
      ORDER BY board.rank NULLS LAST, p.equity DESC, u.uid
-     LIMIT $4`,
-    [now?.monday ?? null, now?.today ?? null, pattern, PLAYERS_LIMIT, realTodayStart()],
+     LIMIT $3`,
+    [shown?.day ?? null, pattern, PLAYERS_LIMIT, realTodayStart()],
   );
 
   return {

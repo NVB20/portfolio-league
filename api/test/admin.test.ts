@@ -395,6 +395,17 @@ describe('admin, seeded world', () => {
     });
   });
 
+  it('shows last week board on Monday before the first open, as the leaderboard does (D-032)', async () => {
+    // Monday 2026-11-16, 08:00 Israel time: nothing is scored this week yet, so the latest board is last week's.
+    await db.query(`UPDATE world_clock SET now_at = '2026-11-16T06:00:00Z', real_at = now()`);
+    const { players } = await (await call('GET', '/admin/players', 'root')).json();
+    expect(players.map((p: { uid: string }) => p.uid)).toEqual(['alice', 'bob', 'root']);
+    expect(players[0]).toMatchObject({ uid: 'alice', rank: 1, score: 90 });   // from 11-10, last week's latest day
+    expect(players[1]).toMatchObject({ uid: 'bob', rank: 2, score: 40 });
+    const board = await (await call('GET', '/me/leaderboard', 'alice')).json();
+    expect(board.me).toMatchObject({ rank: 1 });   // the player sees the same place
+  });
+
   it('searches by name or email, case-insensitive', async () => {
     const byName = await (await call('GET', '/admin/players?q=ali', 'root')).json();
     expect(byName.players.map((p: { uid: string }) => p.uid)).toEqual(['alice']);
