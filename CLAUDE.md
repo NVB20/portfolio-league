@@ -42,7 +42,7 @@ See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript, 
 | `src/firebase.ts` | Firebase app and Auth setup (no database) |
 | `src/api.ts` | `apiFetch`: calls the API with the user's Firebase token |
 | `src/theme.ts` | Color tokens |
-| `api/` | The API: its own `package.json`. `src/` (routes, token check, SQL; `game/` pure logic; `world/` the 40 securities), `migrations/` (SQL), `scripts/` (`seed-world.ts`; `seed-sample-board.ts`, a dev-only made-up leaderboard), `test/` (vitest). Every endpoint: [docs/API.md](docs/API.md) |
+| `api/` | The API: its own `package.json`. `src/` (routes, token check, SQL; `game/` pure logic; `world/` the 40 securities), `migrations/` (SQL), `scripts/` (`seed-world.ts`; `seed-sample-board.ts`, a dev-only made-up leaderboard; `seed-sample-game.ts`, a dev-only month of 40 players trading through the real engine, its plan in `src/sampleGame.ts`), `test/` (vitest). Every endpoint: [docs/API.md](docs/API.md) |
 | `docker-compose.yml`, `db/`, `scraper/` | Local Postgres: real prices from Yahoo, plus the app's local databases (D-002) |
 | `docs/` | Tech stack, decisions, database schema, design |
 | `assignment/` | The brief, progress, plans |
@@ -63,6 +63,7 @@ npm run typecheck             # type check the API
 npm run migrate:dev           # apply new migrations to the local database
 npm run seed:world            # copy the 40 securities, prices, USD/ILS and the clock start into the game DB
 npm run seed:sample-board     # dev only: fill the leaderboard with sample players (--clear removes them, D-033)
+npm run seed:sample-game      # dev only: restart the world, 40 players trade its first month + visits and usage (D-038)
 npm run migrate:create <name> # new SQL migration file
 ```
 

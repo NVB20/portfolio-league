@@ -171,6 +171,7 @@ npm install
 npm run migrate:dev                 # create the tables
 npm run seed:world                  # copy the 40 securities, prices, USD/ILS and the clock start
 npm run seed:sample-board           # dev only: a made-up leaderboard before any real trades (D-033); -- --clear removes it
+npm run seed:sample-game            # dev only: restarts the world; 40 players trade its first month (D-038); -- --clear removes them
 npm run dev                         # the API on :3000 (reads api/.env)
 npm test                            # the API tests
 

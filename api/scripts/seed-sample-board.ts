@@ -44,6 +44,7 @@ import {
   sampleEmail,
   sampleWeekBoards,
 } from '../src/sampleBoard.js';
+import { clearSamples } from './sample-clear.js';
 
 type Db = pg.PoolClient;
 
@@ -102,6 +103,21 @@ async function seed(pool: pg.Pool, force: boolean): Promise<number> {
     if (tooBig) {
       await client.query('ROLLBACK');
       console.error(`Refusing to run: ${tooBig}`);
+      return 1;
+    }
+
+    // The samples play a real game (npm run seed:sample-game, D-038): the runner's scoring writes their board, and
+    // every day it wrote has sample rows, so the check below would take those days for this script's own.
+    const playing = await client.query<{ yes: boolean }>(
+      'SELECT EXISTS (SELECT 1 FROM orders WHERE uid = ANY($1::text[])) AS yes',
+      [SAMPLES],
+    );
+    if (playing.rows[0].yes) {
+      await client.query('ROLLBACK');
+      console.error(
+        'Refusing to run: the sample players have orders (npm run seed:sample-game, D-038), so their board is the real ' +
+          'scoring. Remove the sample game first with -- --clear.',
+      );
       return 1;
     }
 
@@ -234,36 +250,11 @@ function leader(board: Ranked[], nameOf: (uid: string) => string): string {
 
 // ---------- clear ----------
 
-// Deletes every standings day and weekly_scores week a sample player has a row in (with the real players' rows on
-// it: they are sample numbers too), then the sample users. One transaction.
+// Every standings day and weekly_scores week a sample player has a row in, then the sample users (sample-clear.ts,
+// shared with the sample game's --clear).
 async function clear(pool: pg.Pool): Promise<number> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const st = await client.query<{ rows: number; days: number }>(
-      `WITH x AS (DELETE FROM standings WHERE day IN (SELECT day FROM standings WHERE uid = ANY($1::text[])) RETURNING day)
-       SELECT count(*)::int AS rows, count(DISTINCT day)::int AS days FROM x`,
-      [SAMPLES],
-    );
-    const ws = await client.query<{ rows: number; weeks: number }>(
-      `WITH x AS (DELETE FROM weekly_scores
-                  WHERE week_start IN (SELECT week_start FROM weekly_scores WHERE uid = ANY($1::text[]))
-                  RETURNING week_start)
-       SELECT count(*)::int AS rows, count(DISTINCT week_start)::int AS weeks FROM x`,
-      [SAMPLES],
-    );
-    const users = await client.query('DELETE FROM users WHERE uid = ANY($1::text[])', [SAMPLES]);
-    await client.query('COMMIT');
-    console.log(`Removed ${st.rows[0].rows} standings rows on ${st.rows[0].days} days`);
-    console.log(`Removed ${ws.rows[0].rows} weekly_scores rows in ${ws.rows[0].weeks} weeks`);
-    console.log(`Removed ${users.rowCount ?? 0} sample users`);
-    return 0;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  await clearSamples(pool);
+  return 0;
 }
 
 main().then(

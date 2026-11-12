@@ -84,7 +84,7 @@ One row per player. Firebase Auth owns the login; this row owns the app data.
 | `last_seen_at` | TIMESTAMPTZ | yes | | Real time of the app's last check-in (D-026). Online = within 2 minutes. NULL = never checked in. Written only by `POST /me/seen` |
 
 ### `app_opens`
-One row per visit (D-026). A check-in after more than 30 minutes away, or the very first one, starts a visit. The server decides, never the app. Real time.
+One row per visit (D-026). A check-in after more than 30 minutes away, or the very first one, starts a visit. The server decides, never the app. Real time. The dev-only sample game (`npm run seed:sample-game`, D-038) writes its players' visits directly.
 
 | Field | Type | Null | Default | Notes |
 |-------|------|------|---------|-------|
@@ -93,7 +93,7 @@ One row per visit (D-026). A check-in after more than 30 minutes away, or the ve
 | `at` | TIMESTAMPTZ | no | `now()` | When the visit started |
 
 ### `usage_pages_daily`
-Time and views per player per page per real Israel day (D-036), for the admin monitoring page. Written only by `POST /me/seen`: the check-in's optional usage report is capped by the server and added to the day's row (`INSERT … ON CONFLICT … DO UPDATE SET views = views + …, ms = ms + …`). Daily totals, not an event log: it grows with players × pages per day, never with clicks. A row exists only when the player had a view or some time on that page that day.
+Time and views per player per page per real Israel day (D-036), for the admin monitoring page. Written only by `POST /me/seen`: the check-in's optional usage report is capped by the server and added to the day's row (`INSERT … ON CONFLICT … DO UPDATE SET views = views + …, ms = ms + …`). Daily totals, not an event log: it grows with players × pages per day, never with clicks. The dev-only sample game (D-038) writes its players' days directly. A row exists only when the player had a view or some time on that page that day.
 
 | Field | Type | Null | Default | Notes |
 |-------|------|------|---------|-------|
@@ -104,7 +104,7 @@ Time and views per player per page per real Israel day (D-036), for the admin mo
 | `ms` | BIGINT | no | `0` | ≥ 0. Time on the page while the app was visible and someone used it in the last 5 minutes. At most 120,000 per report, all pages together |
 
 ### `usage_confirms_daily`
-The trade screen's confirm popup per player per real Israel day (D-036): how often it opened, and how often it closed without sending (backed out). Written only by `POST /me/seen`, like `usage_pages_daily`. Orders actually sent are counted from `orders`, never from here.
+The trade screen's confirm popup per player per real Israel day (D-036): how often it opened, and how often it closed without sending (backed out). Written only by `POST /me/seen`, like `usage_pages_daily` (and by the dev-only sample game, D-038). Orders actually sent are counted from `orders`, never from here.
 
 | Field | Type | Null | Default | Notes |
 |-------|------|------|---------|-------|
