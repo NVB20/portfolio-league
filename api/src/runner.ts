@@ -276,8 +276,9 @@ export async function runOrderBatch(
     await writeJournals(client, event, out);
     const positionIds = await writePositions(client, out, held);
     await writeOrders(client, event, out.results, positionIds);
+    // A position that closed here (sold by hand, or by one of its stops) takes its other stops with it: the
+    // database expires them as the position closes (trigger positions_close_stops, D-037).
     await writeStops(client, event, out.results, stopPrices(due.rows), positionIds);
-    await expireStops(client, event, out.closed);
     await writeTradedPortfolios(client, out, weeks);
 
     // The ledger check (D-019, D-029) for this batch's players, in its transaction: their rows are locked, so
@@ -315,10 +316,21 @@ type StopSqlRow = {
 // (stopFires, game/stops.ts): checked only at the open and the close. Only stops activated by an EARLIER event: a
 // stop made at this event (its buy filled here) is first checked at the next one, also when this runs again after a
 // crash. A batch of `batch` stops per transaction; a fired or expired stop is no longer active, so a re-run never
-// fires it twice, and a stop that waits gets the same answer again. Paged by id, so the stops that wait don't keep
-// coming back. Returns how many stops fired.
+// fires it twice. Paged by id, so the stops that wait don't keep coming back. Returns how many stops fired.
+//
+// The stops are planned once per event, before its orders: once an order batch of the event has committed, a re-run
+// (after a crash, a restart, a failed batch) skips this step. Planning again then would see positions those batches
+// already changed (a buy merged in, a hand sell gone) and could fire a stop that rightly waited the first time, so the
+// same event would give a different result after a crash (D-021). Re-running between two pages of this step, before
+// any batch, plans the same: these pages only lock more units, so a stop that waited still waits.
 export async function triggerStops(client: PoolClient, event: PricedEvent, batch: number): Promise<number> {
   if (event.prices.size === 0) return 0;   // no prices (a US day with no rate): nothing to compare
+  // An order batch commits its counts with its orders (runOrderBatch), so counts above 0 = the stops were planned.
+  const ran = await client.query<{ n: number }>(
+    'SELECT (orders_executed + orders_rejected)::int AS n FROM market_events WHERE id = $1',
+    [event.id],
+  );
+  if ((ran.rows[0]?.n ?? 0) > 0) return 0;
   const symbols = [...event.prices.keys()];
   const prices = symbols.map((s) => format(event.prices.get(s)!, SCALE.PRICE));
   let after = '0';
@@ -590,7 +602,8 @@ async function writeOrders(
 }
 
 // D-037: a filled buy that carried a stop makes the stop, for the units it got, active from the next event on.
-// A rejected buy makes none. In the batch's transaction, so a re-run never finds the buy pending again.
+// A rejected buy makes none. In the batch's transaction, so a re-run never finds the buy pending again. A stop on
+// a position that already closed in this batch is stored expired (trigger stop_orders_closed_position).
 async function writeStops(
   client: PoolClient,
   event: EventRow,
@@ -617,18 +630,6 @@ async function writeStops(
       made.map((r) => format(r.fillPrice, SCALE.PRICE)),
       event.at,
     ],
-  );
-}
-
-// D-037: a position that closed in this batch (sold by hand, or by another of its stops) leaves its other stops
-// nothing to sell, so they expire now instead of staying active on a closed position.
-async function expireStops(client: PoolClient, event: EventRow, closed: readonly PositionState[]): Promise<void> {
-  const ids = closed.flatMap((p) => (p.id === null ? [] : [p.id]));
-  if (ids.length === 0) return;
-  await client.query(
-    `UPDATE stop_orders SET status = 'expired', ended_at = $2, event_id = $3
-     WHERE position_id = ANY($1::bigint[]) AND status = 'active'`,
-    [ids, event.at, event.id],
   );
 }
 

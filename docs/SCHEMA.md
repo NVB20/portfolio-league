@@ -295,6 +295,8 @@ Every order ever sent, for all players (D-004).
 ### `stop_orders`
 A stop loss a buy set (D-037): made when the buy fills, for the units it got. The runner checks every active stop at each open and close of its market (never at the event its buy filled at) and turns one the event's price reached (at or below the stop) into a sell order at that event.
 
+**A closed position has no active stop**, kept by two triggers: `positions_close_stops` (AFTER UPDATE OF `status` on `positions`, when a position goes from `open` to `closed`) expires every active stop on it, with `ended_at` = the position's `closed_at` and `event_id` = the open or close of its market at that instant (`stop_event_at`; NULL when none ran then, such as a fix by hand); `stop_orders_closed_position` (BEFORE INSERT, or UPDATE of `status` / `position_id`, of a row that would be `active`) locks the position row `FOR SHARE` and stores a stop on an already closed position as `expired` instead. The lock conflicts with the close's own row lock, so the two triggers can't miss each other when two transactions write at once. The migration also expired any active stop already sitting on a closed position.
+
 | Field | Type | Null | Default | Notes |
 |-------|------|------|---------|-------|
 | `id` | BIGINT | no | identity | **PK** |
