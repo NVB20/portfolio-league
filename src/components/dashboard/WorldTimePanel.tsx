@@ -2,14 +2,12 @@
 // Whether the clock runs or is stopped, the live time, what each market is doing now, and where the clock ends.
 // While running, the time moves on by itself between loads (src/dashboard/liveClock.ts).
 
-import { useEffect, useMemo, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import type { LiveClockView, MarketSession } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
 import { dayLabel, hhmm } from '../../dashboard/format';
 import { clockStatus, endLabel, isOpenAt, liveTime, marketLine, type ClockStatus, type LiveTime } from '../../dashboard/liveClock';
-
-const TICK_MS = 10_000;   // minute precision is all the panel shows
+import { useElapsed } from '../../dashboard/useElapsed';
 
 const STATUS: Record<ClockStatus, { label: string; note: string }> = {
   running: { label: 'השעון רץ', note: 'הזמן בעולם זז בקצב אמיתי, לכל השחקנים יחד.' },
@@ -69,18 +67,6 @@ function MarketRow({ city, market, t, date }: { city: string; market: MarketSess
       <Text style={[styles.line, { color: open ? colors.accent : colors.muted }]}>{marketLine(market, t, date)}</Text>
     </View>
   );
-}
-
-// Real ms since this clock was loaded. Ticks only while the admin has the clock running.
-function useElapsed(clock: LiveClockView | null): number {
-  const loadedAt = useMemo(() => Date.now(), [clock]);
-  const [now, setNow] = useState(loadedAt);
-  useEffect(() => {
-    if (!clock?.running) return;
-    const id = setInterval(() => setNow(Date.now()), TICK_MS);
-    return () => clearInterval(id);
-  }, [clock]);
-  return Math.max(0, now - loadedAt);
 }
 
 const styles = StyleSheet.create({
