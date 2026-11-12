@@ -7,8 +7,8 @@
 // Rows are a plain .map, not a FlatList: a vertical list inside the page's ScrollView warns and gains nothing at
 // 20 to 100 rows.
 
-import { Fragment, useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Fragment, useState, type ReactNode } from 'react';
+import { Platform, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { router } from 'expo-router';
 import type { TradeJournalRow, TradeJournalView } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
@@ -109,18 +109,19 @@ function HeaderRow({ layout }: { layout: TableLayout }) {
 }
 
 // onEditStop: the row's stop can be moved and its editor is closed (null otherwise).
+// The row's press target is a layer UNDER the cells, not a box around them: the pencil is a button of its own, and a
+// button can't hold another (on the web that is invalid HTML, and React says so). Presses on the cells go through
+// to the layer, except on the pencil. Screen readers read the layer's label, which says everything the row shows,
+// then the pencil.
 function Row({ row, view, layout, onEditStop }: { row: TradeJournalRow; view: RowView; layout: TableLayout; onEditStop: (() => void) | null }) {
   const { colors } = useTheme();
   const [hovered, setHovered] = useState(false);
+  const [pressed, setPressed] = useState(false);
   return (
-    <Pressable
-      onPress={() => router.navigate(`/trade?symbol=${encodeURIComponent(row.symbol)}`)}
-      accessibilityRole="button"
-      accessibilityLabel={view.a11y}
-      accessibilityHint="פותח את המניה במסך המסחר"
+    <View
       onPointerEnter={Platform.OS === 'web' ? () => setHovered(true) : undefined}
       onPointerLeave={Platform.OS === 'web' ? () => setHovered(false) : undefined}
-      style={({ pressed }) => [
+      style={[
         styles.row,
         styles.body,
         rowPadding(layout),
@@ -128,12 +129,39 @@ function Row({ row, view, layout, onEditStop }: { row: TradeJournalRow; view: Ro
         (hovered || pressed) && { backgroundColor: colors.surface2 },
       ]}
     >
-      {layout.columns.map((c) => (
-        <View key={c.key} style={cellBox(c)}>
-          <Cell column={c} row={row} view={view} subLine={layout.subLine} onEditStop={onEditStop} />
-        </View>
-      ))}
-    </Pressable>
+      <Pressable
+        onPress={() => router.navigate(`/trade?symbol=${encodeURIComponent(row.symbol)}`)}
+        onPressIn={() => setPressed(true)}
+        onPressOut={() => setPressed(false)}
+        accessibilityRole="button"
+        accessibilityLabel={view.a11y}
+        accessibilityHint="פותח את המניה במסך המסחר"
+        style={StyleSheet.absoluteFill}
+      />
+      {layout.columns.map((c) =>
+        PENCIL_CELLS.has(c.key) ? (
+          <View key={c.key} style={[cellBox(c), styles.around]}>
+            <Cell column={c} row={row} view={view} subLine={layout.subLine} onEditStop={onEditStop} />
+          </View>
+        ) : (
+          <Shown key={c.key} style={cellBox(c)}>
+            <Cell column={c} row={row} view={view} subLine={layout.subLine} onEditStop={onEditStop} />
+          </Shown>
+        ),
+      )}
+    </View>
+  );
+}
+
+// The cells that may hold the pencil (StopPencil): they pass presses through but not the pencil's.
+const PENCIL_CELLS: ReadonlySet<Column['key']> = new Set(['stock', 'status']);
+
+// What a row shows: presses go through it to the row's press target, and screen readers skip it.
+function Shown({ style, children }: { style?: StyleProp<ViewStyle>; children: ReactNode }) {
+  return (
+    <View aria-hidden style={[style, styles.through]}>
+      {children}
+    </View>
   );
 }
 
@@ -142,7 +170,7 @@ function Row({ row, view, layout, onEditStop }: { row: TradeJournalRow; view: Ro
 function StopPencil({ row, onEditStop }: { row: TradeJournalRow; onEditStop: (() => void) | null }) {
   if (!onEditStop || !row.stop) return null;
   return (
-    <View style={styles.pencil}>
+    <View style={[styles.pencil, styles.around]}>
       <StopEditButton onPress={onEditStop} label={`הזזת סטופ ${price(row.stop.price, row.currency)} של ${row.symbol}`} />
     </View>
   );
@@ -162,30 +190,32 @@ function Cell({ column, row, view, subLine, onEditStop }: {
       return <Text style={[styles.small, { color: colors.muted }]}>{view.placed}</Text>;
     case 'stock':
       return (
-        <View style={styles.stock}>
-          <View style={styles.stockHead}>
-            <Text style={[styles.symbol, { color: colors.fg }]}>{row.symbol}</Text>
-            <Text style={[styles.name, { color: colors.faint }]} numberOfLines={1}>
-              {row.nameHe}
-            </Text>
-          </View>
-          {subLine ? (
-            // Each figure is its own text run, so a ₪ amount never flips inside the Hebrew words.
-            <>
-              <View style={styles.subLine}>
-                <Text style={[styles.sub, styles.strong, { color: sideColor }]}>{view.side}</Text>
-                <Text style={[styles.sub, styles.num, { color: colors.muted }]}>{view.size}</Text>
-                {view.price ? (
-                  <>
-                    <Text style={[styles.sub, { color: colors.faint }]}>· בשער</Text>
-                    <Text style={[styles.sub, styles.num, { color: colors.faint }]}>{view.price}</Text>
-                  </>
-                ) : null}
-              </View>
-              <Text style={[styles.sub, { color: row.status === 'rejected' ? colors.neg : colors.faint }]}>{view.detail}</Text>
-              <StopPencil row={row} onEditStop={onEditStop} />
-            </>
-          ) : null}
+        <View style={[styles.stock, styles.around]}>
+          <Shown style={styles.stock}>
+            <View style={styles.stockHead}>
+              <Text style={[styles.symbol, { color: colors.fg }]}>{row.symbol}</Text>
+              <Text style={[styles.name, { color: colors.faint }]} numberOfLines={1}>
+                {row.nameHe}
+              </Text>
+            </View>
+            {subLine ? (
+              // Each figure is its own text run, so a ₪ amount never flips inside the Hebrew words.
+              <>
+                <View style={styles.subLine}>
+                  <Text style={[styles.sub, styles.strong, { color: sideColor }]}>{view.side}</Text>
+                  <Text style={[styles.sub, styles.num, { color: colors.muted }]}>{view.size}</Text>
+                  {view.price ? (
+                    <>
+                      <Text style={[styles.sub, { color: colors.faint }]}>· בשער</Text>
+                      <Text style={[styles.sub, styles.num, { color: colors.faint }]}>{view.price}</Text>
+                    </>
+                  ) : null}
+                </View>
+                <Text style={[styles.sub, { color: row.status === 'rejected' ? colors.neg : colors.faint }]}>{view.detail}</Text>
+              </>
+            ) : null}
+          </Shown>
+          {subLine ? <StopPencil row={row} onEditStop={onEditStop} /> : null}
         </View>
       );
     case 'side':
@@ -194,10 +224,12 @@ function Cell({ column, row, view, subLine, onEditStop }: {
       return <Text style={[styles.cellText, styles.num, { color: colors.fg }]}>{view.size}</Text>;
     case 'status':
       return (
-        <View style={styles.start}>
-          <Chip variant={view.tone}>{view.status}</Chip>
-          {/* On tablets the detail is already under the stock. */}
-          {subLine ? null : <Text style={[styles.detail, { color: row.status === 'rejected' ? colors.neg : colors.faint }]}>{view.detail}</Text>}
+        <View style={[styles.start, styles.around]}>
+          <Shown style={styles.start}>
+            <Chip variant={view.tone}>{view.status}</Chip>
+            {/* On tablets the detail is already under the stock. */}
+            {subLine ? null : <Text style={[styles.detail, { color: row.status === 'rejected' ? colors.neg : colors.faint }]}>{view.detail}</Text>}
+          </Shown>
           {subLine ? null : <StopPencil row={row} onEditStop={onEditStop} />}
         </View>
       );
@@ -262,6 +294,10 @@ const styles = StyleSheet.create({
   detail: { fontSize: 11.5, marginTop: 4 },
   start: { alignItems: 'flex-start' },
   pencil: { alignItems: 'flex-start', marginTop: 4 },
+  // Presses go through to the row's press target under the cells (Row): `through` for a box and all inside it,
+  // `around` for a box only, so the pencil inside it still takes its own.
+  through: { pointerEvents: 'none' },
+  around: { pointerEvents: 'box-none' },
   editLine: { paddingBottom: 12, borderBottomWidth: 1 },
   foot: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: 10, paddingVertical: 14 },
   footLabel: { fontSize: 12.5 },
