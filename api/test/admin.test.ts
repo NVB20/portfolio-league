@@ -349,7 +349,7 @@ describe('admin, seeded world', () => {
     expect(world).toEqual({ securities: 2, pricesUntil: { tase: '2026-11-11', us: '2026-11-12' }, usdIlsUntil: '2026-11-11' });
   });
 
-  it('lists players by this week rank with their value and pending orders', async () => {
+  it('lists players by this week rank with what makes their score, their value and pending orders', async () => {
     const res = await call('GET', '/admin/players', 'root');
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -362,10 +362,37 @@ describe('admin, seeded world', () => {
       isAdmin: false,
       totalValue: 1_000_700,
       rank: 1,
+      score: 90,
+      returnPct: 2,
+      maxDrawdownPct: 0,
+      returnRank: 100,
+      stabilityRank: 100,
       pendingOrders: 2,
     });
-    expect(body.players[1]).toMatchObject({ uid: 'bob', name: null, rank: 2, pendingOrders: 1, totalValue: 1_000_000 });
-    expect(body.players[2]).toMatchObject({ uid: 'root', isAdmin: true, rank: null, pendingOrders: 0 });
+    // All of it comes from the same day's row (11-10), not the earlier 11-09 one.
+    expect(body.players[1]).toMatchObject({
+      uid: 'bob',
+      name: null,
+      rank: 2,
+      score: 40,
+      returnPct: 0,
+      maxDrawdownPct: 0,
+      returnRank: 50,
+      stabilityRank: 50,
+      pendingOrders: 1,
+      totalValue: 1_000_000,
+    });
+    expect(body.players[2]).toMatchObject({
+      uid: 'root',
+      isAdmin: true,
+      rank: null,
+      score: null,
+      returnPct: null,
+      maxDrawdownPct: null,
+      returnRank: null,
+      stabilityRank: null,
+      pendingOrders: 0,
+    });
   });
 
   it('searches by name or email, case-insensitive', async () => {

@@ -290,12 +290,20 @@ type PlayerRow = {
   created_at: Date;
   total_value: number;
   rank: number | null;
+  score: number | null;
+  return_pct: number | null;
+  max_drawdown_pct: number | null;
+  return_rank: number | null;
+  stability_rank: number | null;
   pending: number;
   last_seen_at: Date | null;
   visits_today: number;
 };
 
 // The first PLAYERS_LIMIT players by this week's rank, then by value. `q` filters by name or email.
+// The rank and what makes it (score, return, drawdown and the two percentile ranks) come from one standings
+// row, so they always agree. The rank follows the weekly score, not the value: the value is since the game
+// began, so #1 can hold less than #2.
 // The value is the stored equity the runner keeps current after every event (D-019, D-024): nothing is
 // added up here (D-031), so it always matches the player's dashboard.
 // Fine for an admin page; at a million players this would read the engine's stored values instead.
@@ -305,7 +313,10 @@ export async function getAdminPlayers(db: Pool, q: string | null): Promise<Admin
   const pattern = q ? `%${q.replace(/[\\%_]/g, '\\$&')}%` : null;
   const { rows } = await db.query<PlayerRow>(
     `WITH board AS (
-       SELECT uid, rank FROM standings
+       SELECT uid, rank, score::float8 AS score, return_pct::float8 AS return_pct,
+              max_drawdown_pct::float8 AS max_drawdown_pct, return_rank::float8 AS return_rank,
+              stability_rank::float8 AS stability_rank
+       FROM standings
        WHERE day = (SELECT max(day) FROM standings WHERE day BETWEEN $1::date AND $2::date)
      ), pend AS (
        SELECT uid, count(*)::int AS n FROM orders WHERE status = 'pending' GROUP BY uid
@@ -314,7 +325,8 @@ export async function getAdminPlayers(db: Pool, q: string | null): Promise<Admin
      )
      SELECT u.uid, u.display_name, u.email, 'admin' = ANY(u.roles) AS is_admin, u.created_at,
             p.equity::float8 AS total_value,
-            board.rank, COALESCE(pend.n, 0) AS pending,
+            board.rank, board.score, board.return_pct, board.max_drawdown_pct, board.return_rank, board.stability_rank,
+            COALESCE(pend.n, 0) AS pending,
             u.last_seen_at, COALESCE(vis.n, 0) AS visits_today
      FROM users u
      JOIN portfolios p ON p.uid = u.uid
@@ -338,6 +350,11 @@ export async function getAdminPlayers(db: Pool, q: string | null): Promise<Admin
         joinedAt: r.created_at.toISOString(),
         totalValue: r.total_value,
         rank: r.rank,
+        score: r.score,
+        returnPct: r.return_pct,
+        maxDrawdownPct: r.max_drawdown_pct,
+        returnRank: r.return_rank,
+        stabilityRank: r.stability_rank,
         pendingOrders: r.pending,
         lastSeenAt: r.last_seen_at?.toISOString() ?? null,
         visitsToday: r.visits_today,

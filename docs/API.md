@@ -270,7 +270,9 @@ The admin page's numbers, in one request. Returns `AdminOverview`:
 Active players, visits and sign-ups per real Israel day, and day-1 / day-7 return (D-027). `days` is 7 to 90, default 30 (400 otherwise). Returns `{ days: [{ date, activePlayers, visits, signups }], retention: { d1, d7 } }`, each rate `{ cohort, returned, pct }` (`pct` null = nobody old enough to measure).
 
 ### `GET /admin/players?q=`
-Up to 5 players, by rank on the latest scored day of this week, then by portfolio value. Returns `{ players, limit }`; each player has `uid`, `name`, `email`, `isAdmin`, `joinedAt`, `totalValue`, `rank` (null = not scored), `pendingOrders`, `lastSeenAt` (null = never checked in), `visitsToday`.
+Up to 5 players, by rank on the latest scored day of this week, then by portfolio value. Returns `{ players, limit }`; each player has `uid`, `name`, `email`, `isAdmin`, `joinedAt`, `totalValue`, `rank`, `score`, `returnPct`, `maxDrawdownPct`, `returnRank`, `stabilityRank` (the last six null = not scored), `pendingOrders`, `lastSeenAt` (null = never checked in), `visitsToday`.
+
+- `rank` and what makes it come from the same `standings` row, so they always agree: `score` (0 to 100, 0.85 × `returnRank` + 0.15 × `stabilityRank`), `returnPct` (the week's return so far, `2.35` = +2.35%), `maxDrawdownPct` (the week's biggest fall from its peak, positive) and the two percentile ranks (0 to 100). The rank follows the score, not `totalValue`: the value is since the game began, so #1 can hold less than #2.
 
 - `q` (optional) filters by display name or email, case-insensitive. `%` and `_` match themselves.
 - `q` longer than 100 characters: 400.

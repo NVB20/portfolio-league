@@ -530,8 +530,14 @@ export type AdminPlayer = {
   email: string;
   isAdmin: boolean;
   joinedAt: string;                // real time, ISO
-  totalValue: number;              // cash + holdings at the latest known closes, in ₪
+  totalValue: number;              // cash + holdings at the latest known closes, in ₪ (since the game began)
   rank: number | null;             // on the latest scored day of this week; null = not scored
+  // That day's standings row, so an admin can see why the place is what it is (null = not scored):
+  score: number | null;            // the weekly score, 0..100: what the rank sorts by. 0.85 × returnRank + 0.15 × stabilityRank
+  returnPct: number | null;        // the week's return so far, 2.35 = +2.35%
+  maxDrawdownPct: number | null;   // the week's biggest fall from its peak, positive, 1.8 = −1.8%
+  returnRank: number | null;       // percentile of returnPct among the ranked players, 0..100
+  stabilityRank: number | null;    // percentile of maxDrawdownPct, 0..100: 100 = the smallest fall
   pendingOrders: number;
   lastSeenAt: string | null;       // real time, ISO; null = never checked in
   visitsToday: number;

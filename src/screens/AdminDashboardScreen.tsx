@@ -7,7 +7,8 @@
 //      30-day trend with next-day / 7-day return
 //   2. World clock: advance / start / stop (POST /admin/clock/*), both markets, the
 //      engine's last run, the order queue. "קדם שעון" on the player dashboard opens the page here (?to=clock)
-//   3. Players: the top 5, searchable; more than that is the leaderboard's job
+//   3. Players: the top 5, searchable; more than that is the leaderboard's job. Full width (the leaderboard's
+//      TableSection), so every number behind a place fits: score, return, drawdown and the two ranks
 //   4. System: how far the data goes, the admin action log
 // Numbers we don't have yet say what will fill them, never a made-up value.
 
@@ -34,7 +35,8 @@ import {
   RUN_STATUS,
   runLabel,
 } from '../admin/copy';
-import { dayLabel, ils } from '../dashboard/format';
+import { dayLabel, ils, pct, score } from '../dashboard/format';
+import { rankText } from '../leaderboard/board';
 import { AdminFallback, AdminFooter, BigNumber, Line, Lines, SubText, Tiles } from '../components/admin/AdminBits';
 import { Button } from '../components/dashboard/Button';
 import { Card, Empty, usePalette } from '../components/dashboard/Card';
@@ -45,6 +47,7 @@ import { MotionProvider, OffsetProvider, useMeasure, useScrollMotion } from '../
 import { Accent, Faint, Section, Strong } from '../components/dashboard/Section';
 import { BAR_HEIGHT, TopBar } from '../components/dashboard/TopBar';
 import { WorldClockCard } from '../components/dashboard/WorldClockCard';
+import { TableSection } from '../components/leaderboard/TableSection';
 
 // Advancing can't be undone (the clock never goes back), so the first press only arms the button.
 const CONFIRM_MS = 4_000;
@@ -366,8 +369,9 @@ function PlayersSection({ total }: { total: number }) {
   const list = useAdminPlayers(query);
   // More players than the API sends (PLAYERS_LIMIT): the rest are in the players' full leaderboard.
   const more = list.data !== null && total > list.data.limit;
+  // The headline above one full-width card, like the leaderboard's table: the 5/7 split leaves the table ~606px.
   return (
-    <Section
+    <TableSection
       eyebrow="שחקנים"
       title={
         <>
@@ -375,13 +379,11 @@ function PlayersSection({ total }: { total: number }) {
           {` ${playersWord(total)}\nלפי מקום השבוע.`}
         </>
       }
-      body="צפייה בלבד. חיפוש לפי שם תצוגה או אימייל."
-      actions={more ? <Button label="לטבלה המלאה" onPress={() => router.navigate('/leaderboard')} /> : null}
+      body="צפייה בלבד. הציון: 85% מדירוג התשואה ו־15% מדירוג היציבות. שווי התיק נספר מתחילת המשחק, ולכן הוא לא קובע את המקום."
+      toolbar={more ? <Button label="לטבלה המלאה" onPress={() => router.navigate('/leaderboard')} /> : null}
     >
-      <CardRow>
-        <PlayersCard query={query} onQuery={setQuery} list={list} />
-      </CardRow>
-    </Section>
+      <PlayersCard query={query} onQuery={setQuery} list={list} />
+    </TableSection>
   );
 }
 
@@ -390,8 +392,9 @@ function PlayersCard({ query, onQuery, list }: { query: string; onQuery: (q: str
   const { data, error, isLoading } = list;
   const players = data?.players ?? [];
 
+  // The order is the weekly score's, not the value's: the value is since the game began, so #1 can hold less.
   return (
-    <Card title="כל השחקנים" sub="מקום בשבוע הנוכחי, ואז לפי שווי התיק">
+    <Card title="כל השחקנים" sub="לפי הציון של השבוע. מי שלא דורג השבוע, לפי שווי התיק">
       <TextInput
         value={query}
         onChangeText={onQuery}
@@ -425,9 +428,24 @@ function PlayersCard({ query, onQuery, list }: { query: string; onQuery: (q: str
   );
 }
 
-// Fixed columns + the name's minimum + the gaps = the table's minimum width (styles.table). It must fit the
-// card's inner width on a wide screen (about 606px), or the last column scrolls out of sight.
-const COLS = { rank: 44, value: 108, pending: 64, visits: 76, seen: 100 };
+// Fixed columns + the name's minimum + the gaps = the table's minimum width (styles.table). It fits the card on
+// a screen at the page's full width (about 1126px inside); on a narrower one the table scrolls sideways.
+// Score to stability rank are the same numbers, in the same order, as the players' leaderboard.
+const COLS = {
+  rank: 36,
+  score: 48,
+  ret: 84,
+  drawdown: 88,
+  returnRank: 72,
+  stabilityRank: 76,
+  value: 92,
+  pending: 60,
+  visits: 72,
+  seen: 92,
+};
+
+// A number from the standings row, or a dash for a player not ranked this week.
+const orDash = (v: number | null, show: (n: number) => string) => (v === null ? '—' : show(v));
 
 function PlayerHeader() {
   const { colors } = useTheme();
@@ -436,6 +454,11 @@ function PlayerHeader() {
     <View style={[styles.tr, { borderBottomColor: colors.line }]}>
       <Text style={[cell, { width: COLS.rank }]}>מקום</Text>
       <Text style={[cell, styles.nameCol]}>שחקן</Text>
+      <Text style={[cell, { width: COLS.score }]}>ציון</Text>
+      <Text style={[cell, { width: COLS.ret }]}>תשואה שבועית</Text>
+      <Text style={[cell, { width: COLS.drawdown }]}>ירידה מקסימלית</Text>
+      <Text style={[cell, { width: COLS.returnRank }]}>דירוג תשואה</Text>
+      <Text style={[cell, { width: COLS.stabilityRank }]}>דירוג יציבות</Text>
       <Text style={[cell, { width: COLS.value }]}>שווי תיק</Text>
       <Text style={[cell, { width: COLS.pending }]}>ממתינות</Text>
       <Text style={[cell, { width: COLS.visits }]}>פתיחות היום</Text>
@@ -448,6 +471,8 @@ function PlayerRow({ player: p }: { player: AdminPlayer }) {
   const { colors } = useTheme();
   const seen = lastSeenLabel(p.lastSeenAt, Date.now());
   const online = seen === 'מחובר';
+  const r = p.returnPct ?? 0;
+  const retColor = r > 0 ? colors.accent : r < 0 ? colors.neg : colors.muted;
   return (
     <View style={[styles.tr, { borderBottomColor: colors.line }]}>
       <Text style={[styles.td, styles.num, { width: COLS.rank, color: colors.faint }]}>{p.rank ? `#${p.rank}` : '—'}</Text>
@@ -458,6 +483,11 @@ function PlayerRow({ player: p }: { player: AdminPlayer }) {
         </View>
         <Text style={[styles.email, ltr, { color: colors.faint }]} numberOfLines={1}>{p.email}</Text>
       </View>
+      <Text style={[styles.td, styles.num, { width: COLS.score, color: colors.fg }]}>{orDash(p.score, score)}</Text>
+      <Text style={[styles.td, styles.num, { width: COLS.ret, color: retColor }]}>{orDash(p.returnPct, (v) => pct(v))}</Text>
+      <Text style={[styles.td, styles.num, { width: COLS.drawdown, color: colors.muted }]}>{orDash(p.maxDrawdownPct, (v) => pct(-v, { digits: 1 }))}</Text>
+      <Text style={[styles.td, styles.num, { width: COLS.returnRank, color: colors.muted }]}>{orDash(p.returnRank, rankText)}</Text>
+      <Text style={[styles.td, styles.num, { width: COLS.stabilityRank, color: colors.muted }]}>{orDash(p.stabilityRank, rankText)}</Text>
       <Text style={[styles.td, styles.num, { width: COLS.value, color: colors.fg }]}>{ils(p.totalValue)}</Text>
       <Text style={[styles.td, styles.num, { width: COLS.pending, color: colors.muted }]}>{count(p.pendingOrders)}</Text>
       <Text style={[styles.td, styles.num, { width: COLS.visits, color: colors.muted }]}>{count(p.visitsToday)}</Text>
@@ -548,7 +578,7 @@ const styles = StyleSheet.create({
   spinner: { marginTop: 20 },
   tableScroll: { marginTop: 12 },
   tableContent: { flexGrow: 1 },
-  table: { flexGrow: 1, minWidth: 572 },   // 392 of COLS + 140 for the name + 5 gaps of 8
+  table: { flexGrow: 1, minWidth: 940 },   // 720 of COLS + 140 for the name + 10 gaps of 8
   seenCell: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   bars: { flexDirection: 'row', alignItems: 'flex-end', gap: 3, height: 96, marginTop: 16 },
   bar: { flex: 1, borderRadius: 3, minWidth: 2 },
