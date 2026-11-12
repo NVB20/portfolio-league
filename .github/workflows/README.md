@@ -73,7 +73,7 @@ A false positive (for example a regex in a test that CodeQL reads as a URL check
 ```bash
 # API
 cd api
-npm ci && npm run typecheck && npm run lint && npm run build && npm test   # tests need: docker compose up -d
+npm ci && npm run typecheck && npm run lint && npm run build && npm test   # tests need: docker compose up -d db (with the port override, README "For development")
 
 # App
 npm ci && npm run typecheck && npm run lint && npx expo export --platform web

@@ -55,8 +55,9 @@ Thumbs.db
 .kotlin/
 *.orig.*
 
-# Local-only tools and design files (not part of the app; see docs/DECISIONS.md D-002)
+# Local-only design files (not part of the app)
 docs/design/
-scraper/
-db/
-docker-compose.yml
+
+# docker-compose.yml, db/ and scraper/ are in git: reviewers run the whole game with `docker compose up` (D-042).
+# Only a developer's own compose additions stay local (it publishes Postgres on 127.0.0.1:5432 for npm run dev).
+docker-compose.override.yml

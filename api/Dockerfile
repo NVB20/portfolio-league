@@ -11,6 +11,13 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
+# --- Tools: the seed scripts, run with tsx (a dev dependency). Used only by docker-compose.yml's `seed` job ---
+# Built only when asked for (`target: tools`); a plain `docker build` skips it, so the published image is unchanged.
+FROM build AS tools
+COPY migrations ./migrations
+COPY scripts ./scripts
+CMD ["npx", "tsx", "scripts/compose-seed.ts"]
+
 # --- Run: only the production dependencies, the bundle and the migrations ---
 FROM node:22-alpine
 ENV NODE_ENV=production

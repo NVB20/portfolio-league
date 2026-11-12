@@ -27,7 +27,7 @@ The API loads the data, calls this function, and saves the result.
 
 ## D-002: Local Postgres (Docker) for development
 
-**Status:** Active. Changed 07.11.2026: it now also holds the app's local databases.
+**Status:** Active. Changed 07.11.2026: it now also holds the app's local databases. Changed 12.11.2026: the same compose file now runs the whole game (D-042); `portfolio` and `portfolio_test` are created on a fresh volume by `db/init/002_app_databases.sql`, and port 5432 is published only by a developer's local `docker-compose.override.yml`.
 
 **Decision:** A Postgres container, run with `docker compose`, holds three databases on the developer's machine:
 - `prices`: 3 years of daily open/close prices for USD/ILS (`ILS=X`), 20 large TASE stocks and 20 large US stocks (NYSE + NASDAQ). A one-off scraper container (`docker compose run --rm scraper`) fetches them from Yahoo Finance. The game uses 20 of these 40 stocks (brief: "20 stocks or funds").
@@ -824,3 +824,27 @@ The balances afterwards: cash_free 1,100, stock_cost 0, realized_pnl −100 (sho
 - **A short wait right after each open and close.** Normally under a minute; longer if the ticker is behind (then the whole game is waiting anyway). The editor says to try again.
 - **No removing a stop.** Lowering it far is the nearest thing. Removing would need a new status and a reason to keep a stop that can never fire.
 - **The sample game (D-038) makes no moves,** so the monitoring card's "הזזות סטופ" stays 0 there until a real player moves one.
+
+## D-042: Docker Compose runs the whole game on the reviewer's machine, instead of a live link
+
+**Status:** Active (12.11.2026). Built: [docker-compose.yml](../docker-compose.yml), the seed job [api/scripts/compose-seed.ts](../api/scripts/compose-seed.ts) and the API image's `tools` stage ([api/Dockerfile](../api/Dockerfile)), the web image [web/Dockerfile](../web/Dockerfile) with [web/nginx.conf](../web/nginx.conf), the scraper's `PRICES_UNTIL` and `ONLY_IF_EMPTY` ([scraper/fetchPrices.ts](../scraper/fetchPrices.ts)), and [db/init/002_app_databases.sql](../db/init/002_app_databases.sql).
+
+**Decision:**
+- **One command:** `docker compose up --build`, then http://localhost:8080. Docker is the only thing to install. The steps, each waiting for the ones before it: `db` (healthy) → `prices` and `migrate` side by side → `seed` → `api` (healthy on `GET /health`) → `web`.
+- **Prices from Yahoo, once.** The `prices` job is the scraper with `ONLY_IF_EMPTY=1`: it fetches only while the price database is empty, so a restart never calls Yahoo. It is pinned with `PRICES_UNTIL=2026-11-05` to the 3 years the market calendar was checked against (2023-11-06 to 2026-11-05, [closures.ts](../api/src/world/closures.ts)): a fetch up to "yesterday" would, after 26.11.2026, bring Thanksgiving, which the calendar doesn't list, and `seed:world` would refuse the prices. Pinned, every machine gets the same world start (27.11.2023) as development. Each symbol is tried 3 times, since one failed symbol fails the job.
+- **Migrations from the production image**, with the same `npm run migrate` production runs. The seed scripts need `tsx` and `scripts/`, which that image leaves out, so `seed` is built from a `tools` stage of the same Dockerfile. A plain `docker build` (CI's image job) skips that stage, so the published image is unchanged.
+- **The sample game only on a world with no orders.** `seed` runs on every `up`: `seed:world` every time (it is safe to run again), the sample game (D-038) only when `orders` is empty. The sample game starts the world over, so running it every time would wipe what the reviewer played since the last `up`. `docker compose down -v` starts everything over.
+- **The seed shares the db container's network** (`network_mode: service:db`), so its `DATABASE_URL` is a localhost URL. The sample game refuses any other host (D-033); here the database really is local, so the check holds instead of being loosened.
+- **The API and the web app are built from the working tree,** not pulled from GHCR, whose image holds only what was on `main` at the last push.
+- **The web app is the Expo web export behind nginx.** The `EXPO_PUBLIC_*` values are build args in the compose file: the Firebase web config is public by design (it names the project and grants nothing; the API checks every permission), and the API's address is `http://localhost:${API_PORT}`. The browser calls the API directly; its `CORS_ORIGINS` is the web app's origin (and 8081, the Expo dev server).
+- **Ports:** web 8080 and API 3000, both only on 127.0.0.1, changed with `WEB_PORT` / `API_PORT`. Postgres's 5432 is not published, so a Postgres already on the reviewer's machine can't clash. Developers publish it in `docker-compose.override.yml` (in `.gitignore`), and start only the database with `docker compose up -d db`.
+- **Admin rights** stay SQL-only ([SCHEMA.md](SCHEMA.md#users)): `docker compose exec db psql -U hof -d portfolio -c "UPDATE users SET roles = '{admin,user}' WHERE email = '...'"`. The reviewer owns this database, so they run it themselves.
+
+**Why:** the brief asks for a live link that opens in a browser with nothing to install. An always-on API with Postgres has no free host without a credit card, so the reviewer runs the game instead, with one command and a game already in progress. Building everything from the repo means what they run is exactly the code they read.
+
+**Known weaknesses:**
+- **The first `up` depends on Yahoo answering.** If Yahoo refuses (rate limit, a change in its unofficial API), `prices` fails and nothing after it starts. A snapshot of the price database in the repo would remove that dependency.
+- **The first `up` is slow:** a few minutes to build the images (the web export most of all) and play the sample month.
+- **Sign-in still needs the internet:** Firebase Auth, and the Google keys the API checks tokens with.
+- **Only `localhost` works:** Firebase allows sign-in from `localhost` by default, and CORS allows only `http://localhost:<port>`, so `http://127.0.0.1:8080` or another machine on the network won't sign in.
+- **Changing `API_PORT` needs `--build`,** because the web app has the API's address built in.

@@ -43,7 +43,7 @@ See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript, 
 | `src/api.ts` | `apiFetch`: calls the API with the user's Firebase token |
 | `src/theme.ts` | Color tokens |
 | `api/` | The API: its own `package.json`. `src/` (routes, token check, SQL; `game/` pure logic; `world/` the 40 securities), `migrations/` (SQL), `scripts/` (`seed-world.ts`; `seed-sample-board.ts`, a dev-only made-up leaderboard; `seed-sample-game.ts`, a dev-only month of 40 players trading through the real engine, its plan in `src/sampleGame.ts`), `test/` (vitest). Every endpoint: [docs/API.md](docs/API.md) |
-| `docker-compose.yml`, `db/`, `scraper/` | Local Postgres: real prices from Yahoo, plus the app's local databases (D-002) |
+| `docker-compose.yml`, `db/`, `scraper/`, `web/` | The whole game in Docker (D-042): Postgres with real prices from Yahoo and the app's databases (D-002), the API, and the web app (`web/`: the Expo web export behind nginx). `api/scripts/compose-seed.ts` is the `seed` job. `docker-compose.override.yml` (not in git) publishes Postgres for local development |
 | `docs/` | Tech stack, decisions, database schema, design |
 | `assignment/` | The brief, progress, plans |
 
@@ -53,8 +53,9 @@ See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript, 
 npx expo start --web          # run the app
 npx tsc --noEmit              # type check
 npx expo install <package>    # add a package (never npm install)
-docker compose up -d          # start the local Postgres
-docker compose run --rm scraper   # fetch prices into it
+docker compose up --build     # the whole game: db, prices, migrate, seed, API :3000, web :8080 (D-042)
+docker compose up -d db       # only the local Postgres (docker-compose.override.yml publishes 127.0.0.1:5432)
+docker compose run --rm prices    # fetch prices into it, pinned to the calendar's window (once)
 
 cd api
 npm run dev                   # run the API locally (reads api/.env)

@@ -3,6 +3,7 @@
 A weekly stock-trading game. Each player gets a virtual ₪1,000,000, buys and sells TASE and US stocks, and competes on a weekly leaderboard. Built as a home assignment for House of Finance ([the brief](assignment/ASSIGNMENT.md)).
 
 - **Live link:** TODO
+- **Run it on your machine:** `docker compose up --build`, then http://localhost:8080 ([details](#run-it))
 - **How to get admin rights (to move the clock):** [below](#how-to-advance-the-clock)
 - **Every decision, in full:** [docs/DECISIONS.md](docs/DECISIONS.md) (each `D-0xx` in this README points there)
 
@@ -62,7 +63,11 @@ Every move first runs all the opens and closes on the way, in order, and only th
 UPDATE users SET roles = '{admin,user}' WHERE email = 'you@example.com';
 ```
 
-**For reviewers:** TODO (a ready-made admin account, or send me the email you signed up with and I'll run the line above).
+**For reviewers:** you own the database when you [run it with Docker](#run-it), so you run the line yourself after signing up:
+
+```bash
+docker compose exec db psql -U hof -d portfolio -c "UPDATE users SET roles = '{admin,user}' WHERE email = 'you@example.com'"
+```
 
 ## Rules I completed
 
@@ -157,14 +162,44 @@ The brief: thousands of players, many at once (market open, after a push); other
 - **The admin page shows what's wrong:** the ticker's heartbeat (red after 2 minutes without one), the engine's last run, events that are due but not done, the ledger check.
 - TODO: alerts that wake someone up (uptime check, ticker heartbeat), a runbook, daily backups.
 
-## Run it locally
+## Run it
 
-Needs Node 22 and Docker.
+Needs only Docker (Docker Desktop on Windows and Mac).
+
+```bash
+docker compose up --build
+```
+
+Then open **http://localhost:8080** and sign up. The first run takes a few minutes: it builds the images, fetches 3 years of prices from Yahoo, creates the tables and plays a sample month (40 players trading through the real engine, D-038), so the leaderboard, the journal and the admin pages have something to show. Later runs start in seconds and keep your game.
+
+Admin rights (to move the clock), after you sign up:
+
+```bash
+docker compose exec db psql -U hof -d portfolio -c "UPDATE users SET roles = '{admin,user}' WHERE email = 'you@example.com'"
+```
+
+| Command | What it does |
+|---------|--------------|
+| `docker compose down` | Stop. The data is kept |
+| `docker compose down -v` | Wipe everything. The next `up` fetches the prices and seeds again |
+| `API_PORT=3001 WEB_PORT=8081 docker compose up --build` | Other ports, if 3000 or 8080 are taken |
+
+What runs, in order: Postgres → the prices (only while there are none) → the migrations and the seed (the world, then the sample game, only on a world with no orders yet) → the API with its ticker → the web app. Each step is explained at the top of [docker-compose.yml](docker-compose.yml) (D-042).
+
+### For development
+
+Needs Node 22 and Docker. Postgres has to be on `127.0.0.1:5432` for the API and the tests, so first create `docker-compose.override.yml` (not in git; compose reads it by itself):
+
+```yaml
+services:
+  db:
+    ports: ["127.0.0.1:5432:5432"]
+```
 
 ```bash
 npm install
-docker compose up -d                # local Postgres
-docker compose run --rm scraper     # download the prices (once)
+docker compose up -d db             # only Postgres
+docker compose run --rm prices      # download the prices (once; the window the calendar was checked against)
 
 cd api
 npm install

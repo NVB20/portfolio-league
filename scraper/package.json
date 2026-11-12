@@ -1,0 +1,8 @@
+{
+  "name": "hof-scraper",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "pg": "^8.16.3"
+  }
+}

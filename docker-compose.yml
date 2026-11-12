@@ -1,0 +1,149 @@
+# Portfolio League, the whole game on your machine (D-042): Postgres, real prices, the API and the web app, with a
+# sample game already played in it. Docker is the only thing to install.
+#
+#   docker compose up --build    then open http://localhost:8080 (the first run takes a few minutes)
+#   docker compose down          stop (the data is kept in the volume)
+#   docker compose down -v       wipe everything: the next `up` fetches the prices and seeds again
+#
+# What `up` runs, in order (each step waits for the ones before it):
+#   db       Postgres 17 with three databases: prices, portfolio (the game) and portfolio_test (D-002)
+#   prices   fetches 3 years of prices from Yahoo, only while the price database is empty (about a minute)
+#   migrate  creates the game's tables (api/migrations/)          } these two run side by side
+#   seed     copies the world into the game, then plays a sample month (D-038), only on a world with no orders yet
+#   api      the API on http://localhost:3000, with the ticker that runs the world clock (D-030)
+#   web      the app on http://localhost:8080
+#
+# Admin rights (to move the clock): sign up in the app, then
+#   docker compose exec db psql -U hof -d portfolio -c "UPDATE users SET roles = '{admin,user}' WHERE email = 'you@example.com'"
+#
+# Ports taken? API_PORT=3001 WEB_PORT=8081 docker compose up --build   (the web app is rebuilt to call the new API port)
+#
+# Development (`cd api && npm run dev`, `npx expo start --web`): `docker compose up -d db` starts only Postgres.
+# docker-compose.override.yml (local, not in git) publishes it on 127.0.0.1:5432. This file publishes no database
+# port, so a Postgres already running on a reviewer's machine can't clash with it.
+
+# The price database, for the two scraper services (`prices` and `scraper`). Dev-only credentials: the database is
+# reachable only inside Docker's network.
+x-prices-db: &prices-db
+  PGHOST: db
+  PGUSER: hof
+  PGPASSWORD: hof_dev
+  PGDATABASE: prices
+
+services:
+  db:
+    image: postgres:17
+    container_name: hof-prices-db
+    environment:
+      POSTGRES_USER: hof
+      POSTGRES_PASSWORD: hof_dev
+      POSTGRES_DB: prices
+    volumes:
+      # The data survives `docker compose down`; only `down -v` deletes it.
+      - pgdata:/var/lib/postgresql/data
+      # Every .sql file in this folder runs ONCE, the first time the volume is empty: the price tables, then the
+      # portfolio and portfolio_test databases.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    # "Ready" means Postgres accepts connections, not just that the container started.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hof -d prices"]
+      interval: 2s
+      retries: 15
+
+  # One-off: the prices, from Yahoo. Skips when they are already saved, so only the first `up` calls Yahoo.
+  # Pinned to the 3 years ending 05.11.2026: the market calendar (api/src/world/closures.ts) was checked against
+  # exactly that window, and seed-world refuses prices with a holiday the calendar doesn't know.
+  prices:
+    build: ./scraper
+    environment:
+      <<: *prices-db
+      PRICES_UNTIL: "2026-11-05"
+      ONLY_IF_EMPTY: "1"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # One-off: the game's tables. The same command production runs, from the same image as the API.
+  migrate:
+    build: ./api
+    command: ["npm", "run", "migrate"]
+    environment:
+      DATABASE_URL: postgres://hof:hof_dev@db:5432/portfolio
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # One-off: the world, then the sample game (api/scripts/compose-seed.ts). Built from the API's `tools` stage,
+  # which keeps the scripts and tsx that the production image leaves out.
+  # It shares the db container's network, so the database is on `localhost`: the sample game refuses any other
+  # host (D-033), and here that is true, not a bypass.
+  seed:
+    build:
+      context: ./api
+      target: tools
+    network_mode: service:db
+    environment:
+      DATABASE_URL: postgres://hof:hof_dev@localhost:5432/portfolio
+      PRICES_DATABASE_URL: postgres://hof:hof_dev@localhost:5432/prices
+    depends_on:
+      prices:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+
+  # The API, built from ./api (the GHCR image holds only what was on main at the last push).
+  api:
+    build: ./api
+    environment:
+      DATABASE_URL: postgres://hof:hof_dev@db:5432/portfolio
+      FIREBASE_PROJECT_ID: portfolio-league # the same project as the web app's config below
+      # The web app below, and the Expo dev server (npx expo start --web) on 8081.
+      CORS_ORIGINS: http://localhost:${WEB_PORT:-8080},http://localhost:8081
+      PORT: "3000"
+    ports:
+      # Only on localhost: without the 127.0.0.1 prefix, Docker opens the port to the whole network.
+      - "127.0.0.1:${API_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 5s
+      retries: 12
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+
+  # The app: the Expo web export, served by nginx (web/Dockerfile).
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+      args:
+        # The browser calls the API directly, on the port published above.
+        EXPO_PUBLIC_API_URL: http://localhost:${API_PORT:-3000}
+        # Firebase's web config is public by design: it names the project, it grants nothing. Every permission is
+        # checked by the API (CLAUDE.md, "Stack"). Firebase Auth allows sign-in from localhost out of the box.
+        EXPO_PUBLIC_FIREBASE_API_KEY: AIzaSyDmJh7ERkNxpI08JhXdMq8Ie4iSE6uGRDg
+        EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN: portfolio-league.firebaseapp.com
+        EXPO_PUBLIC_FIREBASE_PROJECT_ID: portfolio-league
+        EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET: portfolio-league.firebasestorage.app
+        EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "595027950497"
+        EXPO_PUBLIC_FIREBASE_APP_ID: "1:595027950497:web:db22077a9b51a59f3ee9e0"
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Optional: fetch the prices again (the last 3 years up to yesterday), even when some are saved.
+  #   docker compose run --rm scraper
+  # New days need a matching calendar: a holiday after 05.11.2026 must be added to closures.ts before seed-world.
+  scraper:
+    build: ./scraper
+    # The "tools" profile keeps it out of `docker compose up`, so it only runs when you ask.
+    profiles: ["tools"]
+    environment: *prices-db
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

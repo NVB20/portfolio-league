@@ -1,0 +1,18 @@
+# Build context of web/Dockerfile (the repo root): only what `expo export` needs goes in.
+# api/ and scraper/ have their own Dockerfile and .dockerignore.
+**/node_modules
+.git
+.expo
+dist
+web-build
+api
+scraper
+db
+docs
+assignment
+.github
+.claude
+# The EXPO_PUBLIC_* values come in as build args from docker-compose.yml, not from a local .env
+.env
+.env.*
+*.log
