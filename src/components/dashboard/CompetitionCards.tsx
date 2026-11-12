@@ -1,4 +1,4 @@
-// Section 3: the weekly leaderboard (top 5 + you), how your score is made, and the daily streak.
+// Section 3: the daily streak, the weekly leaderboard (top 5 + you), and how your score is made.
 
 import { Animated, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';

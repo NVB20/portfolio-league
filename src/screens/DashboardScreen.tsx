@@ -1,7 +1,7 @@
 // The player's main screen (docs/design/dashboard). One long scroll with three sections:
 //   1. Portfolio: value, chart vs. the median, weekly score, pending orders, world clock, dollar rate
 //   2. Holdings: one card per security with its weight against the 20% cap
-//   3. Competition: leaderboard, score breakdown, streak
+//   3. Competition: streak, leaderboard, score breakdown
 // All data comes from one request (GET /me/dashboard). Empty world = every card says what will fill it.
 // Over the page: the toast for orders rejected since the last visit (D-023). On the days only one market
 // trades, a line under the top bar says so (D-022).
@@ -225,11 +225,11 @@ function Content({ d, isAdmin, reload }: { d: Dashboard; isAdmin: boolean; reloa
         actions={<Button label="לטבלה המלאה" onPress={toLeaderboard} />}
       >
         <CardRow>
-          <LeaderboardCard leaderboard={d.leaderboard} standing={d.standing} />
-          <ScoreBreakdownCard standing={d.standing} />
+          <StreakCard streak={d.streak} />
         </CardRow>
         <CardRow>
-          <StreakCard streak={d.streak} />
+          <LeaderboardCard leaderboard={d.leaderboard} standing={d.standing} />
+          <ScoreBreakdownCard standing={d.standing} />
         </CardRow>
       </Section>
     </>
