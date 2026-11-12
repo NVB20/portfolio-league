@@ -49,6 +49,8 @@ See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript, 
 
 ## Commands
 
+First-time development setup (Node 22 and Docker): `cp .env.example .env`, `cp api/.env.example api/.env`, `npm install` here and in `api/`, and a `docker-compose.override.yml` (not in git) with `services: { db: { ports: ["127.0.0.1:5432:5432"] } }`. Then `docker compose up -d db`, `docker compose run --rm prices`, and in `api/`: `npm run migrate:dev`, `npm run seed:world`.
+
 ```bash
 npx expo start --web          # run the app
 npx tsc --noEmit              # type check
