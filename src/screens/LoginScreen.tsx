@@ -17,7 +17,6 @@ import { authErrorMessage } from '../auth/authErrors';
 import { light } from '../theme';
 import BrandPanel from '../components/BrandPanel';
 import GoogleIcon from '../components/GoogleIcon';
-import { AuthProvider } from '../auth/AuthProvider';
 
 export default function LoginScreen() {
   // Design choice: the login form is ALWAYS white (light colors), even in dark mode.

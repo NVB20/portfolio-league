@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import type { SecurityView, TradeView } from '../../api/src/contract';
+import type { TradeView } from '../../api/src/contract';
 import { useAuth } from '../auth/AuthProvider';
 import { useTheme } from '../useTheme';
 import { ilsExact, pct } from '../dashboard/format';
@@ -61,7 +61,7 @@ export default function TradeScreen() {
   const name = user?.displayName || user?.email?.split('@')[0] || 'שחקן';
 
   // A reload keeps the screen (and what the player typed): `data` stays while it loads.
-  if (data) return <TradeView data={data} name={name} uid={user?.uid ?? ''} loading={isLoading} reload={reload} />;
+  if (data) return <TradeLoaded data={data} name={name} uid={user?.uid ?? ''} loading={isLoading} reload={reload} />;
 
   return (
     <View style={[styles.page, { direction: 'rtl', backgroundColor: colors.page }]}>
@@ -82,7 +82,7 @@ export default function TradeScreen() {
   );
 }
 
-function TradeView({ data, name, uid, loading, reload }: {
+function TradeLoaded({ data, name, uid, loading, reload }: {
   data: TradeView;
   name: string;
   uid: string;
@@ -203,7 +203,11 @@ function TradeView({ data, name, uid, loading, reload }: {
   useEffect(() => {
     if (moved && !loadingNow.current) void reload();
   }, [moved, elapsed, reload]);
-  const loadedAt = useMemo(() => Date.now(), [data]);
+  // When this data arrived: stamped after the render that shows it, read only when the popup opens.
+  const loadedAt = useRef(0);
+  useEffect(() => {
+    loadedAt.current = Date.now();
+  }, [data]);
 
   // ---------- sending ----------
   const { busy, prepare, send } = useSendOrder(uid);
@@ -238,7 +242,7 @@ function TradeView({ data, name, uid, loading, reload }: {
     setConfirmError(null);
     setConfirming(true);
     prepare(orderKey, body);
-    if (Date.now() - loadedAt > FRESH_MS && !loading) void reload();
+    if (Date.now() - loadedAt.current > FRESH_MS && !loading) void reload();
   };
   const closeConfirm = () => {
     if (busy || !armed()) return;   // an order on its way: wait for its answer

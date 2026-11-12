@@ -35,7 +35,7 @@ import type { ChartBar, ChartSettings } from '../../../api/src/contract';
 import { ils } from '../../dashboard/format';
 import { money } from '../../trade/copy';
 import { positionMath, type Levels } from '../../trade/orderCheck';
-import type { BigChartProps, ChartPalette } from './BigChart.types';
+import type { BigChartProps } from './BigChart.types';
 
 const TYPES: Record<ChartSettings['type'], string> = { candles: 'נרות', bars: 'ברים', line: 'קו', area: 'שטח' };
 const COLORS: Record<ChartSettings['colors'], { up: string; down: string }> = {

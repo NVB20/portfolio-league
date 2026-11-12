@@ -10,7 +10,7 @@ import type { ChartBar } from '../../../api/src/contract';
 import { useTheme } from '../../useTheme';
 import { ils } from '../../dashboard/format';
 import { money } from '../../trade/copy';
-import { cleanPrice, positionMath, type Levels, type Side } from '../../trade/orderCheck';
+import { cleanPrice, positionMath, type Levels } from '../../trade/orderCheck';
 import { Card } from '../dashboard/Card';
 import { Chip } from '../dashboard/Chip';
 import { ltr } from '../dashboard/layout';

@@ -73,6 +73,7 @@ npm ci && npm run typecheck && npm run lint && npx expo export --platform web
 
 ## Changing a workflow
 
-- Pin actions to a major version (`@v5`), as the files already do.
+- Pin actions to a major version (`@v5`), as the files already do. Every action runs on Node 24; when GitHub warns that one targets an older Node, move it to the major that runs on 24.
+- Jobs run on `ubuntu-24.04`, not `ubuntu-latest`, so the runner image changes only when we change it here (`ubuntu-latest` moves to Ubuntu 26 from October 2026). Move all four jobs together, in a PR of their own.
 - New job permissions go on the job, not the workflow. The workflow default is `contents: read`.
 - If a job's name changes and branch protection is later turned on, update the required checks to match.
