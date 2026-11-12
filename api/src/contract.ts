@@ -66,11 +66,17 @@ export type HoldingView = {
   weightPct: number | null;        // share of the whole portfolio (totalValue)
   nearCap: boolean;                // close to the 20% limit (rule 4)
   stops: StopView[];               // the position's active stop losses, highest first (D-037)
+  // The latest close of its market's last closed day, in the security's currency: the price the trade screen
+  // shows. A stop moved from this card must be below it (D-041). null = no close known yet.
+  lastClose: number | null;
 };
 
 // An active stop loss on a position (D-037): it sells `units` at the first open or close at or below `price`.
+// PATCH /me/stops/:id moves it (D-041).
 export type StopView = {
-  price: number;                   // in the security's currency
+  id: string;                      // stop_orders.id
+  price: number;                   // in the security's currency, as it is now
+  originalPrice: number;           // as sent with the buy; differs from `price` once moved
   units: number;                   // the units its buy got (it sells at most the free units)
 };
 
@@ -291,7 +297,18 @@ export type TradeJournalRow = {
   fill: TradeFill | null;          // executed only
   reject: { code: RejectionCode | null; reason: string } | null;   // rejected only; reason is the Hebrew
   origin: 'player' | 'stop';       // stop = a sell a stop loss made (D-037), not one the player sent
-  stopPrice: number | null;        // a buy: the stop loss it carries; a stop's sell: the stop that fired
+  stopPrice: number | null;        // a buy: the stop loss it was sent with; a stop's sell: the stop that fired
+  stop: JournalStopView | null;    // a filled buy's stop as it is now (D-041); null = no stop, or the buy hasn't filled
+};
+
+// The stop loss a filled buy made (D-037), as it is now. An active one can be moved from the journal (D-041).
+export type JournalStopView = {
+  id: string;                      // stop_orders.id: PATCH /me/stops/:id
+  price: number;                   // now; differs from the row's stopPrice once moved
+  status: 'active' | 'triggered' | 'expired';   // triggered = it sold; expired = its position closed first
+  // Active only: the latest close of its market's last closed day, which a new price must be below. null otherwise,
+  // or when no close is known.
+  lastClose: number | null;
 };
 
 // The period's filled sells (whatever the filter): a sell with a gain is a win, with a loss a loss, at exactly ₪0
@@ -357,6 +374,25 @@ export type SendOrderErrorCode =
 
 // `error` is English; `reason` is the Hebrew shown to the player, when there is one.
 export type SendOrderError = { error: string; code: SendOrderErrorCode; reason?: string };
+
+// ---------- PATCH /me/stops/:id: moving a stop loss (D-041) ----------
+
+// The new price, exact like a new stop's (a decimal string, or a JSON number read as its digits), in the security's
+// currency, below the latest close. Up or down. Moves only an active stop of the caller's.
+export type MoveStopBody = { stopPrice: string | number };
+
+// 200 either way. changed: false = it was already at that price (a retry after a lost answer): nothing was written.
+export type MoveStopResult = { stop: StopView; changed: boolean };
+
+export type MoveStopErrorCode =
+  | 'BAD_REQUEST'                  // 400: a bad id or body
+  | 'NO_USER' | 'STOP_NOT_FOUND'   // 404: not a stop of the caller's (someone else's is "not found" too)
+  | 'NO_WORLD' | 'GAME_OVER' | 'STOP_NOT_ACTIVE'   // 409
+  | 'STOP_CHECK_RUNNING'           // 409, with Retry-After: its market's latest open or close isn't checked yet
+  | 'STOP_NOT_BELOW_PRICE' | 'STOP_NO_PRICE'       // 422
+  | 'RATE_LIMITED';                // 429, with Retry-After: at most 5 moves a minute
+
+export type MoveStopError = { error: string; code: MoveStopErrorCode; reason?: string };
 
 // ---------- POST /admin/clock/advance | start | stop: the admin's clock moves (D-017, D-030) ----------
 // Admins only. Every move that changes the clock writes one admin_actions row in the same transaction (D-027).
@@ -522,6 +558,8 @@ export type MonitoringTotals = {
     players: number;               // distinct players who sent a buy with a stop loss
     fired: number;                 // sells the stops made (when the runner fired them)
     firedPnlIls: number;           // the gain of those that executed, added up (− = losses taken)
+    moved: number;                 // stop moves (D-041), from stop_moves by real created_at
+    movers: number;                // distinct players who moved a stop
   };
 };
 

@@ -222,7 +222,9 @@ describe('the runner fires a stop at a later open or close', () => {
     const dash = await read<Dashboard>('alice', '/me/dashboard');
     expect(dash.holdings).toMatchObject([{ symbol: 'TEVA', stops: [{ price: 95, units: 100 }] }]);
     const trade = await read<TradeView>('alice', '/me/trade');
-    expect(trade.securities.find((s) => s.symbol === 'TEVA')?.holding?.stops).toEqual([{ price: 95, units: 100 }]);
+    expect(trade.securities.find((s) => s.symbol === 'TEVA')?.holding?.stops).toEqual([
+      { id: active.id, price: 95, originalPrice: 95, units: 100 },
+    ]);
 
     await runTo(THU_TASE_OPEN);    // ₪97 is above the stop
     expect((await stopsOf('alice'))[0].status).toBe('active');
@@ -261,7 +263,7 @@ describe('the runner fires a stop at a later open or close', () => {
     // The admin's monitoring: the stop's sell isn't an order the player sent.
     const m: AdminMonitoring = await getAdminMonitoring(db);
     expect(m.totals.today.orders).toEqual({ sent: 1, executed: 1, rejected: 0, pending: 0 });
-    expect(m.totals.today.stops).toEqual({ buys: 1, withStop: 1, buyers: 1, players: 1, fired: 1, firedPnlIls: -600 });
+    expect(m.totals.today.stops).toEqual({ buys: 1, withStop: 1, buyers: 1, players: 1, fired: 1, firedPnlIls: -600, moved: 0, movers: 0 });
     expect(m.stopsNow).toEqual({ active: 0, players: 0 });
   });
 

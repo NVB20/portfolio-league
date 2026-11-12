@@ -17,7 +17,8 @@ Only these write to the database. Everything else is read-only.
 | `POST /me` | creates the user and the portfolio on first login, refreshes email and name after | `users` (uid, email, display_name), `portfolios` (₪1,000,000 cash) | Only their own row, only those fields. Never `roles`, never cash |
 | `PATCH /me/theme` | the dark/light choice | `users.theme` | Yes, only that column |
 | `PATCH /me/chart-settings` | the full chart's settings | `users.chart_settings` (JSONB, known keys only) | Yes, only that column |
-| `POST /me/orders` | a new `pending` order, and what it sets aside: a buy's cash, a sell's units. A buy may carry a stop loss (`orders.stop_price`, D-037) | `orders` (one row). Buy: a `reserve` journal (`journals` + 2 `ledger_entries`) and `portfolios.reserved_cash`. Sell: `positions.reserved_units` | Only by sending an order the rules allow (D-028). Never cash, units, prices or the clock directly. An order, and its stop loss, can't be changed or cancelled. A stop's sell is made by the runner, never by a request |
+| `POST /me/orders` | a new `pending` order, and what it sets aside: a buy's cash, a sell's units. A buy may carry a stop loss (`orders.stop_price`, D-037) | `orders` (one row). Buy: a `reserve` journal (`journals` + 2 `ledger_entries`) and `portfolios.reserved_cash`. Sell: `positions.reserved_units` | Only by sending an order the rules allow (D-028). Never cash, units, prices or the clock directly. An order can't be changed or cancelled; its stop loss can be moved once the buy fills (below). A stop's sell is made by the runner, never by a request |
+| `PATCH /me/stops/:id` | moves one of the player's active stop losses (D-041) | `stop_orders.stop_price` and `moved_at` of that stop, and one `stop_moves` row | Only the price of their own active stop, below the latest close, at most 5 times a minute. Never its units, never while its market's open or close waits for the runner, and never money |
 | `POST /me/seen` | the check-in (D-026) and its optional usage report (D-036) | `users.last_seen_at`, one `app_opens` row when a visit starts; today's `usage_pages_daily` and `usage_confirms_daily` rows (added to) | Only their own rows. The server decides what is a visit; a usage report is capped per request (120 s of time, 50 per count) |
 | `POST /me/rejections/seen` | the rejection toasts the app showed (D-023) | `orders.notified_at` of the player's own rejected orders | Only that column, only on their own rejected orders |
 | `GET /me/dashboard`, `GET /me/trade` (the catch-up before reading, D-025) | the player's value at the latest open or close whose orders have run, when the runner's batch hasn't reached them yet | that player's `portfolios` totals and week columns, and the marks of their `positions` | No. The runner's own update, for this one player (D-031) |
@@ -47,7 +48,7 @@ Before reading, it brings the player up to the latest open or close whose orders
   - `weekReturnPct` and `maxDrawdownPct` from the weekly running totals; both 0 when nothing touched the player this week. null only before the world starts.
   - `vsMedianPct`: my week return minus the median player's after the latest **finished** open or close this week; null before the first one.
   - `series`: my value at Monday 00:00, one point per trading day (the daily rows), and now. `medianSeries`: the median player's value after each finished open or close this week.
-- `holdings[]` (`HoldingView`): open positions, biggest first: `units`, `freeUnits` (not locked by pending sells), `valueIls` (the last mark; at cost before the first one), `costBasisIls`, `unrealizedPnlIls`, `weightPct` (of `totalValue`, exact to 4 decimals), `nearCap`, `dayChangePct` (a display % from the latest known closes), and `stops` (`StopView[]`, D-037): the position's active stop losses, highest first, `{ price, units }` (`price` in the security's currency).
+- `holdings[]` (`HoldingView`): open positions, biggest first: `units`, `freeUnits` (not locked by pending sells), `valueIls` (the last mark; at cost before the first one), `costBasisIls`, `unrealizedPnlIls`, `weightPct` (of `totalValue`, exact to 4 decimals), `nearCap`, `dayChangePct` (a display % from the latest known closes), `stops` (`StopView[]`, D-037): the position's active stop losses, highest first, `{ id, price, originalPrice, units }` (prices in the security's currency; `price` is the stop now, `originalPrice` the one its buy was sent with, D-041), and `lastClose` (the latest close of its market's last closed day, the price the trade screen shows: a moved stop must be below it; null = none known).
 - `rejections[]` (`RejectionView`, D-023): rejected orders the player hasn't seen yet, newest rejection first, at most 5: `{ id, symbol, side, amountIls, units, code, reason, at }`. `code` is one of `NO_PRICE`, `INSUFFICIENT_CASH`, `OVER_LIMIT`, `INSUFFICIENT_UNITS` (for English text); `reason` is the Hebrew; `at` is the open or close that rejected it.
 - `stopSales[]` (`StopSaleView`, D-037): sales a stop loss made that the player hasn't seen yet, newest first, at most 5: `{ id, symbol, currency, stopPrice, fillPrice, units, ils, realizedPnlIls, at }`. `id` is the sell order's id; `fillPrice` is the open or close it sold at (at or below `stopPrice`: a gap sells lower); `at` is that open or close.
 - `pendingOrders.next[]` (`OrderView`) carry `stopPrice`: a buy's stop loss, or null.
@@ -102,7 +103,7 @@ Body (`SendOrderBody`): `{ symbol, side, amountIls?, units?, stopPrice?, clientO
 - `symbol`: `^[A-Z0-9-]{1,10}$` (400), and in the game (404 `UNKNOWN_SYMBOL`).
 - `side: "buy"` takes `amountIls` (₪, up to 2 decimals) and no `units`. `side: "sell"` takes `units` (up to 8 decimals) and no `amountIls` (D-018).
 - Sizes are a decimal string (`"100000.00"`) or a JSON number, read from the request's own text, digit for digit (never through a double). Positive, at most 20 characters, no exponent. Nothing is rounded: `0.1 + 0.2`, `"100.001"`, `100.0000000000000001` or `1e2` is a 400, not a rounded order.
-- `stopPrice` (optional, buys only, D-037): a stop loss, in the security's own currency (₪ for TASE, $ for US), up to 4 decimals, read like a size. On a sell it is a 400. When the buy fills, the stop covers the units it got; at every later open and close of its market, an open or close at or below the stop sells them at that price (a gap sells below the stop). It can't be changed or cancelled.
+- `stopPrice` (optional, buys only, D-037): a stop loss, in the security's own currency (₪ for TASE, $ for US), up to 4 decimals, read like a size. On a sell it is a 400. When the buy fills, the stop covers the units it got; at every later open and close of its market, an open or close at or below the stop sells them at that price (a gap sells below the stop). It can't be cancelled; once the buy fills it can be moved (`PATCH /me/stops/:id`, D-041).
 - `clientOrderId` (optional, `^[A-Za-z0-9_-]{1,64}$`): send the same id again after a lost response and you get the same order back.
 
 What it checks, in this order:
@@ -134,6 +135,35 @@ What it checks, in this order:
 Errors are `{ error, code, reason? }` (`SendOrderError`): `error` in English, a stable `code`, and `reason` in Hebrew for the player (on 409 `NO_WORLD`/`GAME_OVER`, 422 and 429). A refused send writes nothing; only orders the runner rejects are stored (with `reject_code`, D-023).
 
 **When it runs:** the send uses the effective world time (`worldNow`: the running clock, capped at `ends_at`, never before the latest event the runner has started). During an admin jump that has already started the 17:30 close, an order goes to the next open, not into the close. The send holds the player's portfolio `FOR UPDATE` and then the clock row `FOR SHARE`, so one player's sends run one at a time, other players never wait, and a clock move or event start waits for the sends in progress. Those writers lock the clock table in `EXCLUSIVE` mode, which Postgres queues fairly: a send that arrives after one waits behind it, so a stream of sends can't hold an event back (D-021).
+
+### `PATCH /me/stops/:id`
+Moves one of the player's active stop losses, up or down (D-041, [api/src/stopMoves.ts](../api/src/stopMoves.ts), rules in [api/src/game/stopMove.ts](../api/src/game/stopMove.ts)). Active = its buy filled and its position is still open, fully or partly. The units it sells don't change. The app calls it from the holding cards' and the journal's pencil.
+
+Body (`MoveStopBody`): `{ stopPrice }`: the new price in the security's own currency, up to 4 decimals, read like a new stop's (a decimal string, or a JSON number read digit for digit). Other keys are ignored.
+
+What it checks, in this order:
+
+| Check | Answer |
+|-------|--------|
+| The id (digits, 1 to the BIGINT maximum) and the body | 400 `BAD_REQUEST` |
+| The player exists (`POST /me` was called) | 404 `NO_USER` |
+| The stop exists and is the player's (someone else's is "not found" too) | 404 `STOP_NOT_FOUND` |
+| The stop is active (not fired, not expired) | 409 `STOP_NOT_ACTIVE` |
+| The stop is already at that price | **200** `{ stop, changed: false }`. Nothing is written and it doesn't count toward the limit, so a retry after a lost answer is safe |
+| More than 5 moves in the last real minute | 429 `RATE_LIMITED`, with `Retry-After`. Separate from the 5 orders a minute |
+| The world has started | 409 `NO_WORLD` |
+| Its market's next open or close comes after the world's end (it would never be checked again) | 409 `GAME_OVER` |
+| Its market's latest open or close (at or before now) isn't `orders_done` yet: not started, or started with its stops not checked | 409 `STOP_CHECK_RUNNING`, with `Retry-After: 15` |
+| No close known for the stock | 422 `STOP_NO_PRICE` |
+| The new price is at or above the latest close the trade screen shows (the latest close of its market's last closed day) | 422 `STOP_NOT_BELOW_PRICE` |
+
+**200** `{ stop, changed: true }` (`MoveStopResult`; `stop` is a `StopView`). In the same transaction: `stop_orders.stop_price` = the new price, `moved_at` = the world time, and one `stop_moves` row (`from_price`, `to_price`, `world_at`). Errors are `{ error, code, reason? }` (`MoveStopError`) with the Hebrew `reason` on 404 `STOP_NOT_FOUND`, 409, 422 and 429. A refused move writes nothing.
+
+**Why the check-running refusal:** the screens show a close as soon as the world clock passes it, but the runner checks the stops at it up to a minute later (D-030). A move in between could dodge a stop that close had already reached.
+
+**After a move**, the stop fires on an event's price only: the "bought at or below its own stop, so it fires at the first check" rule (D-037) no longer applies, so a stop raised above the buy price doesn't fire at the next check.
+
+**Locks:** the player's portfolio `FOR UPDATE` (moves run one at a time per player), then the clock row `FOR SHARE` (no open or close can start meanwhile), then, only after the check above, the stop row `FOR UPDATE`. The runner locks stops before portfolios, but only while its event is `pending`, which a move refuses before touching the stop, so the two never wait on each other.
 
 ### `POST /me/seen`
 The app checks in when it opens and every 60 seconds while it is open and visible (D-026). The body is optional: a usage report (D-036). Returns `{ ok: true }`; 404 before `POST /me`.
@@ -202,10 +232,10 @@ The response:
 - `stats` (`TradeJournalStats`), from the period's filled sells: `wins` (stored gain > 0), `losses` (< 0), `even` (exactly 0), `winRatePct` = wins ÷ (wins + losses) × 100 to one decimal (null = no win or loss yet), `realizedPnlIls` (the stored `orders.realized_pnl_ils` of those sells, summed in NUMERIC), `avgWinIls` and `avgLossIls` (rounded to agorot; null = none). A buy has no result until it is sold.
 - `counts`: the period's orders per status (`all`, `pending`, `executed`, `rejected`), for the filter's labels.
 - `reservedCash`: ₪ held by pending buys right now (`portfolios.reserved_cash`).
-- `rows` (`TradeJournalRow[]`), newest sent first: `id`, `symbol`, `nameHe`, `market`, `currency`, `side`, `status`, `amountIls` (buys) or `units` (sells), `priceType`, `placedAt`, `executesAt` (pending: when it will run; otherwise the open or close that ran it), `fill` (executed only: `price` in the security's currency, `fxRate` for US, `units`, `ils`, `realizedPnlIls` for sells), `reject` (rejected only: `code` and the Hebrew `reason`), `origin` (`player`, or `stop` for a sell a stop loss made, D-037) and `stopPrice` (a buy's stop loss, or the stop a stop's sell came from; null otherwise). A stop's sells are rows too: they move money like any sell.
+- `rows` (`TradeJournalRow[]`), newest sent first: `id`, `symbol`, `nameHe`, `market`, `currency`, `side`, `status`, `amountIls` (buys) or `units` (sells), `priceType`, `placedAt`, `executesAt` (pending: when it will run; otherwise the open or close that ran it), `fill` (executed only: `price` in the security's currency, `fxRate` for US, `units`, `ils`, `realizedPnlIls` for sells), `reject` (rejected only: `code` and the Hebrew `reason`), `origin` (`player`, or `stop` for a sell a stop loss made, D-037), `stopPrice` (the stop loss a buy was sent with, or the stop a stop's sell came from; null otherwise) and `stop` (`JournalStopView`, D-041: a filled buy's stop as it is now, `{ id, price, status, lastClose }`, where `status` is `active`, `triggered` or `expired` and `lastClose` is set only while active, for moving it; null = no stop, or the buy hasn't filled). A stop's sells are rows too: they move money like any sell.
 - `hasMore`: older rows exist.
 - `due`: a pending order's time has passed and the runner hasn't run it yet (the ticker does within about a minute). The screen asks again every 15 to 30 seconds while this is true, at most 20 times in a row.
-- **Cost:** 4 short queries: the clock, the portfolio row, one pass over the player's orders for the counts and results (`orders_uid_idx`), and one page of rows (the same index, sorted by id). A player has hundreds to a few thousand orders at most (5 a minute, D-028), so both stay small.
+- **Cost:** 4 short queries: the clock, the portfolio row, one pass over the player's orders for the counts and results (`orders_uid_idx`), and one page of rows (the same index, sorted by id). A player has hundreds to a few thousand orders at most (5 a minute, D-028), so both stay small. A fifth, only when the page has an active stop: the latest close of those stocks.
 - 400 when `filter` or `period` is unknown, `before` isn't an order id (digits, 1 to the BIGINT maximum), or `limit` isn't 1 to 100. 404 before `POST /me`.
 
 ### Admin routes
@@ -242,7 +272,7 @@ The monitoring page (D-036, [api/src/monitoring.ts](../api/src/monitoring.ts)): 
 - `since`: the first day with any usage row; null = nothing measured yet, so the page can say so instead of showing zeros as data.
 - `totals.today`, `totals.d7` (today and the 6 days before) and `totals.d30` (today and the 29 days before), each a `MonitoringTotals`:
   - `orders`: orders players sent in the range (real `orders.created_at`, from midnight Israel time of the range's first day), by their status now: `sent` = `executed` + `rejected` + `pending`. From the orders table, never from the app. A stop's sell isn't one a player sent: it is in `stops.fired`.
-  - `stops` (D-037), from the same rows: `buys` (buys players sent), `withStop` (of them, with a stop loss), `buyers` and `players` (distinct players who sent a buy, and a buy with a stop loss), `fired` (sells the stops made, by when the runner fired them) and `firedPnlIls` (their stored gains added up; negative = losses taken).
+  - `stops` (D-037), from the same rows: `buys` (buys players sent), `withStop` (of them, with a stop loss), `buyers` and `players` (distinct players who sent a buy, and a buy with a stop loss), `fired` (sells the stops made, by when the runner fired them) and `firedPnlIls` (their stored gains added up; negative = losses taken). Plus `moved` and `movers` (D-041): stop moves in the range and the distinct players who made them, from `stop_moves` by real `created_at`.
   - `confirms`: `{ opened, backed }`, the trade screen's confirm popup.
   - `pages` (`MonitoringPageRow[]`): `{ page, views, ms, players }`, most time first (then most views, then by name). A page nobody used in the range is left out.
   - `ms`: all time in the app. `players`: distinct players with any page usage; a player on two pages counts once.

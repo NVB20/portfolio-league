@@ -195,6 +195,7 @@ function StopLossCard({ s, now, range }: { s: MonitoringTotals['stops']; now: Ad
         items={[
           { value: count(s.withStop), label: `קניות עם סטופ · ${percent(withStop)} מהקניות` },
           { value: count(s.fired), label: 'סטופים שהופעלו' },
+          { value: count(s.moved), label: `הזזות סטופ · ${count(s.movers)} ${playersWord(s.movers)}` },
           { value: count(now.active), label: `פעילים עכשיו · ${count(now.players)} ${playersWord(now.players)}`, solid: true },
         ]}
       />

@@ -48,7 +48,7 @@ export default function DashboardScreen() {
   const week = data?.leaderboard.week;
   const rankLine = boardRankLine(data?.standing?.rank ?? null, week ? isoWeek(week.start) : null);
 
-  if (data) return <DashboardView data={data} isAdmin={roles.includes('admin')} name={name} rankLine={rankLine} />;
+  if (data) return <DashboardView data={data} isAdmin={roles.includes('admin')} name={name} rankLine={rankLine} reload={reload} />;
 
   return (
     // direction: 'rtl' = Hebrew layout: rows start on the right.
@@ -72,7 +72,14 @@ export default function DashboardScreen() {
 }
 
 // The page itself, from data. Separate from the loading/error states so it can be shown with any data.
-export function DashboardView({ data, isAdmin, name, rankLine }: { data: Dashboard; isAdmin: boolean; name: string; rankLine: string | null }) {
+// reload: load the dashboard again (after a stop loss was moved from a holding card, D-041).
+export function DashboardView({ data, isAdmin, name, rankLine, reload }: {
+  data: Dashboard;
+  isAdmin: boolean;
+  name: string;
+  rankLine: string | null;
+  reload: () => void;
+}) {
   const { colors } = useTheme();
   const { motion, onScroll } = useScrollMotion();
   // Where the content starts inside the scroll (under the floating bar): the base for every scroll effect.
@@ -85,7 +92,7 @@ export function DashboardView({ data, isAdmin, name, rankLine }: { data: Dashboa
         <Animated.ScrollView contentContainerStyle={styles.scroll} onScroll={onScroll} scrollEventThrottle={16}>
           <View style={styles.wrap} onLayout={wrap.onLayout}>
             <OffsetProvider value={wrap.abs}>
-              <Content d={data} isAdmin={isAdmin} />
+              <Content d={data} isAdmin={isAdmin} reload={reload} />
             </OffsetProvider>
             <Text style={[styles.footer, { color: colors.faint, borderTopColor: colors.line }]}>
               שעון העולם · כל השחקנים חיים באותו שעון. תל אביב: 10:00–17:30 (יום ו׳ עד 13:50). ניו יורק: 9:30–16:00 לפי שעון ניו יורק.
@@ -109,7 +116,7 @@ export function DashboardView({ data, isAdmin, name, rankLine }: { data: Dashboa
   );
 }
 
-function Content({ d, isAdmin }: { d: Dashboard; isAdmin: boolean }) {
+function Content({ d, isAdmin, reload }: { d: Dashboard; isAdmin: boolean; reload: () => void }) {
   // The headline counts up from the starting ₪1,000,000 to today's value over 1.4s (DD-06 load sequence).
   const count = useTween({ duration: 1400 });
   const value = splitIls(STARTING_CASH + (d.portfolio.totalValue - STARTING_CASH) * count);
@@ -191,7 +198,7 @@ function Content({ d, isAdmin }: { d: Dashboard; isAdmin: boolean }) {
           pairs(d.holdings).map((pair) => (
             <CardRow key={pair.map((h) => h.symbol).join('-')}>
               {pair.map((h) => (
-                <HoldingCard key={h.symbol} holding={h} />
+                <HoldingCard key={h.symbol} holding={h} onStopMoved={reload} />
               ))}
             </CardRow>
           ))

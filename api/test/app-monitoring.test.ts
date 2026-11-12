@@ -50,7 +50,7 @@ describe('confirmNote', () => {
 
 describe('stopNote (the stop-loss card, D-037)', () => {
   const stops = (o: Partial<MonitoringTotals['stops']> = {}): MonitoringTotals['stops'] => ({
-    buys: 10, withStop: 4, buyers: 5, players: 2, fired: 0, firedPnlIls: 0, ...o,
+    buys: 10, withStop: 4, buyers: 5, players: 2, fired: 0, firedPnlIls: 0, moved: 0, movers: 0, ...o,
   });
 
   it('says where the numbers come from, and nothing about results before a stop fired', () => {

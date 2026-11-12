@@ -283,6 +283,7 @@ describe('GET /me/dashboard, seeded world', () => {
         weightPct: 20.3046,               // 204,000.00 / 1,004,700.00, exact to 4 decimals
         nearCap: true,
         stops: [],
+        lastClose: 50,                    // Tuesday's: Wednesday's 999 is still the future (D-041's limit)
       },
       {
         symbol: 'NVDA', nameHe: 'אנבידיה', exchange: 'NASDAQ', currency: 'USD',
@@ -292,6 +293,7 @@ describe('GET /me/dashboard, seeded world', () => {
         weightPct: 4.051,
         nearCap: false,
         stops: [],
+        lastClose: 110,
       },
     ]);
   });

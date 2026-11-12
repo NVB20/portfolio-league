@@ -197,7 +197,7 @@ export function rowView(r: TradeJournalRow, clock: Pick<LiveClockView, 'at' | 'd
     tone = 'down';
     detail = r.reject?.reason ?? 'הפקודה נדחתה';
   }
-  if (r.side === 'buy' && stop) detail = `${detail} · סטופ ${stop}`;
+  if (r.side === 'buy' && stop) detail = `${detail} · ${buyStopText(r)}`;
 
   const fill = r.fill;
   const pnlValue = fill?.realizedPnlIls ?? null;
@@ -219,6 +219,18 @@ export function rowView(r: TradeJournalRow, clock: Pick<LiveClockView, 'at' | 'd
     pnlTone,
     a11y: `${side} ${r.symbol}, ${size}. ${status}: ${detail}.${result}`,
   };
+}
+
+// A buy's stop loss (D-037): the price it was sent with, and once the buy filled, the stop as it is now (D-041):
+// "סטופ ₪95.00", "סטופ ₪98.00 (הוזז מ־₪95.00)", "סטופ ₪95.00 · הופעל" (it sold), "סטופ ₪95.00 · פג" (its
+// position closed first).
+export function buyStopText(r: Pick<TradeJournalRow, 'stopPrice' | 'stop' | 'currency'>): string {
+  if (r.stopPrice === null) return '';
+  const sent = price(r.stopPrice, r.currency);
+  if (!r.stop) return `סטופ ${sent}`;
+  const moved = r.stop.price !== r.stopPrice ? ` (הוזז מ־${sent})` : '';
+  const end = r.stop.status === 'triggered' ? ' · הופעל' : r.stop.status === 'expired' ? ' · פג' : '';
+  return `סטופ ${price(r.stop.price, r.currency)}${moved}${end}`;
 }
 
 // ---------- the table's columns ----------

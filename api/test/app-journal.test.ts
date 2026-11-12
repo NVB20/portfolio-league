@@ -33,6 +33,7 @@ const row = (o: Partial<TradeJournalRow> = {}): TradeJournalRow => ({
   reject: null,
   origin: 'player',
   stopPrice: null,
+  stop: null,
   ...o,
 });
 

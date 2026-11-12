@@ -18,6 +18,7 @@ import { recordSeen } from './presence.js';
 import { hasUsage, parseUsageText, recordUsage } from './usage.js';
 import { getAdminMonitoring, getDbHealth, oneAtATime } from './monitoring.js';
 import { sendOrder } from './orders.js';
+import { moveStop } from './stopMoves.js';
 import { parseOrderJson } from './game/orderRules.js';
 import { advanceClock, parseAdvanceBody, startClock, stopClock } from './clockActions.js';
 
@@ -170,6 +171,16 @@ export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDai
   me.post('/orders', async (c) => {
     const body = parseOrderJson(await c.req.text().catch(() => ''));
     const out = await sendOrder(db, c.get('user').uid, body);
+    if ('retryAfter' in out && out.retryAfter !== undefined) c.header('Retry-After', String(out.retryAfter));
+    return c.json(out.body, out.status);
+  });
+
+  // Moves an active stop loss of mine (D-041). Body: { stopPrice }, below the latest close, up or down. 200 with the
+  // stop as it is now (changed: false = it was already there). 409 STOP_CHECK_RUNNING while its market's latest open
+  // or close waits for the runner, with Retry-After. The body is read from its text, so a JSON number keeps its digits.
+  me.patch('/stops/:id', async (c) => {
+    const body = parseOrderJson(await c.req.text().catch(() => ''));
+    const out = await moveStop(db, c.get('user').uid, c.req.param('id'), body);
     if ('retryAfter' in out && out.retryAfter !== undefined) c.header('Retry-After', String(out.retryAfter));
     return c.json(out.body, out.status);
   });

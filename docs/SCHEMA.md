@@ -4,7 +4,7 @@ The current Postgres schema of the app's database: every table, its fields, its 
 
 - **Source of truth:** the migrations in [api/migrations/](../api/migrations/). This file describes the schema after all of them have run.
 - **Keep it in sync:** every new migration updates this file in the same commit.
-- **Last migration covered:** `20261111203926573_stop-loss.sql`
+- **Last migration covered:** `20261112103038054_stop-move.sql`
 
 ## Relationships
 
@@ -27,6 +27,8 @@ erDiagram
     orders ||--o| stop_orders : "a buy sets"
     stop_orders |o--o| orders : "fires as a sell"
     positions ||--o{ stop_orders : "protected by"
+    stop_orders ||--o{ stop_moves : "moved by the player"
+    users ||--o{ stop_moves : moves
     market_events |o--o{ orders : "executed or rejected"
     securities ||--o{ positions : "held as"
     securities ||--o{ orders : "traded in"
@@ -56,6 +58,8 @@ erDiagram
 | `stop_orders.position_id` | `positions.id` | many to 1 | CASCADE |
 | `stop_orders.sell_order_id` | `orders.id` | 1 to 1 | blocked |
 | `stop_orders.event_id` | `market_events.id` | many to 1 | blocked |
+| `stop_moves.stop_id` | `stop_orders.id` | many to 1 | CASCADE |
+| `stop_moves.uid` | `users.uid` | many to 1 | CASCADE |
 | `portfolio_snapshots.uid` | `portfolios.uid` | many to 1 | CASCADE |
 | `standings.uid` | `users.uid` | many to 1 | CASCADE |
 | `weekly_scores.uid` | `users.uid` | many to 1 | CASCADE |
@@ -65,7 +69,7 @@ erDiagram
 | `admin_actions.uid` | `users.uid` | many to 1 | CASCADE |
 | `prices.symbol` | `securities.symbol` | many to 1 | blocked |
 
-Deleting a user removes their portfolio, positions, ledger, orders, stop losses, snapshots, standings, weekly scores, visits and usage totals (the ledger allows a delete only as part of that cascade). A security can't be deleted while anything still refers to it, and neither can a market event that orders point to.
+Deleting a user removes their portfolio, positions, ledger, orders, stop losses and their moves, snapshots, standings, weekly scores, visits and usage totals (the ledger allows a delete only as part of that cascade). A security can't be deleted while anything still refers to it, and neither can a market event that orders point to.
 
 ## Tables
 
@@ -284,7 +288,7 @@ Every order ever sent, for all players (D-004).
 | `stop_id` | BIGINT | yes | | FK → `stop_orders.id`: the stop this sell came from. Set exactly when `origin = 'stop'`, and such an order is always a sell (CHECK `orders_stop_sell_check`) |
 
 ### `stop_orders`
-A stop loss a buy set (D-037): made when the buy fills, for the units it got. The runner checks every active stop at each open and close of its market (never at the event its buy filled at) and turns one the event's price reached (at or below the stop) into a sell order at that event.
+A stop loss a buy set (D-037): made when the buy fills, for the units it got. The runner checks every active stop at each open and close of its market (never at the event its buy filled at) and turns one the event's price reached (at or below the stop) into a sell order at that event. The player can move an active stop (D-041, `PATCH /me/stops/:id`): `stop_price` is the stop as it is now, the buy's `orders.stop_price` the price it was sent with, and every move is a `stop_moves` row.
 
 | Field | Type | Null | Default | Notes |
 |-------|------|------|---------|-------|
@@ -293,15 +297,29 @@ A stop loss a buy set (D-037): made when the buy fills, for the units it got. Th
 | `symbol` | TEXT | no | | FK → `securities.symbol` |
 | `buy_order_id` | BIGINT | no | | FK → `orders.id`, unique: the buy that set it |
 | `position_id` | BIGINT | no | | FK → `positions.id`: the position the buy filled into. A later position in the same stock is a new row, so it never inherits this stop |
-| `stop_price` | NUMERIC(14,4) | no | | > 0, in the security's currency |
+| `stop_price` | NUMERIC(14,4) | no | | > 0, in the security's currency: the stop as it is now (moved or not) |
 | `units` | NUMERIC(24,8) | no | | > 0: the units the buy got. It sells at most the position's free units |
 | `activated_at` | TIMESTAMPTZ | no | | World time of the buy's fill. Only events after it check the stop |
-| `activation_price` | NUMERIC(14,4) | no | | > 0: the buy's fill price. At or below `stop_price` = the stop fires at the first check, whatever the price |
+| `activation_price` | NUMERIC(14,4) | no | | > 0: the buy's fill price. At or below `stop_price` = the stop fires at the first check, whatever the price, unless it was moved since |
+| `moved_at` | TIMESTAMPTZ | yes | | World time of the last move (D-041); null = never moved. A moved stop fires on an event's price only, never because of `activation_price` |
 | `status` | TEXT | no | `'active'` | `active`, `triggered` (became `sell_order_id`) or `expired` (its position closed first) |
 | `ended_at` | TIMESTAMPTZ | yes | | World time it fired or expired |
 | `event_id` | BIGINT | yes | | FK → `market_events.id`: the event it fired or expired at. A CHECK makes `ended_at` and `event_id` NULL exactly while `active` |
 | `sell_order_id` | BIGINT | yes | | FK → `orders.id`, unique: the sell it became. Set exactly when `triggered` (CHECK) |
 | `created_at` | TIMESTAMPTZ | no | `now()` | Real time |
+
+### `stop_moves`
+One row per move of a stop loss by its player (D-041). The history, the 5-a-minute limit, and the monitoring page's "stop moves". A request for the price the stop already has writes no row.
+
+| Field | Type | Null | Default | Notes |
+|-------|------|------|---------|-------|
+| `id` | BIGINT | no | identity | **PK** |
+| `stop_id` | BIGINT | no | | FK → `stop_orders.id` |
+| `uid` | TEXT | no | | FK → `users.uid` |
+| `from_price` | NUMERIC(14,4) | no | | > 0: the stop before the move, in the security's currency |
+| `to_price` | NUMERIC(14,4) | no | | > 0, and never equal to `from_price` (CHECK `stop_moves_changed_check`) |
+| `world_at` | TIMESTAMPTZ | no | | World time of the move |
+| `created_at` | TIMESTAMPTZ | no | `now()` | Real time: the rate limit and the monitoring ranges |
 
 ### `market_events`
 The runner's event log (D-021): one row per open or close it processes. Status goes `pending` → `orders_done` (the event's prices are in effect) → `done`. The admin page reads the counts.
@@ -438,6 +456,9 @@ Every primary key and UNIQUE column has its own index. The other indexes exist f
 | `stop_orders` | `stop_orders_sell_order_id_key` | `sell_order_id` | unique | A stop fires once |
 | `stop_orders` | `stop_orders_active_idx` | `symbol, stop_price` WHERE `status = 'active'` | partial | The runner's check at every event (an event's stocks, the stops its prices reached), and the monitoring page's "active now". Only active stops: a row leaves it once it ends |
 | `stop_orders` | `stop_orders_position_idx` | `position_id` WHERE `status = 'active'` | partial | A player's active stops from their open positions (the holding cards), and expiring a closed position's stops |
+| `stop_moves` | `stop_moves_pkey` | `id` | PK | |
+| `stop_moves` | `stop_moves_uid_created_idx` | `uid, created_at` | btree | The rate limit: this player's moves of the last real minute (D-041) |
+| `stop_moves` | `stop_moves_created_idx` | `created_at` | btree | The monitoring page's ranges (today, 7 and 30 days). No index on `stop_id`: nothing reads moves by stop, and a stop is deleted only with its user or its buy (rare, by hand) |
 | `market_events` | `market_events_pkey` | `id` | PK | |
 | `market_events` | `market_events_market_kind_day_key` | `market, kind, day` | unique | One row per open or close |
 | `market_events` | `market_events_at_idx` | `at` | | The latest events, the admin page. The leaderboard's `scoredAt` (the latest `done` event) and the events since the runner's last start (`behind`) |
