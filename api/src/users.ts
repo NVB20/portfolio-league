@@ -76,6 +76,18 @@ export async function setTheme(db: Pool, uid: string, theme: Theme): Promise<Me 
   return rows[0] ? toMe(rows[0]) : null;
 }
 
+// The demo's way onto the admin side (D-043): adds 'admin' to the caller's roles, after the route checked the
+// password. Safe to repeat: an admin keeps one 'admin'. Changes only `roles`. Returns null if the user has no row yet.
+export async function grantAdmin(db: Pool, uid: string): Promise<Me | null> {
+  const { rows } = await db.query<MeRow>(
+    `UPDATE users SET roles = CASE WHEN 'admin' = ANY(roles) THEN roles ELSE ARRAY['admin'] || roles END
+     WHERE uid = $1
+     RETURNING email, roles, theme, onboarded_at, admin_onboarded_at`,
+    [uid],
+  );
+  return rows[0] ? toMe(rows[0]) : null;
+}
+
 export type OnboardingResult = { me: Me } | { error: 'no_user' | 'not_admin' };
 
 // The app finished or skipped a walkthrough (D-040). Sets the flow's column the first time; later calls keep the

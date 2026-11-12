@@ -361,6 +361,10 @@ export type RejectionsSeenResult = { marked: number };
 export type OnboardingFlow = 'player' | 'admin';
 export type OnboardingSeenBody = { flow: OnboardingFlow };
 
+// ---------- POST /me/admin: a player moves to the admin side with the demo password (D-043) ----------
+// Adds 'admin' to the caller's roles and returns the updated Me. 403 { code: 'WRONG_PASSWORD', reason } writes nothing.
+export type BecomeAdminBody = { password: string };
+
 // ---------- POST /me/orders: sending an order (D-018, D-028) ----------
 
 // The request. A buy is a ₪ amount, a sell a number of units (D-018). Sizes are exact: a decimal string, or a

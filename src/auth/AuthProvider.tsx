@@ -1,10 +1,10 @@
 // Knows who is logged in (and their row from our API: roles, theme), and shares it with every screen.
-// Any screen can call:  const { user, roles, me, isLoading, setTheme, markOnboardingSeen } = useAuth();
+// Any screen can call:  const { user, roles, me, isLoading, setTheme, markOnboardingSeen, becomeAdmin } = useAuth();
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, ReactNode } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth } from '../firebase';
-import { getOrCreateMe, saveOnboardingSeen, saveTheme } from './createUserDoc';
+import { getOrCreateMe, saveOnboardingSeen, saveTheme, unlockAdmin } from './createUserDoc';
 import { onboardingDue } from '../onboarding/due';
 import { OnboardingFlow, Role, Theme, UserDoc } from '../types/user';
 
@@ -16,6 +16,7 @@ type AuthState = {
   isLoading: boolean;    // true until we know who is logged in AND their row
   setTheme: (theme: Theme) => void;   // changes the theme now, saves it in the background
   markOnboardingSeen: (flow: OnboardingFlow) => void;   // the walkthrough counts as seen now, saved in the background
+  becomeAdmin: (password: string) => Promise<void>;     // the demo password (D-043); throws when the API says no
 };
 
 // The "channel" screens read from. Starts as: nobody, no roles, still loading.
@@ -26,6 +27,7 @@ const AuthContext = createContext<AuthState>({
   isLoading: true,
   setTheme: () => {},
   markOnboardingSeen: () => {},
+  becomeAdmin: async () => {},
 });
 
 // After a failed "seen" save: wait this long (ms) before each of the 3 retries.
@@ -143,8 +145,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [me, sendSeen],
   );
 
+  // "מעבר לצד הניהול" for a player (D-043). Not optimistic: the roles change only once the API has added the admin
+  // role, and a wrong password throws for the form to show. Only `roles` is taken from the answer, so a walkthrough
+  // "seen" that is still being saved isn't undone by it. Dropped if the user logged out or switched account meanwhile.
+  const becomeAdmin = useCallback(async (password: string) => {
+    const uid = auth.currentUser?.uid;
+    const saved = await unlockAdmin(password);
+    if (!uid || auth.currentUser?.uid !== uid) return;
+    setMe((now) => (now ? { ...now, roles: saved.roles } : now));
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, me, roles: me?.roles ?? [], isLoading, setTheme, markOnboardingSeen }}>
+    <AuthContext.Provider value={{ user, me, roles: me?.roles ?? [], isLoading, setTheme, markOnboardingSeen, becomeAdmin }}>
       {children}
     </AuthContext.Provider>
   );

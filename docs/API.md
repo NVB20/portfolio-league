@@ -17,6 +17,7 @@ Only these write to the database. Everything else is read-only.
 | `POST /me` | creates the user and the portfolio on first login, refreshes email and name after | `users` (uid, email, display_name), `portfolios` (₪1,000,000 cash) | Only their own row, only those fields. Never `roles`, never cash |
 | `PATCH /me/theme` | the dark/light choice | `users.theme` | Yes, only that column |
 | `POST /me/onboarding/seen` | the player or admin walkthrough was finished or skipped (D-040) | `users.onboarded_at` or `users.admin_onboarded_at` (the first time only) | Only their own row, only those columns, only to "now", once. The admin one only with the `admin` role |
+| `POST /me/admin` | a player moves to the admin side with the demo password (D-043) | `users.roles` (adds `admin`) | Only their own row, only by adding `admin`, only with the password the app prints (`123456`). Nothing else |
 | `PATCH /me/chart-settings` | the full chart's settings | `users.chart_settings` (JSONB, known keys only) | Yes, only that column |
 | `POST /me/orders` | a new `pending` order, and what it sets aside: a buy's cash, a sell's units. A buy may carry a stop loss (`orders.stop_price`, D-037) | `orders` (one row). Buy: a `reserve` journal (`journals` + 2 `ledger_entries`) and `portfolios.reserved_cash`. Sell: `positions.reserved_units` | Only by sending an order the rules allow (D-028). Never cash, units, prices or the clock directly. An order can't be changed or cancelled; its stop loss can be moved once the buy fills (below). A stop's sell is made by the runner, never by a request |
 | `PATCH /me/stops/:id` | moves one of the player's active stop losses (D-041) | `stop_orders.stop_price` and `moved_at` of that stop, and one `stop_moves` row | Only the price of their own active stop, below the latest close, at most 5 times a minute. Never its units, never while its market's open or close waits for the runner, and never money |
@@ -27,9 +28,9 @@ Only these write to the database. Everything else is read-only.
 | `POST /admin/clock/advance`, `/start`, `/stop` (admins only) | the clock move; advance and stop first run every open and close they pass (the runner, D-021, D-029) | The run: `market_events`, executed/rejected `orders`, `journals` + `ledger_entries`, `positions`, `portfolios`, `portfolio_snapshots`, `world_clock.events_through`. Then one transaction: `world_clock` (`now_at`, `real_at`, `running`) + one `admin_actions` row | No. Admins only (D-017, D-030) |
 | The ticker (inside the API process, every minute) | the heartbeat, and the opens and closes the running clock passes (the runner) | `world_clock.last_tick_at`, and the same run as above. Never moves `now_at` or `running` | No. Nobody calls it (D-030) |
 | `npm run seed:world` (script, not an endpoint) | the 40 securities, their daily open/close, the USD/ILS rate, the clock's start | `securities`, `prices`, `usd_ils`, `world_clock` | No. Run by a developer with the database URL |
-| SQL by hand | player roles (`admin`) | `users.roles` | No. Never through the API |
+| SQL by hand | player roles (`admin`), and removing them | `users.roles` | Only through `POST /me/admin` above, which can only add `admin` |
 
-Players can never write cash, holdings, prices, the clock, scores or roles (D-001).
+Players can never write cash, holdings, prices, the clock, scores or roles (D-001). The one exception is the demo password, which gives the admin role (D-043).
 
 ## Routes
 
@@ -75,6 +76,11 @@ Body `{ "theme": "dark" | "light" }`. Other fields are ignored. Returns `Me`, as
 The app finished or skipped a first-login walkthrough (D-040); skip counts as seen. Body `{ "flow": "player" | "admin" }` (`OnboardingSeenBody`). Other fields are ignored, so the uid is always the token's. Sets `users.onboarded_at` (player) or `users.admin_onboarded_at` (admin) to now the first time; a later call keeps the first time, so calling it again is harmless. Returns the updated `Me`, as `POST /me` does.
 
 - 400 when `flow` is missing or isn't exactly `player` or `admin`, or the body isn't JSON. 403 `admins only` for `flow: "admin"` from a user without the `admin` role in Postgres: nothing is written (the role check is in the same `UPDATE`). 404 before `POST /me`, for either flow.
+
+### `POST /me/admin`
+A player moves to the admin side (D-043). Body `{ "password": "123456" }` (`BecomeAdminBody`). The password is printed in the app, on purpose: it lets a reviewer reach the admin side without SQL. Adds `admin` to the caller's `roles` and returns the updated `Me`, as `POST /me` does. Other fields are ignored, so the uid is always the token's. Calling it again changes nothing.
+
+- 400 when `password` is missing or isn't a string, or the body isn't JSON. 403 `{ code: "WRONG_PASSWORD", reason: "הסיסמה שגויה" }` for any other password: nothing is written. 404 before `POST /me`.
 
 ### `GET /me/trade`
 Everything the trading screen shows, in one request. Like the dashboard, it first runs the catch-up (D-025) and then only reads stored values (D-031). Returns `TradeView`:

@@ -6,7 +6,7 @@ import { cors } from 'hono/cors';
 import { bodyLimit } from 'hono/body-limit';
 import type { Pool } from 'pg';
 import { requireAuth, type AppEnv, type VerifyToken } from './auth.js';
-import { markOnboarded, setTheme, upsertUser } from './users.js';
+import { grantAdmin, markOnboarded, setTheme, upsertUser } from './users.js';
 import { getDashboard, markRejectionsSeen, parseSeenIds } from './dashboard.js';
 import { getLeaderboard } from './leaderboard.js';
 import { getTrade, saveChartSettings } from './trade.js';
@@ -35,6 +35,9 @@ const SYMBOL = /^[A-Z0-9-]{1,10}$/;
 const MAX_SEARCH = 100;
 // The leaderboard's first place: 1 to 999,999,999, digits only (so the page's last place still fits an INTEGER).
 const LEADERBOARD_FROM = /^[1-9][0-9]{0,8}$/;
+// The password that turns a player into an admin (D-043). Not a secret: the app prints it next to the field, so a
+// reviewer of this home assignment reaches the admin side without running SQL.
+const ADMIN_PASSWORD = '123456';
 
 export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDaily(fetchYahooDaily) }: Deps) {
   const app = new Hono<AppEnv>();
@@ -129,6 +132,20 @@ export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDai
     if ('me' in out) return c.json(out.me);
     if (out.error === 'not_admin') return c.json({ error: 'admins only' }, 403);
     return c.json({ error: 'user not found, call POST /me first' }, 404);
+  });
+
+  // "מעבר לצד הניהול" for a player (D-043). Body: { "password": "123456" }. Adds the admin role to the caller and
+  // returns the updated Me. Safe to repeat. A wrong password is a 403 that writes nothing; other fields are ignored.
+  me.post('/admin', async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const password = body?.password;
+    if (typeof password !== 'string') return c.json({ error: 'password must be a string' }, 400);
+    if (password !== ADMIN_PASSWORD) {
+      return c.json({ error: 'wrong password', code: 'WRONG_PASSWORD', reason: 'הסיסמה שגויה' }, 403);
+    }
+    const updated = await grantAdmin(db, c.get('user').uid);
+    if (!updated) return c.json({ error: 'user not found, call POST /me first' }, 404);
+    return c.json(updated);
   });
 
   // Everything the trading screen shows, in one request. Its only write is the D-025 catch-up before reading.

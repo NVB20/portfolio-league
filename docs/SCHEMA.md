@@ -80,7 +80,7 @@ One row per player. Firebase Auth owns the login; this row owns the app data.
 |-------|------|------|---------|-------|
 | `uid` | TEXT | no | | **PK.** The Firebase Auth uid (the JWT's `sub`) |
 | `email` | TEXT | no | | Copied from the verified token on every login |
-| `roles` | TEXT[] | no | `'{user}'` | Non-empty, only `admin` / `user`. Changed only with SQL |
+| `roles` | TEXT[] | no | `'{user}'` | Non-empty, only `admin` / `user`. Changed with SQL, and by `POST /me/admin`, which only adds `admin` for the demo password (D-043) |
 | `theme` | TEXT | no | `'dark'` | `dark` or `light` (D-007) |
 | `created_at` | TIMESTAMPTZ | no | `now()` | |
 | `display_name` | TEXT | yes | | Shown on the leaderboard. Never the email |

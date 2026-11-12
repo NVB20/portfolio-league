@@ -1,5 +1,6 @@
 // The admin side: GET /admin/overview and GET /admin/players. Read-only, admins only.
-// Admins are users whose `roles` include 'admin', granted with SQL only (D-001). Nothing here writes.
+// Admins are users whose `roles` include 'admin', granted with SQL or the demo password (POST /me/admin, D-043).
+// Nothing here writes.
 // Every query is sequential, like the dashboard: one request holds at most one pool connection.
 
 import type { Pool } from 'pg';

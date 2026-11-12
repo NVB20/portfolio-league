@@ -315,6 +315,72 @@ describe('POST /me/onboarding/seen', () => {
   });
 });
 
+describe('POST /me/admin', () => {
+  const rolesOf = async (uid: string) => (await db.query(`SELECT roles FROM users WHERE uid = $1`, [uid])).rows[0]?.roles;
+
+  it('makes the caller an admin with the right password, and the admin checks let them in', async () => {
+    await call('POST', '/me', 'alice');
+    const res = await call('POST', '/me/admin', 'alice', { password: '123456' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ email: 'alice@example.com', roles: ['admin', 'user'], adminOnboardedAt: null });
+    expect(await rolesOf('alice')).toEqual(['admin', 'user']);
+    // The same role check as every /admin route.
+    expect((await call('POST', '/me/onboarding/seen', 'alice', { flow: 'admin' })).status).toBe(200);
+    expect((await call('GET', '/admin/db', 'alice')).status).toBe(200);
+  });
+
+  it('is safe to repeat: one admin role, nothing else changes', async () => {
+    await call('POST', '/me', 'alice');
+    await call('PATCH', '/me/theme', 'alice', { theme: 'light' });
+    await call('POST', '/me/admin', 'alice', { password: '123456' });
+    const again = await (await call('POST', '/me/admin', 'alice', { password: '123456' })).json();
+    expect(again).toMatchObject({ roles: ['admin', 'user'], theme: 'light' });
+    expect(await rolesOf('alice')).toEqual(['admin', 'user']);
+  });
+
+  it('refuses a wrong password with a Hebrew reason, and writes nothing', async () => {
+    await call('POST', '/me', 'mallory');
+    for (const password of ['12345', '1234567', ' 123456', '']) {
+      const res = await call('POST', '/me/admin', 'mallory', { password });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'WRONG_PASSWORD', reason: 'הסיסמה שגויה' });
+    }
+    expect(await rolesOf('mallory')).toEqual(['user']);
+    expect((await call('GET', '/admin/db', 'mallory')).status).toBe(403);
+  });
+
+  it('only changes the caller, whatever the body names', async () => {
+    await call('POST', '/me', 'alice');
+    await call('POST', '/me', 'bob');
+    await call('POST', '/me/admin', 'alice', { password: '123456', uid: 'bob', roles: ['admin'] });
+    expect(await rolesOf('alice')).toEqual(['admin', 'user']);
+    expect(await rolesOf('bob')).toEqual(['user']);
+  });
+
+  it('returns 400 when the password is missing or not a string, and writes nothing', async () => {
+    await call('POST', '/me', 'alice');
+    for (const body of [{}, { password: 123456 }, { password: ['123456'] }, null]) {
+      expect((await call('POST', '/me/admin', 'alice', body)).status).toBe(400);
+    }
+    expect((await call('POST', '/me/admin', 'alice')).status).toBe(400);
+    expect(await rolesOf('alice')).toEqual(['user']);
+  });
+
+  it('returns 404 before the user row exists', async () => {
+    expect((await call('POST', '/me/admin', 'ghost', { password: '123456' })).status).toBe(404);
+    expect(await countUsers()).toBe(0);
+  });
+
+  it('returns 401 without a token', async () => {
+    const res = await app.request('/me/admin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: '123456' }),
+    });
+    expect(res.status).toBe(401);
+  });
+});
+
 describe('CORS', () => {
   it('allows the app origin', async () => {
     const res = await app.request('/me', {

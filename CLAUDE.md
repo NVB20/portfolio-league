@@ -20,7 +20,7 @@ See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript, 
 
 - **Firebase knows who the user is; the API and Postgres decide what they may do.** Firebase handles login and the JWT. The API checks that token on every request.
 - **The app never talks to Postgres directly.** Every read and write goes through the API (`src/api.ts` → `api/`).
-- **The API is the permission layer.** Every endpoint checks the token and the user's roles. Players can never write cash, holdings, prices, the clock, scores or roles. Roles are changed only with SQL.
+- **The API is the permission layer.** Every endpoint checks the token and the user's roles. Players can never write cash, holdings, prices, the clock, scores or roles. Roles are changed with SQL, except the home-assignment demo password (`POST /me/admin`, `123456`, D-043), which only adds `admin`.
 - **Trusted game logic (order execution, scoring) runs in the API** (D-001), in batched transactions that are safe to retry (D-021).
 - **Money is double-entry (D-019).** Every cash event is a journal whose ledger entries sum to 0. Balances are stored columns, updated in the same transaction. Screens never add money up.
 - **Game logic is pure TypeScript** with no database or framework imports, so it can be unit tested.

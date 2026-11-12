@@ -46,7 +46,7 @@ Everyone shares one world clock, in Israel time. An admin moves it from the admi
 
 Every open and close on the way runs first, in order. A move never skips one.
 
-**Admin rights are given only with SQL**, so no player can make themselves admin. After you sign up:
+**To become an admin:** avatar menu → "מעבר לצד הניהול" → enter the password shown there, `123456` (D-043). It is on the screen on purpose, so you can see the admin side without running SQL. In a real launch this route would be removed and admin rights given only with SQL:
 
 ```bash
 docker compose exec db psql -U hof -d portfolio -c "UPDATE users SET roles = '{admin,user}' WHERE email = 'you@example.com'"

@@ -848,3 +848,22 @@ The balances afterwards: cash_free 1,100, stock_cost 0, realized_pnl −100 (sho
 - **Sign-in still needs the internet:** Firebase Auth, and the Google keys the API checks tokens with.
 - **Only `localhost` works:** Firebase allows sign-in from `localhost` by default, and CORS allows only `http://localhost:<port>`, so `http://127.0.0.1:8080` or another machine on the network won't sign in.
 - **Changing `API_PORT` needs `--build`,** because the web app has the API's address built in.
+
+## D-043: Any player can move to the admin side with a password shown on the screen (123456)
+
+**Status:** Active (12.11.2026). Updates D-001 and D-042's "admin rights only with SQL". Built (API): `POST /me/admin` in [api/src/app.ts](../api/src/app.ts) with `grantAdmin` in [api/src/users.ts](../api/src/users.ts) ([docs/API.md](API.md)), tested in [api/test/me.test.ts](../api/test/me.test.ts). Built (app): "מעבר לצד הניהול" for a player in the avatar menu ([src/components/dashboard/UserMenu.tsx](../src/components/dashboard/UserMenu.tsx)) and `becomeAdmin` in [src/auth/AuthProvider.tsx](../src/auth/AuthProvider.tsx).
+
+**Decision:**
+- **Where:** the avatar menu on the player side. A player who isn't an admin sees "מעבר לצד הניהול" with a lock. It opens a field in place: "הזינו את הסיסמה: 123456", then "כניסה" or "ביטול". An admin sees the plain switch, as before.
+- **The password is printed on the screen.** It isn't a secret and protects nothing. It is there so a reviewer reaches the admin side in two clicks instead of running SQL.
+- **The API decides.** `POST /me/admin` with `{ "password": "123456" }` checks it and adds `admin` to the caller's own `roles`: only that column, only their row. A wrong password is a 403 `WRONG_PASSWORD` that writes nothing. Safe to repeat. The app's roles change only after the API says yes; then it opens `/admin-dashboard`, which on the first visit shows the admin walkthrough (D-040).
+- **No way back in the app.** An admin keeps the role; removing it is SQL, as before.
+- **Everything else is unchanged:** every `/admin` route still reads `roles` from Postgres on every request.
+
+**Why:** this is a home assignment. The people reviewing it need to see the admin side (the clock moves, monitoring) without a database shell, and on the deployed game they have no SQL access at all.
+
+**Known weaknesses:**
+- **Anyone who signs up can become an admin** and move the shared world clock for everyone. Fine for a review build, not for real players. Before a real launch: delete the route (or read the password from an environment variable that is unset in production) and give roles by SQL again.
+- **The password is in the code,** in the API and in the app.
+- **No rate limit on the route.** Not needed while the password is public.
+- **Becoming an admin isn't logged** in `admin_actions`, so the admin log doesn't say who made themselves admin, or when.

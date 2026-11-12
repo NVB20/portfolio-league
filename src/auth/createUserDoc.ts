@@ -15,6 +15,12 @@ export function saveTheme(theme: Theme): Promise<UserDoc> {
   return apiFetch<UserDoc>('/me/theme', { method: 'PATCH', body: JSON.stringify({ theme }) });
 }
 
+// Moves a player to the admin side with the demo password (POST /me/admin, D-043). The API checks the password and
+// adds the admin role; a wrong one throws an ApiError with status 403. Returns the updated row.
+export function unlockAdmin(password: string): Promise<UserDoc> {
+  return apiFetch<UserDoc>('/me/admin', { method: 'POST', body: JSON.stringify({ password }) });
+}
+
 // Records that the user has seen a walkthrough (POST /me/onboarding/seen). Safe to repeat. Returns the updated row.
 export function saveOnboardingSeen(flow: OnboardingFlow): Promise<UserDoc> {
   return apiFetch<UserDoc>('/me/onboarding/seen', { method: 'POST', body: JSON.stringify({ flow }) });
