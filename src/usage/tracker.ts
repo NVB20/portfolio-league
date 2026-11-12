@@ -4,7 +4,8 @@
 // call gets `now` (Date.now()), so api/test/usage-tracker.test.ts can test it with made-up times.
 //
 // Time counts only while all of these hold:
-//   - a tracked page is open (the 4 player pages; admin pages and login are null and never count)
+//   - a tracked page is open (the 4 player pages; admin pages, login and the walkthroughs (/onboarding,
+//     /admin-onboarding) are null and never count: the server accepts only those 4 page names)
 //   - the app is in the foreground (pause / resume, from AppState)
 //   - on the web, someone used the page in the last IDLE_MS. A tab left open overnight doesn't count as 8 hours:
 //     the minutes after the last input count (the player may be reading), the rest is dropped, and the next input

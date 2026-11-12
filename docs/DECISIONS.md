@@ -775,3 +775,25 @@ The balances afterwards: cash_free 1,100, stock_cost 0, realized_pnl −100 (sho
 - **No reminder.** Nothing tells a player their streak is about to break; that needs notifications (pg-boss and push, D-021's next step).
 - **The best streak can't be seen by others** and there is no streak leaderboard yet.
 - **A card left open past midnight** still shows yesterday's week until the dashboard loads again; the day itself is counted by the next check-in.
+
+## D-040: The first-login walkthroughs are shown once, and "seen" is stored on the server
+
+**Status:** Active (12.11.2026). Built: [api/migrations/20261112100616565_onboarding.sql](../api/migrations/20261112100616565_onboarding.sql) (`users.onboarded_at`, `users.admin_onboarded_at`), `markOnboarded` in [api/src/users.ts](../api/src/users.ts), `POST /me/onboarding/seen` in [api/src/app.ts](../api/src/app.ts), tested in [api/test/me.test.ts](../api/test/me.test.ts). The walkthroughs themselves are in the app.
+
+**Decision:**
+- **Two walkthroughs, each shown once per user:** a player walkthrough at first login, and an admin walkthrough for an admin. `Me` (what `POST /me` returns) carries `onboardedAt` and `adminOnboardedAt`; `null` = not seen yet, so the app shows it.
+- **"Seen" is stored on the server, not in the browser.** Two nullable `TIMESTAMPTZ` columns on `users`, set by `POST /me/onboarding/seen` with `{ flow: "player" | "admin" }`. A player who logs in on a new phone, in another browser, or after clearing site data doesn't see it again.
+- **Skip counts as seen, one tap later.** Pressing "skip" jumps to the walkthrough's last step, and the walkthrough is marked seen when the player leaves from that last step, the same way finishing does. Both call the same endpoint; which one it was isn't stored.
+- **Existing users see it once too.** The columns start NULL on every row, with no backfill, so players who joined before the walkthrough existed get it once at their next login.
+- **Safe to repeat.** The first call sets `now()`; later calls keep the first time (`COALESCE`). Two tabs finishing at once, or a retry after a lost answer, can't move it.
+- **A failed save doesn't trap the player.** The app marks the walkthrough seen in its own `Me` at once and keeps that value if the save fails; it retries the save a few times. Because the endpoint is safe to repeat, the retries are harmless, and a save that still fails at worst shows the walkthrough once more at the next login.
+- **The admin flag can only be set by an admin.** The role check (`'admin' = ANY(roles)`, as for `/admin`) is in the same `UPDATE`'s `WHERE`, so a user without the role gets 403 and nothing is written. Roles still change only with SQL ([SCHEMA.md](SCHEMA.md#users)).
+- **Real time, never world time** (like D-026): the admin's clock moves don't touch it.
+
+**Why:** the rules are short but not obvious (orders run at the next open or close, the 20% limit, the weekly score), and a new player who doesn't get them in the first minute is unlikely to come back. A walkthrough that keeps coming back is noise and teaches people to close popups without reading, so it has to be once. Players use the same account on the web and on a phone, so a flag in the browser would show it again on every new device; the server already knows who the user is (Firebase token) and keeps their row, so the flag lives there. The admin side has its own controls (the clock, the monitoring page) that a player never sees, so it gets its own walkthrough and its own flag.
+
+**Known weaknesses:**
+- **Finish and skip look the same**, so the database can't tell how many players read it to the end. A separate column, or a count in the usage report (D-036), would.
+- **Nothing in the API clears it.** Showing it again to someone takes SQL (`UPDATE users SET onboarded_at = NULL WHERE uid = …`).
+- **A changed walkthrough isn't shown again** to players who saw the old one. A version number instead of a timestamp would fix that; not needed while there is one version.
+- **An admin who loses the role keeps `admin_onboarded_at`.** Harmless: it only hides a walkthrough they can no longer open.

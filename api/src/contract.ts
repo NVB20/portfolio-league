@@ -336,6 +336,14 @@ export type TradeJournalView = {
 export type RejectionsSeenBody = { ids: string[] };
 export type RejectionsSeenResult = { marked: number };
 
+// ---------- POST /me/onboarding/seen: the first-login walkthroughs (D-040) ----------
+// The app finished or skipped a walkthrough (skip counts as seen). Sets users.onboarded_at (player) or
+// users.admin_onboarded_at (admin) the first time; a repeat keeps the first time. 'admin' needs the admin role (403
+// otherwise, nothing written). Returns the updated Me, as POST /me does: { email, roles, theme, onboardedAt,
+// adminOnboardedAt }, each *OnboardedAt an ISO instant (real time) or null = not seen yet.
+export type OnboardingFlow = 'player' | 'admin';
+export type OnboardingSeenBody = { flow: OnboardingFlow };
+
 // ---------- POST /me/orders: sending an order (D-018, D-028) ----------
 
 // The request. A buy is a ₪ amount, a sell a number of units (D-018). Sizes are exact: a decimal string, or a
