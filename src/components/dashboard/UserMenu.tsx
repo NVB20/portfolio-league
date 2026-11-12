@@ -1,5 +1,5 @@
 // The avatar menu (DD-12): name and rank, the dark/light switch (D-007), the switch between the player and
-// admin sides (admins only), "how to play", and log out.
+// admin sides (admins only), "how to play" (and "how to manage" on the admin side), and log out.
 // A Modal on every platform: it closes on a tap outside and on Escape/back (onRequestClose).
 
 import { useEffect, useRef } from 'react';
@@ -75,7 +75,25 @@ export function UserMenu({ open, onClose, name, rankLine, top, side = 'player' }
               }}
             />
           ) : null}
-          <MenuItem icon="help-circle-outline" label="איך משחקים" disabled />
+          {/* "How to play" reopens the player walkthrough; admins also get the admin one, on the admin side. */}
+          {side === 'admin' ? (
+            <MenuItem
+              icon="school-outline"
+              label="איך מנהלים"
+              onPress={() => {
+                onClose();
+                router.navigate('/admin-onboarding');
+              }}
+            />
+          ) : null}
+          <MenuItem
+            icon="help-circle-outline"
+            label="איך משחקים"
+            onPress={() => {
+              onClose();
+              router.navigate('/onboarding');
+            }}
+          />
           <View style={[styles.hr, { backgroundColor: colors.line }]} />
           <MenuItem icon="log-out-outline" label="התנתקות" danger onPress={() => signOut(auth)} />
         </Pressable>

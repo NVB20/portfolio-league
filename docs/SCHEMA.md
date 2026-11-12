@@ -4,7 +4,7 @@ The current Postgres schema of the app's database: every table, its fields, its 
 
 - **Source of truth:** the migrations in [api/migrations/](../api/migrations/). This file describes the schema after all of them have run.
 - **Keep it in sync:** every new migration updates this file in the same commit.
-- **Last migration covered:** `20261111203926573_stop-loss.sql`
+- **Last migration covered:** `20261112100616565_onboarding.sql`
 
 ## Relationships
 
@@ -82,6 +82,8 @@ One row per player. Firebase Auth owns the login; this row owns the app data.
 | `display_name` | TEXT | yes | | Shown on the leaderboard. Never the email |
 | `chart_settings` | JSONB | no | `'{}'` | Chart type, colors, indicators. Written only by `PATCH /me/chart-settings` |
 | `last_seen_at` | TIMESTAMPTZ | yes | | Real time of the app's last check-in (D-026). Online = within 2 minutes. NULL = never checked in. Written only by `POST /me/seen` |
+| `onboarded_at` | TIMESTAMPTZ | yes | | Real time the player walkthrough was finished or skipped (D-040). NULL = not seen yet, so the app shows it. Written only by `POST /me/onboarding/seen`, which keeps the first time |
+| `admin_onboarded_at` | TIMESTAMPTZ | yes | | The same for the admin walkthrough (D-040). Set only for a user with the `admin` role |
 
 ### `app_opens`
 One row per visit (D-026). A check-in after more than 30 minutes away, or the very first one, starts a visit. The server decides, never the app. Real time. The dev-only sample game (`npm run seed:sample-game`, D-038) writes its players' visits directly.

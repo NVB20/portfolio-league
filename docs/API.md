@@ -6,7 +6,7 @@ The app calls it with `apiFetch` ([src/api.ts](../src/api.ts)), which adds the p
 - **Base URL:** `EXPO_PUBLIC_API_URL` (local: `http://localhost:3000`)
 - **Auth:** every `/me` route needs `Authorization: Bearer <Firebase ID token>`. The API checks the token itself ([api/src/auth.ts](../api/src/auth.ts)). The user is always the one in the token, never one named in the request.
 - **Body limit:** 16 KB. **Errors:** `{ "error": "..." }`, never a stack trace. The order and clock routes add a stable `code` and, where there is one, a Hebrew `reason`.
-- **Types:** the JSON shapes live in [api/src/contract.ts](../api/src/contract.ts), shared by the API and the app.
+- **Types:** the JSON shapes live in [api/src/contract.ts](../api/src/contract.ts), shared by the API and the app, except `Me`: it is defined in [api/src/users.ts](../api/src/users.ts) and mirrored by `UserDoc` in [src/types/user.ts](../src/types/user.ts).
 
 ## What saves data
 
@@ -16,6 +16,7 @@ Only these write to the database. Everything else is read-only.
 |-----|--------|------------------|-------------------------|
 | `POST /me` | creates the user and the portfolio on first login, refreshes email and name after | `users` (uid, email, display_name), `portfolios` (₪1,000,000 cash) | Only their own row, only those fields. Never `roles`, never cash |
 | `PATCH /me/theme` | the dark/light choice | `users.theme` | Yes, only that column |
+| `POST /me/onboarding/seen` | the player or admin walkthrough was finished or skipped (D-040) | `users.onboarded_at` or `users.admin_onboarded_at` (the first time only) | Only their own row, only those columns, only to "now", once. The admin one only with the `admin` role |
 | `PATCH /me/chart-settings` | the full chart's settings | `users.chart_settings` (JSONB, known keys only) | Yes, only that column |
 | `POST /me/orders` | a new `pending` order, and what it sets aside: a buy's cash, a sell's units. A buy may carry a stop loss (`orders.stop_price`, D-037) | `orders` (one row). Buy: a `reserve` journal (`journals` + 2 `ledger_entries`) and `portfolios.reserved_cash`. Sell: `positions.reserved_units` | Only by sending an order the rules allow (D-028). Never cash, units, prices or the clock directly. An order, and its stop loss, can't be changed or cancelled. A stop's sell is made by the runner, never by a request |
 | `POST /me/seen` | the check-in (D-026) and its optional usage report (D-036) | `users.last_seen_at`, one `app_opens` row when a visit starts; today's `usage_pages_daily` and `usage_confirms_daily` rows (added to) | Only their own rows. The server decides what is a visit; a usage report is capped per request (120 s of time, 50 per count) |
@@ -35,7 +36,7 @@ No auth. `{ "ok": true }` when the API is up and can reach Postgres. For the hos
 
 ### `POST /me`
 Called by the app right after login. Creates the user (role `user`) and the portfolio the first time.
-Returns `{ email, roles, theme }`.
+Returns `Me` (defined in [api/src/users.ts](../api/src/users.ts), mirrored by `UserDoc` in [src/types/user.ts](../src/types/user.ts)): `{ email, roles, theme, onboardedAt, adminOnboardedAt }`. `onboardedAt` / `adminOnboardedAt` are when the player / admin walkthrough was finished or skipped (D-040), an ISO instant in real time; `null` = not seen yet, so the app shows it.
 
 ### `GET /me/dashboard`
 Everything the dashboard shows, in one request: clock, portfolio value and chart, holdings, the next pending orders, unseen rejections, USD/ILS, standing, leaderboard top 5. 404 before `POST /me`.
@@ -63,7 +64,14 @@ The app showed the rejection toasts or the stop-sale toasts (D-037). Body `{ "id
 - 400 when `ids` isn't an array of 1 to 5 strings of digits that fit a BIGINT (a JSON number is refused too, like every order id). 404 before `POST /me`.
 
 ### `PATCH /me/theme`
-Body `{ "theme": "dark" | "light" }`. Other fields are ignored. Returns `{ email, roles, theme }`.
+Body `{ "theme": "dark" | "light" }`. Other fields are ignored. Returns `Me`, as `POST /me` does.
+
+- 400 when `theme` isn't `dark` or `light`. 404 before `POST /me`.
+
+### `POST /me/onboarding/seen`
+The app finished or skipped a first-login walkthrough (D-040); skip counts as seen. Body `{ "flow": "player" | "admin" }` (`OnboardingSeenBody`). Other fields are ignored, so the uid is always the token's. Sets `users.onboarded_at` (player) or `users.admin_onboarded_at` (admin) to now the first time; a later call keeps the first time, so calling it again is harmless. Returns the updated `Me`, as `POST /me` does.
+
+- 400 when `flow` is missing or isn't exactly `player` or `admin`, or the body isn't JSON. 403 `admins only` for `flow: "admin"` from a user without the `admin` role in Postgres: nothing is written (the role check is in the same `UPDATE`). 404 before `POST /me`, for either flow.
 
 ### `GET /me/trade`
 Everything the trading screen shows, in one request. Like the dashboard, it first runs the catch-up (D-025) and then only reads stored values (D-031). Returns `TradeView`:

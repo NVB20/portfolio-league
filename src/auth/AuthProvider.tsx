@@ -1,11 +1,12 @@
 // Knows who is logged in (and their row from our API: roles, theme), and shares it with every screen.
-// Any screen can call:  const { user, roles, me, isLoading, setTheme } = useAuth();
+// Any screen can call:  const { user, roles, me, isLoading, setTheme, markOnboardingSeen } = useAuth();
 
-import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, ReactNode } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth } from '../firebase';
-import { getOrCreateMe, saveTheme } from './createUserDoc';
-import { Role, Theme, UserDoc } from '../types/user';
+import { getOrCreateMe, saveOnboardingSeen, saveTheme } from './createUserDoc';
+import { onboardingDue } from '../onboarding/due';
+import { OnboardingFlow, Role, Theme, UserDoc } from '../types/user';
 
 // The shape of what we share.
 type AuthState = {
@@ -14,6 +15,7 @@ type AuthState = {
   roles: Role[];         // shortcut for me.roles; [] when logged out
   isLoading: boolean;    // true until we know who is logged in AND their row
   setTheme: (theme: Theme) => void;   // changes the theme now, saves it in the background
+  markOnboardingSeen: (flow: OnboardingFlow) => void;   // the walkthrough counts as seen now, saved in the background
 };
 
 // The "channel" screens read from. Starts as: nobody, no roles, still loading.
@@ -23,13 +25,24 @@ const AuthContext = createContext<AuthState>({
   roles: [],
   isLoading: true,
   setTheme: () => {},
+  markOnboardingSeen: () => {},
 });
+
+// After a failed "seen" save: wait this long (ms) before each of the 3 retries.
+const SEEN_RETRY_DELAYS = [2_000, 5_000, 15_000];
 
 // Wraps the app. `children` = everything inside <AuthProvider>...</AuthProvider>.
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [me, setMe] = useState<UserDoc | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Walkthroughs whose "seen" is on `me` already but not yet saved by the API (the save failed, or is still
+  // running), and the ones being sent right now. Refs, because they are bookkeeping, not something to draw.
+  // `session` changes on every login/logout, so a retry that was waiting for the previous user stops.
+  const unsavedSeen = useRef(new Set<OnboardingFlow>());
+  const sendingSeen = useRef(new Set<OnboardingFlow>());
+  const session = useRef(0);
 
   // Runs ONCE when the app starts (the empty [] at the end = "only once").
   useEffect(() => {
@@ -51,6 +64,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Then this answer is stale: the newer login/logout runs this function again and sets the state.
       if (auth.currentUser?.uid !== firebaseUser?.uid) return;
 
+      session.current += 1;
+      unsavedSeen.current = new Set();
+      sendingSeen.current = new Set();
       setMe(newMe);
       setUser(firebaseUser);    // 2. who is logged in (or null)
       setIsLoading(false);      // 3. we have the answer, stop waiting
@@ -75,8 +91,60 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [me],
   );
 
+  // Sends "seen" and, when that fails, tries again up to 3 times (2 s, 5 s, 15 s later). The endpoint is safe to
+  // repeat. On success the server's value replaces our optimistic one. It gives up quietly when the user logged
+  // out or switched account while it waited: the next login asks the API afresh.
+  const sendSeen = useCallback(async (flow: OnboardingFlow, uid: string) => {
+    const unsaved = unsavedSeen.current;
+    const sending = sendingSeen.current;
+    const mine = session.current;
+    const field = flow === 'admin' ? 'adminOnboardedAt' : 'onboardedAt';
+    const stale = () => session.current !== mine || auth.currentUser?.uid !== uid;
+    sending.add(flow);
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const saved = await saveOnboardingSeen(flow);
+          if (stale()) return;
+          unsaved.delete(flow);
+          setMe((now) => (now && saved[field] ? { ...now, [field]: saved[field] } : now));
+          return;
+        } catch (e) {
+          console.error('Could not save that the walkthrough was seen', e);
+          if (stale() || attempt >= SEEN_RETRY_DELAYS.length) return;
+          await new Promise((resolve) => setTimeout(resolve, SEEN_RETRY_DELAYS[attempt]));
+          if (stale()) return;
+        }
+      }
+    } finally {
+      sending.delete(flow);
+    }
+  }, []);
+
+  // Optimistic too: `me` gets its timestamp at once, so the redirect guard in _layout.tsx lets the player through
+  // the moment they finish. Unlike the theme it is NOT put back when saving fails: that would send them straight
+  // back to the walkthrough they just left. Instead the flow stays in `unsavedSeen` and is retried (sendSeen);
+  // if all retries fail, the next call here for that flow (finishing a reopened walkthrough) sends it again.
+  // The worst case left is seeing the walkthrough once more at the next login.
+  const markOnboardingSeen = useCallback(
+    (flow: OnboardingFlow) => {
+      const uid = auth.currentUser?.uid;
+      if (!me || !uid) return;
+      if (onboardingDue(me, flow)) {
+        const field = flow === 'admin' ? 'adminOnboardedAt' : 'onboardedAt';
+        setMe({ ...me, [field]: new Date().toISOString() });
+        unsavedSeen.current.add(flow);
+        sendSeen(flow, uid);
+      } else if (unsavedSeen.current.has(flow) && !sendingSeen.current.has(flow)) {
+        sendSeen(flow, uid);   // an earlier save gave up: send it again
+      }
+      // otherwise: already seen and saved (or unknown): nothing to do
+    },
+    [me, sendSeen],
+  );
+
   return (
-    <AuthContext.Provider value={{ user, me, roles: me?.roles ?? [], isLoading, setTheme }}>
+    <AuthContext.Provider value={{ user, me, roles: me?.roles ?? [], isLoading, setTheme, markOnboardingSeen }}>
       {children}
     </AuthContext.Provider>
   );

@@ -43,6 +43,9 @@ export const dark = {
   inverseInk: '#0B2B30',
   inverseMuted: '#4E6C68',
   inverseWarn: '#8A5A00',
+  // Check marks and "good" text inside the inverse card. WCAG contrast: 5.25:1 on `inverse` (#EEF6F3) and 5.76:1 on
+  // `inverseTile` (#FFFFFF). (The light theme's accent #0A8262 is only 4.36:1 on `inverse`.)
+  inverseGood: '#087456',
   avatarA: '#2A5A5E',
   avatarFg: '#7FB3A8',
   barBackground: 'rgba(8, 18, 20, 0.86)',   // the top bar: page color, slightly see-through
@@ -83,6 +86,8 @@ export const light: typeof dark = {
   inverseInk: '#FFFFFF',
   inverseMuted: '#B9CBC7',
   inverseWarn: '#F6C45C',
+  // Mint, as in `fixed.inverseAccent`. WCAG contrast: 10.16:1 on `inverse` (#0E2233) and 8.20:1 on `inverseTile` (#1A3346).
+  inverseGood: '#5FE3B8',
   avatarA: '#CFE6DF',
   avatarFg: '#1F4A4E',
   barBackground: 'rgba(230, 238, 235, 0.86)',

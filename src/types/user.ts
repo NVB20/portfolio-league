@@ -6,8 +6,16 @@ export type Role = 'admin' | 'user';
 
 export type Theme = 'dark' | 'light';
 
+// The two walkthroughs (src/onboarding): one for players, one for admins on the admin side.
+export type OnboardingFlow = 'player' | 'admin';
+
 export type UserDoc = {
   email: string;
   roles: Role[];   // several roles allowed, e.g. ['admin', 'user']
   theme: Theme;    // D-007
+  // When the player / the admin first saw their walkthrough; null = not yet. Optional: an older API sends neither
+  // field (undefined), and that counts as "seen" (see onboardingDue), so nobody is sent to a walkthrough the API
+  // can't record.
+  onboardedAt?: string | null;
+  adminOnboardedAt?: string | null;
 };

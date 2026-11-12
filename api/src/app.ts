@@ -6,7 +6,7 @@ import { cors } from 'hono/cors';
 import { bodyLimit } from 'hono/body-limit';
 import type { Pool } from 'pg';
 import { requireAuth, type AppEnv, type VerifyToken } from './auth.js';
-import { setTheme, upsertUser } from './users.js';
+import { markOnboarded, setTheme, upsertUser } from './users.js';
 import { getDashboard, markRejectionsSeen, parseSeenIds } from './dashboard.js';
 import { getLeaderboard } from './leaderboard.js';
 import { getTrade, saveChartSettings } from './trade.js';
@@ -114,6 +114,20 @@ export function createApp({ db, verifyToken, corsOrigins, fetchDaily = cachedDai
     const updated = await setTheme(db, c.get('user').uid, theme);
     if (!updated) return c.json({ error: 'user not found, call POST /me first' }, 404);
     return c.json(updated);
+  });
+
+  // The app finished or skipped a walkthrough (D-040). Body: { "flow": "player" | "admin" }. Returns the updated Me.
+  // Safe to repeat: the first time is kept. "admin" needs the admin role in Postgres (403, nothing written).
+  me.post('/onboarding/seen', async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const flow = body?.flow;
+    if (flow !== 'player' && flow !== 'admin') {
+      return c.json({ error: 'flow must be "player" or "admin"' }, 400);
+    }
+    const out = await markOnboarded(db, c.get('user').uid, flow);
+    if ('me' in out) return c.json(out.me);
+    if (out.error === 'not_admin') return c.json({ error: 'admins only' }, 403);
+    return c.json({ error: 'user not found, call POST /me first' }, 404);
   });
 
   // Everything the trading screen shows, in one request. Its only write is the D-025 catch-up before reading.
