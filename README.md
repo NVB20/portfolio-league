@@ -88,6 +88,8 @@ docker compose exec db psql -U hof -d portfolio -c "UPDATE users SET roles = '{a
 ## Production readiness
 
 - **Thousands at once:** sending an order is one short write, and nothing executes at send time. Orders run in batches at each open and close. On one API instance with 50,000 players, 2,000 dashboard reads at once were all answered in 3.5 s.
+- **Alerts while I'm away:** an n8n workflow on Railway checks the API (`/health`, which also reaches Postgres) and the web app every 5 minutes, and posts to Discord only when one goes down or comes back up.
+- **A daily report:** the same n8n workflow posts the day's active players, sign-ups and orders (sent, executed, rejected, still waiting) to Discord every day at 23:55, read from the admin endpoints by a report bot account.
 
 ## Run it
 
