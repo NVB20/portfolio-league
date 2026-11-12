@@ -49,6 +49,8 @@ function GuardedStack() {
 
       {/* Logged IN only: everything else. Logged-out visitors go to /login. */}
       <Stack.Protected guard={user !== null} redirectTo="/login">
+        {/* The rules page, from "איך משחקים" in the avatar menu. Open to anyone logged in. */}
+        <Stack.Screen name="how-to-play" />
         <Stack.Screen name="index" />
         <Stack.Screen name="dashboard" />
         <Stack.Screen name="trade" />

@@ -35,8 +35,8 @@ See [docs/tech-stack.md](docs/tech-stack.md): Expo (React Native) + TypeScript, 
 | `src/app/` | Expo Router routes only. Every file is a screen; `_layout.tsx` sets up navigation |
 | `src/screens/` | The actual screen components the routes render |
 | `src/auth/` | `AuthProvider` (current user + roles), sign-in errors, `POST /me` after login |
-| `src/components/` | Shared UI (`dashboard/`, `trade/`, `journal/`, `leaderboard/`, `admin/`). `BigChart.web.tsx` is the web-only full chart |
-| `src/dashboard/`, `src/trade/`, `src/journal/`, `src/leaderboard/`, `src/admin/` | Data hooks, copy and pure helpers per screen (`trade/orderCheck.ts`: the order rules for the preview; `journal/journal.ts` and `leaderboard/board.ts`: each table's columns, sentences and paging; `admin/monitoring.ts`: the monitoring page's numbers and copy) |
+| `src/components/` | Shared UI (`dashboard/`, `trade/`, `journal/`, `leaderboard/`, `admin/`, `howToPlay/`). `BigChart.web.tsx` is the web-only full chart |
+| `src/dashboard/`, `src/trade/`, `src/journal/`, `src/leaderboard/`, `src/admin/`, `src/howToPlay/` | Data hooks, copy and pure helpers per screen (`trade/orderCheck.ts`: the order rules for the preview; `journal/journal.ts` and `leaderboard/board.ts`: each table's columns, sentences and paging; `admin/monitoring.ts`: the monitoring page's numbers and copy; `howToPlay/content.ts`: the rules page's copy, `/how-to-play`) |
 | `src/usage/` | The usage tracker (D-036): time and views per page and the confirm-popup funnel, sent with the once-a-minute check-in (`src/auth/usePresence.ts`) |
 | `src/types/` | Shared TypeScript types |
 | `src/firebase.ts` | Firebase app and Auth setup (no database) |

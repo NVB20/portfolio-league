@@ -75,7 +75,15 @@ export function UserMenu({ open, onClose, name, rankLine, top, side = 'player' }
               }}
             />
           ) : null}
-          <MenuItem icon="help-circle-outline" label="איך משחקים" disabled />
+          {/* The rules page (/how-to-play): every rule on one scroll. */}
+          <MenuItem
+            icon="help-circle-outline"
+            label="איך משחקים"
+            onPress={() => {
+              onClose();
+              router.navigate('/how-to-play');
+            }}
+          />
           <View style={[styles.hr, { backgroundColor: colors.line }]} />
           <MenuItem icon="log-out-outline" label="התנתקות" danger onPress={() => signOut(auth)} />
         </Pressable>
