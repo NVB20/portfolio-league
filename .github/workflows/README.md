@@ -55,10 +55,18 @@ Runs only on a push to `main` (a merged PR) and only when `test` and `app` have 
 
 Static security analysis of all the JavaScript and TypeScript in the repo (app and API), using the `security-extended` query suite. It reads the source directly, with no build step. It also runs once a week so new queries cover code nobody has touched. Findings appear on the PR and in the repo's **Security → Code scanning** tab. It is free because the repo is public.
 
+What it blocks:
+
+- **A finding never fails this workflow.** The job fails only if the analysis itself breaks, so a green CodeQL run can still have open alerts. Check the Security tab, not the run's color.
+- **On a PR**, GitHub adds a separate "Code scanning results" check that fails when the PR brings a new alert of high severity or above.
+- **A direct push to `main` is not checked that way.** Until branch protection is on, look at the Security tab after a push.
+
+A false positive (for example a regex in a test that CodeQL reads as a URL check) is dismissed in the Security tab with a reason (`Used in tests` or `False positive`) and a comment that says why. Don't hide it by changing the workflow or excluding paths.
+
 ## Checks that are repo settings, not workflows
 
 - **Secret scanning and push protection** are on. A push that contains a known secret format (API keys, tokens) is blocked.
-- **Branch protection on `main`** is not set up. Without it, a red CI run reports the problem but doesn't block the merge.
+- **Branch protection on `main`** is not set up. Without it, a red CI run reports the problem but doesn't block the merge, and a new CodeQL alert blocks nothing.
 
 ## Run the same checks locally
 
